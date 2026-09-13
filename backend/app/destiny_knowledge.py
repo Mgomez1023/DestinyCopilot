@@ -380,19 +380,20 @@ class ManifestKnowledgeProvider:
         self._unavailable_types = []
         for definition_type in INDEXED_DEFINITION_TYPES:
             try:
-                table = await self.resolver.load_table(definition_type)
+                indexed_type = False
+                async for raw in self.resolver.iter_definitions(definition_type):
+                    indexed_type = True
+                    if raw.get("redacted"):
+                        continue
+                    entry = self._index_entry(definition_type, raw)
+                    if entry is not None:
+                        entries.append(entry)
             except Exception:
                 logger.warning("Manifest definition type unavailable: %s", definition_type)
                 self._unavailable_types.append(definition_type)
                 continue
-            self._indexed_types.append(definition_type)
-            for raw in table.values():
-                if not isinstance(raw, dict) or raw.get("redacted"):
-                    continue
-                entry = self._index_entry(definition_type, raw)
-                if entry is not None:
-                    entries.append(entry)
-            self.resolver.release_table(definition_type)
+            if indexed_type:
+                self._indexed_types.append(definition_type)
         return entries
 
     @staticmethod

@@ -507,7 +507,7 @@ class GuardianNormalizer:
         }
         self.definitions = {}
         for entity_type, hashes in calls.items():
-            self.definitions[entity_type] = await self.resolver.resolve_many(entity_type, hashes)
+            self.definitions[entity_type] = await self._safe_resolve_many(entity_type, hashes)
             self.resolver.release_table(entity_type)
 
         activity_definitions = self.definitions.get("DestinyActivityDefinition", {})
@@ -522,15 +522,31 @@ class GuardianNormalizer:
             if value.get("activityTypeHash")
         }
         self.definitions.setdefault("DestinyDestinationDefinition", {}).update(
-            await self.resolver.resolve_many(
+            await self._safe_resolve_many(
                 "DestinyDestinationDefinition", referenced_destinations
             )
         )
         self.resolver.release_table("DestinyDestinationDefinition")
-        self.definitions["DestinyActivityTypeDefinition"] = await self.resolver.resolve_many(
+        self.definitions["DestinyActivityTypeDefinition"] = await self._safe_resolve_many(
             "DestinyActivityTypeDefinition", referenced_activity_types
         )
         self.resolver.release_table("DestinyActivityTypeDefinition")
+
+    async def _safe_resolve_many(
+        self, entity_type: str, entity_hashes: set[int]
+    ) -> dict[int, dict[str, Any]]:
+        if not entity_hashes:
+            return {}
+        try:
+            return await self.resolver.resolve_many(entity_type, entity_hashes)
+        except Exception as exc:
+            logger.warning(
+                "Guardian Manifest enrichment skipped component=%s definitions=%d error=%s",
+                entity_type,
+                len(entity_hashes),
+                type(exc).__name__,
+            )
+            return {}
 
     def _definition(self, entity_type: str, value: Any) -> dict[str, Any]:
         try:

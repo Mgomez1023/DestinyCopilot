@@ -155,6 +155,10 @@ class FakeResolver:
     async def load_table(self, entity_type: str) -> dict[str, Any]:
         return self.tables.get(entity_type, {})
 
+    async def iter_definitions(self, entity_type: str):
+        for value in self.tables.get(entity_type, {}).values():
+            yield value
+
     def release_table(self, _entity_type: str) -> None:
         pass
 

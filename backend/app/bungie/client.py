@@ -1,4 +1,5 @@
 import logging
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -118,22 +119,30 @@ class BungieClient:
         """Return the small public vendor subset; this endpoint requires no OAuth token."""
         return await self._get("/Destiny2/Vendors/", params={"components": "400,401,402"})
 
-    async def get_public_json(self, path: str) -> dict[str, Any]:
-        """Fetch a Bungie-hosted JSON manifest component without Platform wrapping."""
+    async def download_public_file(self, path: str, destination: Path) -> int:
+        """Stream a Bungie-hosted artifact to disk without buffering it in memory."""
         url = path if path.startswith("https://") else f"{BUNGIE_ROOT_URL}{path}"
+        written = 0
         try:
-            response = await self.http.get(url, timeout=120.0)
-            response.raise_for_status()
-            payload = response.json()
-        except (httpx.HTTPError, ValueError) as exc:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            async with self.http.stream("GET", url, timeout=300.0) as response:
+                response.raise_for_status()
+                with destination.open("wb") as handle:
+                    async for chunk in response.aiter_bytes(chunk_size=1024 * 1024):
+                        handle.write(chunk)
+                        written += len(chunk)
+        except httpx.HTTPError as exc:
+            destination.unlink(missing_ok=True)
             status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
-            logger.warning("Bungie manifest download failed url=%s status=%s", url, status)
+            logger.warning("Bungie manifest artifact download failed status=%s", status)
             raise BungieAPIError(
                 "The Destiny manifest could not be downloaded.", status_code=status
             ) from exc
-        if not isinstance(payload, dict):
-            raise BungieAPIError("The Destiny manifest component was not a JSON object.")
-        return payload
+        except OSError as exc:
+            destination.unlink(missing_ok=True)
+            logger.warning("Bungie manifest artifact could not be stored")
+            raise BungieAPIError("The Destiny manifest could not be stored locally.") from exc
+        return written
 
     async def get_definition(self, entity_type: str, entity_hash: int) -> dict[str, Any]:
         return await self._get(f"/Destiny2/Manifest/{entity_type}/{entity_hash}/")

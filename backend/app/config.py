@@ -36,6 +36,8 @@ class Settings(BaseSettings):
     tls_cert_file: Path = Path(".certs/localhost.pem")
     tls_key_file: Path = Path(".certs/localhost-key.pem")
     manifest_cache_dir: Path = Path(".cache/manifest")
+    manifest_definition_cache_size: int = Field(default=1024, ge=0, le=10000)
+    manifest_metadata_ttl_seconds: int = Field(default=900, ge=0, le=86400)
     guide_corpus_file: Path = Path("backend/app/data/destiny_guides.json")
     guide_cache_dir: Path = Path(".cache/guides")
     guide_cache_stable_ttl_seconds: int = Field(default=60 * 60 * 24 * 30, ge=0)

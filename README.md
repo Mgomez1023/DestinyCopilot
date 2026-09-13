@@ -10,7 +10,7 @@ React + TypeScript + Vite
       └─ FastAPI
           ├─ Bungie OAuth + in-memory token/session store
           ├─ read-only Bungie Platform client
-          ├─ versioned JSON Manifest resolver + local content cache
+          ├─ versioned on-disk SQLite Manifest resolver + bounded definition LRU
           ├─ GuardianContext normalization boundary
           ├─ bounded read-only Guardian account tools
           ├─ normalized Manifest + detailed-guide + live knowledge providers
@@ -20,7 +20,7 @@ React + TypeScript + Vite
 OAuth tokens and CSRF state remain server-side behind an `OAuthSessionStore` abstraction. The first
 deployment uses its single-process memory implementation: restarting or scaling the backend signs
 users out. There is no application database. `.cache/manifest` contains only Bungie's public,
-versioned definition files and is gitignored.
+versioned mobile SQLite Manifest and rebuildable search indexes and is gitignored.
 
 ## Setup
 
@@ -84,6 +84,8 @@ OAUTH_STATE_TTL_SECONDS=600
 TLS_CERT_FILE=.certs/localhost.pem
 TLS_KEY_FILE=.certs/localhost-key.pem
 MANIFEST_CACHE_DIR=.cache/manifest
+MANIFEST_DEFINITION_CACHE_SIZE=1024
+MANIFEST_METADATA_TTL_SECONDS=900
 GUIDE_CORPUS_FILE=backend/app/data/destiny_guides.json
 GUIDE_CACHE_DIR=.cache/guides
 GUIDE_CACHE_STABLE_TTL_SECONDS=2592000
@@ -119,7 +121,9 @@ npm install
 npm run dev
 ```
 
-Open `https://localhost:5173`. API docs are at `https://localhost:8000/docs`. The first normalized profile request downloads the necessary English JSON Manifest component files; later runs use `.cache/manifest`.
+Open `https://localhost:5173`. API docs are at `https://localhost:8000/docs`. On a cold cache, the
+first definition lookup streams Bungie's English mobile Manifest to `.cache/manifest`, extracts its
+SQLite database, and queries only referenced hashes. Later lookups reuse that versioned artifact.
 
 ## Production deployment: Vercel + Railway
 
@@ -185,6 +189,8 @@ trailing slash in `FRONTEND_ORIGIN`, `FRONTEND_URL`, or `VITE_API_BASE_URL`.
 | `SESSION_BACKEND` | `memory` |
 | `SESSION_COOKIE_MAX_AGE_SECONDS` | Optional; defaults to `2592000` |
 | `OAUTH_STATE_TTL_SECONDS` | Optional; defaults to `600` |
+| `MANIFEST_DEFINITION_CACHE_SIZE` | Optional bounded definition LRU; defaults to `1024` |
+| `MANIFEST_METADATA_TTL_SECONDS` | Optional version recheck interval; defaults to `900` |
 | `ENABLE_DEBUG_TOOLS` | `false` |
 | `ALLOW_PRODUCTION_DEBUG` | `false` |
 | `LOG_LEVEL` | `INFO` |
@@ -249,6 +255,9 @@ Never add Bungie or OpenAI credentials to Vercel and never give them a `VITE_` p
   exists. Manifest, guide, and live caches under `.cache/` are disposable performance caches. They
   may disappear on every deploy; the app redownloads/rebuilds them and remains correct. The curated
   guide corpus under `backend/app/data/` is versioned application data, not a cache.
+- Manifest definitions are queried by hash from Bungie's official mobile SQLite database. Only
+  returned rows are JSON-decoded, and the process retains at most `MANIFEST_DEFINITION_CACHE_SIZE`
+  hot definitions. A cold deployment may take longer while the rebuildable database downloads.
 - No Railway Volume, Postgres, or Redis is required for the first personal beta. Add shared session
   storage before multi-instance or zero-sign-out requirements.
 
@@ -424,7 +433,7 @@ All Destiny player/content operations are read-only `GET` requests:
 - `GET /Platform/Destiny2/Milestones/`
 - `GET /Platform/Destiny2/Vendors/?components=400,401,402`
 - `GET /Platform/Destiny2/Manifest/{entityType}/{hash}/` as a small-set/fallback definition lookup
-- Bungie-hosted paths from `jsonWorldComponentContentPaths.en` for bulk Manifest definition resolution
+- Bungie-hosted `mobileWorldContentPaths.en` archive for indexed, on-disk Manifest definition lookup
 
 The profile request asks for `Profiles`, `ProfileInventories`, `ProfileCurrencies`, `ProfileProgression`, `Characters`, `CharacterInventories`, `CharacterProgressions`, `CharacterActivities`, `CharacterEquipment`, `ItemInstances`, `ItemObjectives`, `ItemSockets`, `ItemStats`, `Collectibles`, `Records`, and `Craftables`.
 
