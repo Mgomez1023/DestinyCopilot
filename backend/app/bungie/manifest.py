@@ -52,9 +52,7 @@ class DefinitionResolver:
             paths = manifest.get("jsonWorldComponentContentPaths", {}).get("en", {})
             component_path = paths.get(entity_type)
             if not component_path:
-                raise BungieAPIError(
-                    f"The English JSON manifest has no {entity_type} component."
-                )
+                raise BungieAPIError(f"The English JSON manifest has no {entity_type} component.")
 
             version = str(manifest.get("version", "unknown"))
             version_key = hashlib.sha256(version.encode()).hexdigest()[:12]

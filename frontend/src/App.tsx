@@ -1,6 +1,12 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { api } from "./api";
-import type { AuthStatus, ChatMessage, GuardianContext } from "./types";
+import type {
+  AuthStatus,
+  ChatMessage,
+  GuardianContext,
+  GuardianRefreshStatus,
+  GuardianStateResponse,
+} from "./types";
 
 const prompts = [
   "What should I do next?",
@@ -60,6 +66,55 @@ const knowledgeToolPresets = [
   },
 ];
 
+const guideToolPresets = [
+  {
+    name: "search_destiny_guides",
+    label: "Search Destiny guides",
+    arguments: {
+      query: "How do I get Wish-Ender?",
+      entity_name: "Wish-Ender",
+      guide_type: "exotic_acquisition",
+      limit: 5,
+    },
+  },
+  {
+    name: "get_destiny_guide",
+    label: "Get detailed guide",
+    arguments: {
+      entity_or_query: "Hunter's Remembrance",
+      guide_type: "quest_walkthrough",
+    },
+  },
+];
+
+const liveToolPresets = [
+  {
+    name: "get_live_destiny_status",
+    label: "Live source status",
+    arguments: {},
+  },
+  {
+    name: "get_weekly_rotation",
+    label: "Weekly rotation",
+    arguments: { category: "dungeon" },
+  },
+  {
+    name: "get_vendor_status",
+    label: "Vendor status",
+    arguments: { vendor: "Xur" },
+  },
+  {
+    name: "get_current_activity_status",
+    label: "Current activity status",
+    arguments: { activity_name_or_hash: "Warlord's Ruin" },
+  },
+  {
+    name: "search_live_destiny",
+    label: "Search live Destiny",
+    arguments: { query: "What's the featured dungeon this week?" },
+  },
+];
+
 function GhostMark() {
   return (
     <svg aria-hidden="true" viewBox="0 0 64 64" className="ghost-mark">
@@ -73,6 +128,22 @@ function PowerIcon() {
   return (
     <svg aria-hidden="true" viewBox="0 0 20 20" className="power-icon">
       <path d="m10 2 6.5 12H3.5L10 2Z" />
+    </svg>
+  );
+}
+
+function MenuIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" className="menu-icon">
+      <path d="M4 7h16M4 12h16M4 17h16" />
+    </svg>
+  );
+}
+
+function CloseIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" className="menu-icon">
+      <path d="m6 6 12 12M18 6 6 18" />
     </svg>
   );
 }
@@ -94,6 +165,12 @@ function relativeDate(value: string | null) {
 export default function App() {
   const [auth, setAuth] = useState<AuthStatus | null>(null);
   const [guardian, setGuardian] = useState<GuardianContext | null>(null);
+  const [refreshStatus, setRefreshStatus] = useState<GuardianRefreshStatus | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [mobileLayout, setMobileLayout] = useState(() =>
+    window.matchMedia("(max-width: 900px)").matches,
+  );
+  const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(true);
@@ -113,8 +190,25 @@ export default function App() {
   const [knowledgeResult, setKnowledgeResult] = useState<Record<string, unknown> | null>(null);
   const [knowledgeRunning, setKnowledgeRunning] = useState(false);
   const [knowledgeError, setKnowledgeError] = useState<string | null>(null);
+  const [guideToolName, setGuideToolName] = useState(guideToolPresets[0].name);
+  const [guideArguments, setGuideArguments] = useState(
+    JSON.stringify(guideToolPresets[0].arguments, null, 2),
+  );
+  const [guideResult, setGuideResult] = useState<Record<string, unknown> | null>(null);
+  const [guideRunning, setGuideRunning] = useState(false);
+  const [guideError, setGuideError] = useState<string | null>(null);
+  const [liveToolName, setLiveToolName] = useState(liveToolPresets[0].name);
+  const [liveArguments, setLiveArguments] = useState(
+    JSON.stringify(liveToolPresets[0].arguments, null, 2),
+  );
+  const [liveResult, setLiveResult] = useState<Record<string, unknown> | null>(null);
+  const [liveRunning, setLiveRunning] = useState(false);
+  const [liveError, setLiveError] = useState<string | null>(null);
+  const [chatTrace, setChatTrace] = useState<Record<string, unknown> | null>(null);
   const [error, setError] = useState<string | null>(null);
   const messageEnd = useRef<HTMLDivElement>(null);
+  const accountDrawer = useRef<HTMLElement>(null);
+  const accountMenuButton = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     const query = new URLSearchParams(window.location.search);
@@ -126,7 +220,11 @@ export default function App() {
       try {
         const status = await api.authStatus();
         setAuth(status);
-        if (status.authenticated) setGuardian(await api.guardian());
+        if (status.authenticated) {
+          const state = await api.guardianResume();
+          setGuardian(state.guardian);
+          setRefreshStatus(state.refresh);
+        }
       } catch (caught) {
         setError(caught instanceof Error ? caught.message : "Could not reach the backend.");
       } finally {
@@ -137,8 +235,106 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    messageEnd.current?.scrollIntoView({ behavior: "smooth" });
+    async function resume() {
+      if (document.visibilityState !== "visible" || !auth?.authenticated) return;
+      try {
+        const state = await api.guardianResume();
+        setGuardian(state.guardian);
+        setRefreshStatus(state.refresh);
+      } catch {
+        // Keep the last usable cached view; explicit actions surface failures.
+      }
+    }
+    document.addEventListener("visibilitychange", resume);
+    return () => document.removeEventListener("visibilitychange", resume);
+  }, [auth?.authenticated]);
+
+  useEffect(() => {
+    const media = window.matchMedia("(max-width: 900px)");
+    const updateLayout = () => setMobileLayout(media.matches);
+    updateLayout();
+    media.addEventListener("change", updateLayout);
+    return () => media.removeEventListener("change", updateLayout);
+  }, []);
+
+  useEffect(() => {
+    if (!mobileLayout) setAccountMenuOpen(false);
+  }, [mobileLayout]);
+
+  useEffect(() => {
+    if (!mobileLayout || !accountMenuOpen) return;
+    const drawerElement = accountDrawer.current;
+    if (!drawerElement) return;
+    const activeDrawer: HTMLElement = drawerElement;
+    const menuButton = accountMenuButton.current;
+    const previouslyFocused = document.activeElement as HTMLElement | null;
+    const focusableSelector = [
+      "button:not([disabled])",
+      "a[href]",
+      "input:not([disabled])",
+      "select:not([disabled])",
+      "textarea:not([disabled])",
+      "[tabindex]:not([tabindex='-1'])",
+    ].join(",");
+    const focusable = () =>
+      Array.from(activeDrawer.querySelectorAll<HTMLElement>(focusableSelector));
+
+    document.body.classList.add("account-drawer-open");
+    window.requestAnimationFrame(() => focusable()[0]?.focus());
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setAccountMenuOpen(false);
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const elements = focusable();
+      if (!elements.length) {
+        event.preventDefault();
+        activeDrawer.focus();
+        return;
+      }
+      const first = elements[0];
+      const last = elements[elements.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    }
+
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown);
+      document.body.classList.remove("account-drawer-open");
+      const remainsMobile = window.matchMedia("(max-width: 900px)").matches;
+      (remainsMobile ? menuButton : previouslyFocused)?.focus();
+    };
+  }, [accountMenuOpen, mobileLayout]);
+
+  useEffect(() => {
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    messageEnd.current?.scrollIntoView({ behavior: reducedMotion ? "auto" : "smooth" });
   }, [messages, sending]);
+
+  useEffect(() => {
+    if (!auth?.authenticated || !refreshStatus?.refreshing) return;
+    const timer = window.setInterval(() => {
+      void (async () => {
+        try {
+          const status = await api.guardianRefreshStatus();
+          setRefreshStatus(status);
+          if (!status.refreshing) setGuardian(await api.guardian());
+        } catch {
+          window.clearInterval(timer);
+        }
+      })();
+    }, 750);
+    return () => window.clearInterval(timer);
+  }, [auth?.authenticated, refreshStatus?.refreshing]);
 
   async function sendMessage(text: string) {
     const clean = text.trim();
@@ -155,6 +351,13 @@ export default function App() {
         ...current,
         { role: "assistant", content: result.message },
       ]);
+      if (auth?.debug_enabled) {
+        try {
+          setChatTrace(await api.latestChatTrace());
+        } catch {
+          setChatTrace(null);
+        }
+      }
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "The Copilot could not respond.");
     } finally {
@@ -174,8 +377,10 @@ export default function App() {
         current ? { ...current, authenticated: false } : current,
       );
       setGuardian(null);
+      setRefreshStatus(null);
       setMessages([]);
       setDebugOpen(false);
+      setAccountMenuOpen(false);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not disconnect.");
     }
@@ -242,11 +447,128 @@ export default function App() {
     }
   }
 
+  function openInspector() {
+    setAccountMenuOpen(false);
+    setDebugOpen(true);
+  }
+
+  async function refreshGuardian(level: "normal" | "full" = "normal") {
+    setRefreshing(true);
+    setError(null);
+    try {
+      const state: GuardianStateResponse = await api.guardianRefresh(level);
+      setGuardian(state.guardian);
+      setRefreshStatus(state.refresh);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Guardian refresh failed.");
+    } finally {
+      setRefreshing(false);
+    }
+  }
+
+  async function refreshSlice(slice: string) {
+    setRefreshing(true);
+    try {
+      const state = await api.debugRefreshSlice(slice);
+      setGuardian(state.guardian);
+      setRefreshStatus(state.refresh);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Guardian slice refresh failed.");
+    } finally {
+      setRefreshing(false);
+    }
+  }
+
+  async function clearGuardianCache() {
+    setRefreshing(true);
+    try {
+      await api.debugClearGuardianCache();
+      setRefreshStatus({ cached: false, refreshing: false, slices: {} });
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not clear Guardian cache.");
+    } finally {
+      setRefreshing(false);
+    }
+  }
+
+  function selectGuideTool(name: string) {
+    const preset = guideToolPresets.find((value) => value.name === name);
+    if (!preset) return;
+    setGuideToolName(name);
+    setGuideArguments(JSON.stringify(preset.arguments, null, 2));
+    setGuideResult(null);
+    setGuideError(null);
+  }
+
+  async function runGuideTool() {
+    setGuideRunning(true);
+    setGuideError(null);
+    try {
+      const parsed = JSON.parse(guideArguments) as unknown;
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new Error("Tool arguments must be a JSON object.");
+      }
+      const response = await api.destinyKnowledgeTool(
+        guideToolName,
+        parsed as Record<string, unknown>,
+      );
+      setGuideResult(response.result);
+    } catch (caught) {
+      setGuideError(caught instanceof Error ? caught.message : "The guide tool failed.");
+    } finally {
+      setGuideRunning(false);
+    }
+  }
+
+  function selectLiveTool(name: string) {
+    const preset = liveToolPresets.find((value) => value.name === name);
+    if (!preset) return;
+    setLiveToolName(name);
+    setLiveArguments(JSON.stringify(preset.arguments, null, 2));
+    setLiveResult(null);
+    setLiveError(null);
+  }
+
+  async function runLiveTool() {
+    setLiveRunning(true);
+    setLiveError(null);
+    try {
+      const parsed = JSON.parse(liveArguments) as unknown;
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new Error("Tool arguments must be a JSON object.");
+      }
+      const response = await api.destinyKnowledgeTool(
+        liveToolName,
+        parsed as Record<string, unknown>,
+      );
+      setLiveResult(response.result);
+    } catch (caught) {
+      setLiveError(caught instanceof Error ? caught.message : "The live Destiny tool failed.");
+    } finally {
+      setLiveRunning(false);
+    }
+  }
+
   const authenticated = Boolean(auth?.authenticated);
   const connected = authenticated && guardian;
+  const freshnessText = refreshing || refreshStatus?.refreshing
+    ? "Refreshing Guardian…"
+    : Object.values(refreshStatus?.slices ?? {}).some((slice) => slice.last_error)
+      ? "Refresh failed · cached data"
+      : refreshStatus && !refreshStatus.cached
+        ? "Guardian cache cleared"
+        : Object.values(refreshStatus?.slices ?? {}).some((slice) => !slice.fresh)
+          ? "Using cached data"
+          : "Guardian data current";
 
   return (
-    <div className="app-shell">
+    <div
+      className={`app-shell ${authenticated ? "is-authenticated" : ""} ${
+        connected ? "is-connected" : ""
+      } ${
+        messages.length ? "has-conversation" : "is-empty-chat"
+      }`}
+    >
       <header className="topbar">
         <div className="brand">
           <GhostMark />
@@ -265,6 +587,21 @@ export default function App() {
           {authenticated && (
             <>
               {guardian && (
+                <>
+                  <span className="freshness-state">
+                    {freshnessText}
+                  </span>
+                  <button
+                    className="text-button"
+                    type="button"
+                    disabled={refreshing}
+                    onClick={() => void refreshGuardian("normal")}
+                  >
+                    Refresh
+                  </button>
+                </>
+              )}
+              {guardian && auth?.debug_enabled && (
                 <button
                   className="text-button"
                   type="button"
@@ -280,10 +617,61 @@ export default function App() {
             </>
           )}
         </div>
+        {authenticated && (
+          <button
+            ref={accountMenuButton}
+            className="mobile-menu-button"
+            type="button"
+            aria-label="Open Guardian account menu"
+            aria-controls="guardian-account-drawer"
+            aria-expanded={accountMenuOpen}
+            onClick={() => {
+              setDebugOpen(false);
+              setAccountMenuOpen(true);
+            }}
+          >
+            <MenuIcon />
+          </button>
+        )}
       </header>
 
+      {authenticated && (
+        <div
+          className={`drawer-backdrop ${accountMenuOpen ? "is-open" : ""}`}
+          aria-hidden="true"
+          onClick={() => setAccountMenuOpen(false)}
+        />
+      )}
+
       <main className="workspace">
-        <section className="guardian-pane" aria-label="Guardian summary">
+        <section
+          ref={accountDrawer}
+          id="guardian-account-drawer"
+          className={`guardian-pane ${authenticated ? "account-drawer" : "mobile-connect-pane"} ${
+            accountMenuOpen ? "is-open" : ""
+          }`}
+          aria-label={mobileLayout && authenticated ? "Guardian account menu" : "Guardian summary"}
+          aria-labelledby={mobileLayout && authenticated ? "account-drawer-title" : undefined}
+          aria-modal={mobileLayout && authenticated ? true : undefined}
+          aria-hidden={mobileLayout && authenticated ? !accountMenuOpen : undefined}
+          role={mobileLayout && authenticated ? "dialog" : undefined}
+          tabIndex={mobileLayout && authenticated ? -1 : undefined}
+        >
+          {authenticated && (
+            <div className="drawer-heading">
+              <div>
+                <span className="kicker">Guardian account</span>
+                <h2 id="account-drawer-title">Your Guardian</h2>
+              </div>
+              <button
+                type="button"
+                aria-label="Close Guardian account menu"
+                onClick={() => setAccountMenuOpen(false)}
+              >
+                <CloseIcon />
+              </button>
+            </div>
+          )}
           <div className="section-heading">
             <span className="section-index">01</span>
             <span>Your Guardian</span>
@@ -361,7 +749,7 @@ export default function App() {
               ) : (
                 <a
                   className={`connect-button ${auth && !auth.configured ? "disabled" : ""}`}
-                  href={auth?.configured ? "/api/auth/login" : undefined}
+                  href={auth?.configured ? api.authLoginUrl : undefined}
                   aria-disabled={auth ? !auth.configured : true}
                 >
                   <span>Connect with Bungie</span>
@@ -371,6 +759,35 @@ export default function App() {
               {auth && !auth.configured && (
                 <p className="config-note">Add Bungie credentials to the root .env file to enable sign-in.</p>
               )}
+            </div>
+          )}
+          {authenticated && (
+            <div className="drawer-account-actions">
+              <div className="drawer-status" role="status">
+                <span className={`status-dot ${connected ? "online" : ""}`} />
+                <span>{connected ? guardian.bungie_display_name : "Bungie connected"}</span>
+                {guardian && <small>{freshnessText}</small>}
+              </div>
+              {guardian && (
+                <button
+                  className="drawer-action primary"
+                  type="button"
+                  disabled={refreshing}
+                  onClick={() => void refreshGuardian("normal")}
+                >
+                  {refreshing ? "Refreshing…" : "Refresh Guardian"}
+                  <span aria-hidden="true">↻</span>
+                </button>
+              )}
+              {guardian && auth?.debug_enabled && (
+                <button className="drawer-action" type="button" onClick={openInspector}>
+                  Inspect context
+                  <span aria-hidden="true">↗</span>
+                </button>
+              )}
+              <button className="drawer-action danger" type="button" onClick={() => void disconnect()}>
+                Disconnect
+              </button>
             </div>
           )}
         </section>
@@ -441,7 +858,7 @@ export default function App() {
           </div>
         </section>
       </main>
-      {connected && debugOpen && (
+      {connected && auth?.debug_enabled && debugOpen && (
         <aside className="debug-panel" aria-label="Guardian account tool developer view">
           <div className="debug-heading">
             <div>
@@ -513,6 +930,105 @@ export default function App() {
             {knowledgeError && <p className="tool-error">{knowledgeError}</p>}
             {knowledgeResult && <pre>{JSON.stringify(knowledgeResult, null, 2)}</pre>}
           </div>
+          <h3>Guardian Refresh &amp; Cache</h3>
+          <p className="inspector-note">
+            Normalized per-account slices only. OAuth tokens and raw Bungie payloads are never shown.
+          </p>
+          <div className="refresh-controls">
+            {Object.keys(refreshStatus?.slices ?? {}).map((slice) => (
+              <button
+                key={slice}
+                type="button"
+                disabled={refreshing}
+                onClick={() => void refreshSlice(slice)}
+              >
+                Refresh {slice}
+              </button>
+            ))}
+            <button type="button" disabled={refreshing} onClick={() => void refreshGuardian("normal")}>
+              Normal refresh
+            </button>
+            <button type="button" disabled={refreshing} onClick={() => void refreshGuardian("full")}>
+              Full refresh
+            </button>
+            <button type="button" disabled={refreshing} onClick={() => void clearGuardianCache()}>
+              Clear cache
+            </button>
+          </div>
+          {refreshStatus && (
+            <div className="tool-inspector">
+              <pre>{JSON.stringify(refreshStatus, null, 2)}</pre>
+            </div>
+          )}
+          <h3>Guide Knowledge</h3>
+          <p className="inspector-note">
+            Source-backed summaries retain canonical resolution, provenance, freshness, cache,
+            conflicts, and warnings. Volatile questions are rejected until live knowledge exists.
+          </p>
+          <div className="tool-inspector">
+            <label htmlFor="guide-tool">Tool</label>
+            <select
+              id="guide-tool"
+              value={guideToolName}
+              onChange={(event) => selectGuideTool(event.target.value)}
+            >
+              {guideToolPresets.map((tool) => (
+                <option key={tool.name} value={tool.name}>{tool.label}</option>
+              ))}
+            </select>
+            <label htmlFor="guide-arguments">Arguments</label>
+            <textarea
+              id="guide-arguments"
+              value={guideArguments}
+              onChange={(event) => setGuideArguments(event.target.value)}
+              spellCheck={false}
+            />
+            <button type="button" disabled={guideRunning} onClick={() => void runGuideTool()}>
+              {guideRunning ? "Running…" : "Run tool"}
+            </button>
+            {guideError && <p className="tool-error">{guideError}</p>}
+            {guideResult && <pre>{JSON.stringify(guideResult, null, 2)}</pre>}
+          </div>
+          <h3>Live Destiny Data</h3>
+          <p className="inspector-note">
+            Current source, effective window, reset cadence, cache state, confidence, conflicts,
+            and limitations. Public milestones are not assumed to be featured activities.
+          </p>
+          <div className="tool-inspector">
+            <label htmlFor="live-tool">Tool</label>
+            <select
+              id="live-tool"
+              value={liveToolName}
+              onChange={(event) => selectLiveTool(event.target.value)}
+            >
+              {liveToolPresets.map((tool) => (
+                <option key={tool.name} value={tool.name}>{tool.label}</option>
+              ))}
+            </select>
+            <label htmlFor="live-arguments">Arguments</label>
+            <textarea
+              id="live-arguments"
+              value={liveArguments}
+              onChange={(event) => setLiveArguments(event.target.value)}
+              spellCheck={false}
+            />
+            <button type="button" disabled={liveRunning} onClick={() => void runLiveTool()}>
+              {liveRunning ? "Running…" : "Run tool"}
+            </button>
+            {liveError && <p className="tool-error">{liveError}</p>}
+            {liveResult && <pre>{JSON.stringify(liveResult, null, 2)}</pre>}
+          </div>
+          <h3>AI Tool Trace</h3>
+          <p className="inspector-note">
+            Compact trace only: tool names and grounding categories, never tool payloads or secrets.
+          </p>
+          {chatTrace ? (
+            <div className="tool-inspector">
+              <pre>{JSON.stringify(chatTrace, null, 2)}</pre>
+            </div>
+          ) : (
+            <p className="inspector-note">Send a chat message to capture a trace.</p>
+          )}
           <details className="context-details">
             <summary>Full normalized GuardianContext</summary>
             <pre>{JSON.stringify(guardian, null, 2)}</pre>

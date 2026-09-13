@@ -3,6 +3,7 @@ import secrets
 import time
 from contextlib import suppress
 from dataclasses import dataclass
+from typing import Protocol
 from urllib.parse import urlencode
 
 import httpx
@@ -26,20 +27,37 @@ class OAuthToken:
     bungie_membership_id: str | None
 
 
-class OAuthStore:
-    """Ephemeral local auth storage. Restarting the backend signs users out."""
+class OAuthSessionStore(Protocol):
+    """Storage boundary for OAuth CSRF state and server-side token sessions."""
 
-    def __init__(self) -> None:
+    async def create_state(self) -> str: ...
+
+    async def consume_state(self, state: str) -> bool: ...
+
+    async def create_session(self, token: OAuthToken) -> str: ...
+
+    async def get_session(self, session_id: str) -> OAuthToken | None: ...
+
+    async def update_session(self, session_id: str, token: OAuthToken) -> None: ...
+
+    async def delete_session(self, session_id: str) -> None: ...
+
+
+class InMemoryOAuthSessionStore:
+    """Single-process beta store. Restarting or scaling the backend signs users out."""
+
+    def __init__(self, state_ttl_seconds: int = 600) -> None:
         self._states: dict[str, float] = {}
         self._sessions: dict[str, OAuthToken] = {}
         self._lock = asyncio.Lock()
+        self._state_ttl_seconds = state_ttl_seconds
 
     async def create_state(self) -> str:
         state = secrets.token_urlsafe(32)
         async with self._lock:
             now = time.time()
             self._states = {key: expiry for key, expiry in self._states.items() if expiry > now}
-            self._states[state] = now + 600
+            self._states[state] = now + self._state_ttl_seconds
         return state
 
     async def consume_state(self, state: str) -> bool:
@@ -67,13 +85,24 @@ class OAuthStore:
             self._sessions.pop(session_id, None)
 
 
-oauth_store = OAuthStore()
+def create_oauth_session_store(settings: Settings) -> OAuthSessionStore:
+    """Build the configured store without coupling callers to its implementation."""
+
+    if settings.session_backend == "memory":
+        return InMemoryOAuthSessionStore(settings.oauth_state_ttl_seconds)
+    raise ValueError(f"Unsupported session backend: {settings.session_backend}")
 
 
 class BungieOAuth:
-    def __init__(self, settings: Settings, http_client: httpx.AsyncClient) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        http_client: httpx.AsyncClient,
+        store: OAuthSessionStore | None = None,
+    ) -> None:
         self.settings = settings
         self.http = http_client
+        self.store = store or create_oauth_session_store(settings)
 
     def authorization_url(self, state: str) -> str:
         # Bungie requires scope to be configured in the application portal, not in this URL.
@@ -132,7 +161,7 @@ class BungieOAuth:
         )
 
     async def valid_access_token(self, session_id: str) -> str:
-        token = await oauth_store.get_session(session_id)
+        token = await self.store.get_session(session_id)
         if token is None:
             raise OAuthError("Session not found.")
         if token.expires_at > time.time() + 30:
@@ -140,12 +169,14 @@ class BungieOAuth:
         if not token.refresh_token or (
             token.refresh_expires_at is not None and token.refresh_expires_at <= time.time()
         ):
-            await oauth_store.delete_session(session_id)
+            await self.store.delete_session(session_id)
             raise OAuthError("Session expired. Connect with Bungie again.")
 
         refreshed = await self.refresh(token.refresh_token)
         if refreshed.refresh_token is None:
             refreshed.refresh_token = token.refresh_token
             refreshed.refresh_expires_at = token.refresh_expires_at
-        await oauth_store.update_session(session_id, refreshed)
+        if refreshed.bungie_membership_id is None:
+            refreshed.bungie_membership_id = token.bungie_membership_id
+        await self.store.update_session(session_id, refreshed)
         return refreshed.access_token

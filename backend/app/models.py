@@ -221,6 +221,7 @@ class GuardianContext(BaseModel):
 class AuthStatus(BaseModel):
     configured: bool
     authenticated: bool
+    debug_enabled: bool = False
     message: str | None = None
 
 

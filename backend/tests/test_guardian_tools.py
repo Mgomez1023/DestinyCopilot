@@ -228,6 +228,7 @@ def test_character_summary_is_compact() -> None:
     assert result["characters"][0]["subclass"] == "Sunbreaker"
     assert result["characters"][0]["equipped_weapons"] == ["Funnelweb"]
     assert "inventory" not in result
+    assert "power" not in result["characters"][0]
 
 
 def test_active_quests_excludes_completed_and_redeemed() -> None:
@@ -241,6 +242,11 @@ def test_available_activities_filters_hidden_and_reports_launchability() -> None
     assert result["total_matching"] == 1
     assert result["activities"][0]["activity_type"] == "Strike"
     assert result["activities"][0]["launchable"] is True
+    assert "recommended_power" not in result["activities"][0]
+    assert result["activities"][0]["power_eligibility"] == "unknown_not_compared"
+    assert result["availability_scope"] == "guardian_character_activities"
+    assert result["current_rotation_authoritative"] is False
+    assert "does not establish" in result["limitations"][0]
 
 
 def test_recent_activities_are_sorted_and_limited() -> None:
@@ -262,9 +268,7 @@ def test_inventory_search_applies_name_type_subtype_and_location_filters() -> No
     )
     assert result["total_matching"] == 1
     assert result["items"][0]["location"] == "vault"
-    equipped = tools.search_inventory(
-        InventorySearchRequest(equipped_only=True, limit=25)
-    )
+    equipped = tools.search_inventory(InventorySearchRequest(equipped_only=True, limit=25))
     assert {value["name"] for value in equipped["items"]} == {
         "Sunbreaker",
         "Funnelweb",
@@ -305,9 +309,7 @@ class FakeResponses:
         self.final_output = final_output or [
             SimpleNamespace(
                 type="message",
-                content=[
-                    SimpleNamespace(type="output_text", text="Your Titan is ready.")
-                ],
+                content=[SimpleNamespace(type="output_text", text="Your Titan is ready.")],
             )
         ]
         self.final_status = final_status
@@ -371,6 +373,26 @@ class FakeOpenAI:
         pass
 
 
+@pytest.mark.asyncio
+async def test_ai_refreshes_declared_guardian_tool_before_execution() -> None:
+    service = RecommendationService(Settings(openai_api_key="test-key"))
+    service.client = FakeOpenAI()
+    refreshed_for: list[str] = []
+
+    async def refresh_guardian(tool_name: str) -> GuardianContext:
+        refreshed_for.append(tool_name)
+        return guardian_context()
+
+    response = await service.chat(
+        ChatRequest(message="What am I currently using?"),
+        guardian_context(),
+        refresh_guardian=refresh_guardian,
+    )
+
+    assert response.message == "Your Titan is ready."
+    assert refreshed_for == ["get_character_summary"]
+
+
 def test_api_chat_returns_message_after_guardian_tool_call(monkeypatch: pytest.MonkeyPatch) -> None:
     service = RecommendationService(Settings(openai_api_key="test-key"))
     fake = FakeOpenAI()
@@ -412,9 +434,7 @@ def test_api_chat_returns_message_after_guardian_tool_call(monkeypatch: pytest.M
         for value in second_input
     ] == ["user_message", "function_call", "function_call_output"]
     second_request = fake.responses.requests[1]
-    assert "After you have gathered enough account information" in second_request[
-        "instructions"
-    ]
+    assert "After you have gathered enough account information" in second_request["instructions"]
     assert second_request["reasoning"] == {"effort": "low"}
     assert second_request["max_output_tokens"] == 2000
     assert second_request["truncation"] == "disabled"
@@ -443,9 +463,7 @@ def test_incomplete_response_due_to_max_output_tokens_is_rejected() -> None:
     )
 
     with pytest.raises(RuntimeError, match="max_output_tokens"):
-        asyncio.run(
-            service.chat(ChatRequest(message="What should I do?"), guardian_context())
-        )
+        asyncio.run(service.chat(ChatRequest(message="What should I do?"), guardian_context()))
 
 
 def test_completed_reasoning_only_response_is_rejected() -> None:
@@ -454,9 +472,7 @@ def test_completed_reasoning_only_response_is_rejected() -> None:
     service.client = FakeOpenAI(reasoning_only, request_tool=False)
 
     with pytest.raises(RuntimeError, match="without assistant text"):
-        asyncio.run(
-            service.chat(ChatRequest(message="What should I do?"), guardian_context())
-        )
+        asyncio.run(service.chat(ChatRequest(message="What should I do?"), guardian_context()))
 
 
 def test_ai_extracts_message_text_when_it_is_not_first_output_item() -> None:
@@ -479,3 +495,26 @@ def test_ai_extracts_message_text_when_it_is_not_first_output_item() -> None:
     )
 
     assert response.message == "Your Titan is ready."
+
+
+def test_ai_blocks_unsupported_power_level_conclusion() -> None:
+    unsafe_output = [
+        SimpleNamespace(
+            type="message",
+            content=[
+                SimpleNamespace(
+                    type="output_text",
+                    text="Your Power 191 is too low for activities recommending 300+.",
+                )
+            ],
+        )
+    ]
+    service = RecommendationService(Settings(openai_api_key="test-key"))
+    service.client = FakeOpenAI(unsafe_output, request_tool=False)
+
+    response = asyncio.run(
+        service.chat(ChatRequest(message="Am I high enough Power?"), guardian_context())
+    )
+
+    assert "too low" not in response.message
+    assert "eligibility is unknown" in response.message

@@ -1,2 +1,1 @@
 """Guardian Copilot backend."""
-

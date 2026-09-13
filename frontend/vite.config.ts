@@ -15,6 +15,18 @@ function readLocalCertificate(path: string) {
 
 export default defineConfig(({ command, mode }) => {
   const env = loadEnv(mode, repositoryRoot, "");
+  const productionApiBaseUrl = process.env.VITE_API_BASE_URL || env.VITE_API_BASE_URL;
+  if (command === "build" && process.env.VERCEL && !productionApiBaseUrl) {
+    throw new Error("Set VITE_API_BASE_URL to the production HTTPS backend origin on Vercel.");
+  }
+  if (
+    command === "build" &&
+    process.env.VERCEL &&
+    productionApiBaseUrl &&
+    !productionApiBaseUrl.startsWith("https://")
+  ) {
+    throw new Error("VITE_API_BASE_URL must use HTTPS on Vercel.");
+  }
   const certificatePath = resolve(
     repositoryRoot,
     env.TLS_CERT_FILE || ".certs/localhost.pem",
@@ -33,6 +45,7 @@ export default defineConfig(({ command, mode }) => {
 
   return {
     plugins: [react()],
+    envDir: repositoryRoot,
     server: {
       host: "127.0.0.1",
       port: 5173,

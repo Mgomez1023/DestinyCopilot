@@ -10,7 +10,7 @@ from app.guardian_tools import (
     ToolInvocationResponse,
     UnknownGuardianToolError,
 )
-from app.routes.guardian import load_guardian
+from app.routes.guardian import _refresh_service, guardian_credentials
 
 router = APIRouter(prefix="/api/debug/guardian-tools", tags=["debug"])
 
@@ -34,7 +34,10 @@ async def invoke_guardian_tool(
     arguments: dict[str, Any] | None = None,
 ) -> ToolInvocationResponse:
     _require_debug_enabled(services)
-    context = await load_guardian(request, services)
+    account_key, access_token = await guardian_credentials(request, services)
+    context = (
+        await _refresh_service(services).for_tool(account_key, access_token, tool_name)
+    ).context
     try:
         result = GuardianToolService(context).execute(tool_name, arguments)
     except CharacterNotFoundError as exc:

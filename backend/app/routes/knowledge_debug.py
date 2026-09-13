@@ -52,6 +52,6 @@ async def invoke_destiny_knowledge_tool(
         logger.exception("Destiny knowledge debug tool failed tool=%s", tool_name)
         raise HTTPException(
             status_code=502,
-            detail="Destiny Manifest knowledge could not be loaded.",
+            detail="Destiny knowledge could not be loaded.",
         ) from exc
     return ToolInvocationResponse(tool_name=tool_name, result=result)

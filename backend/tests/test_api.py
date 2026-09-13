@@ -41,4 +41,18 @@ def test_debug_destiny_knowledge_catalog_is_available_in_development() -> None:
         "get_activity_details",
         "get_quest_details",
         "find_item_source",
+        "search_destiny_guides",
+        "get_destiny_guide",
+        "get_live_destiny_status",
+        "get_weekly_rotation",
+        "get_vendor_status",
+        "get_current_activity_status",
+        "search_live_destiny",
     }
+
+
+def test_debug_recent_chat_trace_endpoint_is_available_in_development() -> None:
+    with TestClient(app) as client:
+        response = client.get("/api/debug/chat-traces")
+    assert response.status_code == 200
+    assert response.json() == {"traces": [], "count": 0}

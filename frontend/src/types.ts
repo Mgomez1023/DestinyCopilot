@@ -1,6 +1,7 @@
 export interface AuthStatus {
   configured: boolean;
   authenticated: boolean;
+  debug_enabled: boolean;
   message: string | null;
 }
 
@@ -200,4 +201,40 @@ export interface ChatMessage {
 export interface ChatResponse {
   message: string;
   source: "openai" | "local";
+}
+
+export interface GuardianSliceStatus {
+  present: boolean;
+  fresh: boolean;
+  in_flight: boolean;
+  ttl_seconds?: number;
+  age_seconds?: number;
+  fetched_at?: string;
+  stale_after?: string;
+  last_accessed_at?: string;
+  reason?: string;
+  source_components?: string[];
+  generation?: number;
+  last_success_at?: string;
+  last_error?: string | null;
+  last_result?: "success" | "error";
+  cache_hits?: number;
+  cache_misses?: number;
+}
+
+export interface GuardianRefreshStatus {
+  cached: boolean;
+  refreshing: boolean;
+  generation?: number;
+  membership_id?: string;
+  last_accessed_at?: string;
+  last_app_activity_at?: string;
+  last_app_open_level?: number | null;
+  slices: Record<string, GuardianSliceStatus>;
+}
+
+export interface GuardianStateResponse {
+  guardian: GuardianContext;
+  refresh: GuardianRefreshStatus;
+  reason: string;
 }

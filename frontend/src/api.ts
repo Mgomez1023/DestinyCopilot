@@ -1,7 +1,28 @@
-import type { AuthStatus, ChatMessage, ChatResponse, GuardianContext } from "./types";
+import type {
+  AuthStatus,
+  ChatMessage,
+  ChatResponse,
+  GuardianContext,
+  GuardianRefreshStatus,
+  GuardianStateResponse,
+} from "./types";
+
+const configuredApiBaseUrl = (import.meta.env.VITE_API_BASE_URL ?? "").trim();
+const apiBaseUrl = configuredApiBaseUrl.replace(/\/+$/, "");
+
+if (apiBaseUrl && !/^https?:\/\//i.test(apiBaseUrl)) {
+  throw new Error("VITE_API_BASE_URL must be an absolute HTTP(S) URL.");
+}
+if (import.meta.env.PROD && apiBaseUrl.startsWith("http://")) {
+  throw new Error("VITE_API_BASE_URL must use HTTPS in production.");
+}
+
+function apiUrl(path: string): string {
+  return `${apiBaseUrl}${path}`;
+}
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(path, {
+  const response = await fetch(apiUrl(path), {
     credentials: "include",
     ...options,
     headers: {
@@ -23,8 +44,22 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  authLoginUrl: apiUrl("/api/auth/login"),
   authStatus: () => request<AuthStatus>("/api/auth/status"),
   guardian: () => request<GuardianContext>("/api/guardian/me"),
+  guardianResume: () =>
+    request<GuardianStateResponse>("/api/guardian/resume", { method: "POST" }),
+  guardianRefresh: (level: "normal" | "full" = "normal") =>
+    request<GuardianStateResponse>(`/api/guardian/refresh?level=${level}`, { method: "POST" }),
+  guardianRefreshStatus: () =>
+    request<GuardianRefreshStatus>("/api/guardian/refresh/status"),
+  debugRefreshSlice: (slice: string) =>
+    request<GuardianStateResponse>(
+      `/api/debug/guardian-refresh/slice/${encodeURIComponent(slice)}`,
+      { method: "POST" },
+    ),
+  debugClearGuardianCache: () =>
+    request<{ cleared: boolean }>("/api/debug/guardian-refresh/clear", { method: "POST" }),
   guardianTool: (toolName: string, arguments_: Record<string, unknown>) =>
     request<{ tool_name: string; result: Record<string, unknown> }>(
       `/api/debug/guardian-tools/${encodeURIComponent(toolName)}`,
@@ -46,8 +81,10 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ message, history }),
     }),
+  latestChatTrace: () =>
+    request<Record<string, unknown>>("/api/debug/chat-traces/latest"),
   logout: async () => {
-    const response = await fetch("/api/auth/logout", {
+    const response = await fetch(apiUrl("/api/auth/logout"), {
       method: "POST",
       credentials: "include",
     });

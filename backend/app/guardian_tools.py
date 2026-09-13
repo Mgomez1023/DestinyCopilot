@@ -58,9 +58,7 @@ def _nullable_string(description: str) -> dict[str, Any]:
     return {"type": ["string", "null"], "description": description}
 
 
-def _strict_tool(
-    name: str, description: str, properties: dict[str, Any]
-) -> dict[str, Any]:
+def _strict_tool(name: str, description: str, properties: dict[str, Any]) -> dict[str, Any]:
     return {
         "type": "function",
         "name": name,
@@ -221,7 +219,6 @@ class GuardianToolService:
             "location": value.location,
             "character_id": value.character_id,
             "equipped": value.is_equipped,
-            "power": value.power,
             "tier": value.tier,
             "damage_type": value.damage_type,
             "item_hash": value.item_hash,
@@ -244,8 +241,7 @@ class GuardianToolService:
             elif "fragment" in category:
                 groups["fragments"].append(plug.name)
             elif any(
-                marker in category
-                for marker in ("abilit", "grenade", "melee", "super", "jump")
+                marker in category for marker in ("abilit", "grenade", "melee", "super", "jump")
             ):
                 groups["abilities"].append(plug.name)
             elif plug.item_type == "Mod" or "mod" in category:
@@ -260,7 +256,6 @@ class GuardianToolService:
                     "character_id": character.character_id,
                     "class": character.class_name,
                     "race": character.race_name,
-                    "power": character.power,
                     "last_played": (
                         character.last_played.isoformat() if character.last_played else None
                     ),
@@ -293,7 +288,7 @@ class GuardianToolService:
             "character": {
                 "character_id": character.character_id,
                 "class": character.class_name,
-                "power": character.power,
+                "power_eligibility": "unknown_not_compared",
             },
             "subclass": {
                 "name": character.subclass.name if character.subclass else None,
@@ -322,9 +317,7 @@ class GuardianToolService:
                         "tracked": quest.tracked,
                         "completed": quest.completed,
                         "redeemed": quest.redeemed,
-                        "objectives": [
-                            value.model_dump(mode="json") for value in quest.objectives
-                        ],
+                        "objectives": [value.model_dump(mode="json") for value in quest.objectives],
                     }
                 )
         quests.sort(
@@ -359,7 +352,7 @@ class GuardianToolService:
                         "destination": activity.destination,
                         "difficulty": activity.difficulty,
                         "display_level": activity.display_level,
-                        "recommended_power": activity.recommended_power,
+                        "power_eligibility": "unknown_not_compared",
                         "character_ids": [],
                         "new": False,
                         "complete": True,
@@ -393,6 +386,12 @@ class GuardianToolService:
             "activities": activities[:limit],
             "total_matching": len(activities),
             "truncated": len(activities) > limit,
+            "availability_scope": "guardian_character_activities",
+            "current_rotation_authoritative": False,
+            "limitations": [
+                "These are activities Bungie returned for this Guardian. This does not establish "
+                "the current weekly featured rotation, Nightfall, modifiers, or loot rotation."
+            ],
         }
 
     def get_recent_activities(
@@ -407,7 +406,13 @@ class GuardianToolService:
             key=lambda value: value.period or datetime.min.replace(tzinfo=UTC),
             reverse=True,
         )
-        values = [value.model_dump(mode="json") for value in activities[:limit]]
+        values = [
+            {
+                **value.model_dump(mode="json", exclude={"recommended_power"}),
+                "power_eligibility": "unknown_not_compared",
+            }
+            for value in activities[:limit]
+        ]
         return {
             "activities": values,
             "total_matching": len(activities),
@@ -443,8 +448,7 @@ class GuardianToolService:
                     ],
                     "milestones": milestones,
                     "active_quest_count": sum(
-                        not (value.completed and value.redeemed)
-                        for value in character.quests
+                        not (value.completed and value.redeemed) for value in character.quests
                     ),
                 }
             )
@@ -509,9 +513,7 @@ class GuardianToolService:
             if item.tier == "Exotic" and item.item_type in {"Weapon", "Armor"}
         ]
         all_plugs = [
-            plug
-            for item in character.equipped_gear
-            for plug in item.socketed_plug_details
+            plug for item in character.equipped_gear for plug in item.socketed_plug_details
         ]
         groups = self._plug_groups(all_plugs)
         return {

@@ -111,9 +111,7 @@ def _parse_datetime(value: str | None) -> datetime | None:
 def select_membership(membership_data: dict[str, Any]) -> dict[str, Any]:
     memberships = membership_data.get("destinyMemberships") or []
     if not memberships:
-        raise GuardianNotFoundError(
-            "No Destiny 2 membership is linked to this Bungie account."
-        )
+        raise GuardianNotFoundError("No Destiny 2 membership is linked to this Bungie account.")
     primary_id = membership_data.get("primaryMembershipId")
     if primary_id:
         for membership in memberships:
@@ -206,11 +204,7 @@ def _near_record_candidates(
         for objective in objectives:
             progress = objective.get("progress")
             completion = int(objective.get("completionValue", 0) or 0)
-            percent = (
-                _progress_percent(int(progress), completion)
-                if progress is not None
-                else None
-            )
+            percent = _progress_percent(int(progress), completion) if progress is not None else None
             if percent is not None and 0 < percent < 100 and objective.get("visible", True):
                 key = (int(record_hash), int(objective.get("objectiveHash", 0)))
                 previous = unique.get(key)
@@ -253,6 +247,77 @@ class GuardianService:
             raise GuardianNormalizationError(
                 "Bungie returned player data that Guardian Copilot could not normalize."
             ) from exc
+
+    async def load_partial_profile(
+        self,
+        access_token: str,
+        base: GuardianContext,
+        components: set[str],
+        *,
+        refresh_identity: bool = False,
+    ) -> GuardianContext:
+        """Normalize selected profile components for refresh-service slice merging."""
+        if refresh_identity:
+            membership_data = await self.client.get_current_memberships(access_token)
+            membership = select_membership(membership_data)
+        else:
+            display_name, _, display_code = base.bungie_display_name.partition("#")
+            membership = {
+                "membershipId": base.membership_id,
+                "membershipType": base.membership_type,
+                "bungieGlobalDisplayName": display_name,
+                "bungieGlobalDisplayNameCode": (
+                    int(display_code) if display_code.isdigit() else None
+                ),
+            }
+            membership_data = {
+                "destinyMemberships": [membership],
+                "primaryMembershipId": base.membership_id,
+            }
+        membership_id = str(membership["membershipId"])
+        membership_type = int(membership["membershipType"])
+        profile = await self.client.get_profile(
+            membership_type,
+            membership_id,
+            access_token,
+            components=components,
+        )
+        normalizer = GuardianNormalizer(self.resolver)
+        try:
+            return await normalizer.normalize(membership_data, membership, profile, histories={})
+        except ValidationError as exc:
+            logger.exception("Partial Bungie profile normalization failed")
+            raise GuardianNormalizationError(
+                "Bungie returned partial player data that could not be normalized."
+            ) from exc
+
+    async def load_activity_history(
+        self, access_token: str, base: GuardianContext
+    ) -> dict[str, list[RecentActivitySummary]]:
+        histories = await asyncio.gather(
+            *(
+                self._safe_activity_history(
+                    base.membership_type,
+                    base.membership_id,
+                    character.character_id,
+                    access_token,
+                )
+                for character in base.characters
+            )
+        )
+        history_by_character = dict(
+            zip(
+                (value.character_id for value in base.characters),
+                histories,
+                strict=True,
+            )
+        )
+        normalizer = GuardianNormalizer(self.resolver)
+        await normalizer._resolve_referenced_definitions({}, history_by_character)
+        return {
+            character_id: normalizer._normalize_recent_activities(character_id, history)
+            for character_id, history in history_by_character.items()
+        }
 
     async def _safe_activity_history(
         self,
@@ -304,8 +369,7 @@ class GuardianNormalizer:
             for character_id, raw in raw_characters.items()
         ]
         characters.sort(
-            key=lambda character: character.last_played
-            or datetime.min.replace(tzinfo=UTC),
+            key=lambda character: character.last_played or datetime.min.replace(tzinfo=UTC),
             reverse=True,
         )
 
@@ -356,9 +420,7 @@ class GuardianNormalizer:
         item_hashes.update(_collect_hashes(profile, "stepHash"))
         item_hashes.update(_collect_hashes(profile, "questItemHash"))
         for component in _component_data(profile, "characterCraftables", {}).values():
-            item_hashes.update(
-                int(item_hash) for item_hash in (component.get("craftables") or {})
-            )
+            item_hashes.update(int(item_hash) for item_hash in (component.get("craftables") or {}))
         socket_data = _item_component_data(profile, "sockets")
         for instance_sockets in socket_data.values():
             item_hashes.update(_collect_hashes(instance_sockets, "plugHash"))
@@ -393,9 +455,7 @@ class GuardianNormalizer:
         race_hashes: set[int] = set()
         gender_hashes: set[int] = set()
         stat_hashes: set[int] = set()
-        for entry in (
-            _item_component_data(profile, "stats")
-        ).values():
+        for entry in (_item_component_data(profile, "stats")).values():
             stat_hashes.update(int(value) for value in (entry.get("stats") or {}))
         damage_hashes = _collect_hashes(
             _item_component_data(profile, "instances"), "damageTypeHash"
@@ -447,9 +507,7 @@ class GuardianNormalizer:
         }
         self.definitions = {}
         for entity_type, hashes in calls.items():
-            self.definitions[entity_type] = await self.resolver.resolve_many(
-                entity_type, hashes
-            )
+            self.definitions[entity_type] = await self.resolver.resolve_many(entity_type, hashes)
             self.resolver.release_table(entity_type)
 
         activity_definitions = self.definitions.get("DestinyActivityDefinition", {})
@@ -469,10 +527,8 @@ class GuardianNormalizer:
             )
         )
         self.resolver.release_table("DestinyDestinationDefinition")
-        self.definitions["DestinyActivityTypeDefinition"] = (
-            await self.resolver.resolve_many(
-                "DestinyActivityTypeDefinition", referenced_activity_types
-            )
+        self.definitions["DestinyActivityTypeDefinition"] = await self.resolver.resolve_many(
+            "DestinyActivityTypeDefinition", referenced_activity_types
         )
         self.resolver.release_table("DestinyActivityTypeDefinition")
 
@@ -506,13 +562,11 @@ class GuardianNormalizer:
             GENDER_NAMES.get(int(raw.get("genderType", 2)), "Unknown gender"),
         )
         equipment_component = (
-            _component_data(profile, "characterEquipment", {})
-            .get(character_id, {}) or {}
+            _component_data(profile, "characterEquipment", {}).get(character_id, {}) or {}
         )
         raw_equipment = equipment_component.get("items", []) or []
         equipped = [
-            self._normalize_item(item, "equipped", profile, character_id)
-            for item in raw_equipment
+            self._normalize_item(item, "equipped", profile, character_id) for item in raw_equipment
         ]
         subclass = next((item for item in equipped if item.item_type == "Subclass"), None)
         return CharacterSummary(
@@ -547,9 +601,7 @@ class GuardianNormalizer:
         for item in profile_items or []:
             location = "vault" if int(item.get("location", 0)) == 2 else "profile"
             yield location, None, item
-        for character_id, component in _component_data(
-            profile, "characterInventories", {}
-        ).items():
+        for character_id, component in _component_data(profile, "characterInventories", {}).items():
             for item in (component or {}).get("items", []) or []:
                 yield "character", str(character_id), item
         if include_equipped:
@@ -588,24 +640,18 @@ class GuardianNormalizer:
         instance = instances.get(instance_id, {}) if instance_id else {}
         primary_stat = instance.get("primaryStat") or {}
         primary_value = _optional_nonnegative(primary_stat.get("value"))
-        power = (
-            primary_value
-            if item_type_value in {2, 3}
-            and primary_value is not None
-            else None
+        power = primary_value if item_type_value in {2, 3} and primary_value is not None else None
+        damage_type = (
+            self._definition_name("DestinyDamageTypeDefinition", instance.get("damageTypeHash"), "")
+            or None
         )
-        damage_type = self._definition_name(
-            "DestinyDamageTypeDefinition", instance.get("damageTypeHash"), ""
-        ) or None
         energy = instance.get("energy") or {}
         state = int(raw.get("state", 0))
 
         stats: list[ItemStatSummary] = []
         stats_component = _item_component_data(profile, "stats")
         raw_stats = (
-            (stats_component.get(instance_id, {}) or {}).get("stats", {})
-            if instance_id
-            else {}
+            (stats_component.get(instance_id, {}) or {}).get("stats", {}) if instance_id else {}
         )
         for stat_hash, stat in raw_stats.items() if include_details else []:
             stat_name = self._definition_name("DestinyStatDefinition", stat_hash, "Unknown stat")
@@ -616,9 +662,7 @@ class GuardianNormalizer:
         socketed_plug_details: list[SocketedPlugSummary] = []
         socket_components = _item_component_data(profile, "sockets")
         sockets = (
-            (socket_components.get(instance_id, {}) or {}).get("sockets", [])
-            if instance_id
-            else []
+            (socket_components.get(instance_id, {}) or {}).get("sockets", []) if instance_id else []
         )
         for socket in sockets if include_details else []:
             plug_hash = socket.get("plugHash")
@@ -629,9 +673,7 @@ class GuardianNormalizer:
             )
             if plug_name not in socketed_plugs:
                 socketed_plugs.append(plug_name)
-            plug_definition = self._definition(
-                "DestinyInventoryItemDefinition", plug_hash
-            )
+            plug_definition = self._definition("DestinyInventoryItemDefinition", plug_hash)
             _, plug_description, _ = _display(plug_definition)
             plug_block = plug_definition.get("plug") or {}
             plug_type_value = int(plug_definition.get("itemType", 0))
@@ -678,9 +720,7 @@ class GuardianNormalizer:
         raw_items = list(self._raw_inventory_items(profile, include_equipped=False))
         items = []
         for location, character_id, raw in raw_items:
-            definition = self._definition(
-                "DestinyInventoryItemDefinition", raw.get("itemHash")
-            )
+            definition = self._definition("DestinyInventoryItemDefinition", raw.get("itemHash"))
             # Weapons and armor keep their already-returned stats/sockets so the
             # bounded inventory tool can answer perk and build questions. Other
             # inventory entries stay compact.
@@ -722,12 +762,13 @@ class GuardianNormalizer:
         progress = raw.get("progress")
         progress_value = int(progress) if progress is not None else None
         completion = int(raw.get("completionValue", definition.get("completionValue", 0)) or 0)
-        activity_name = self._definition_name(
-            "DestinyActivityDefinition", raw.get("activityHash"), ""
-        ) or None
-        destination_name = self._definition_name(
-            "DestinyDestinationDefinition", raw.get("destinationHash"), ""
-        ) or None
+        activity_name = (
+            self._definition_name("DestinyActivityDefinition", raw.get("activityHash"), "") or None
+        )
+        destination_name = (
+            self._definition_name("DestinyDestinationDefinition", raw.get("destinationHash"), "")
+            or None
+        )
         return ObjectiveSummary(
             objective_hash=objective_hash,
             name=f"{prefix}: {name}" if prefix else name,
@@ -761,12 +802,9 @@ class GuardianNormalizer:
             values = entry.get("objectives", []) or []
         return [self._normalize_objective(value) for value in values if value.get("visible", True)]
 
-    def _normalize_quests(
-        self, character_id: str, profile: dict[str, Any]
-    ) -> list[QuestSummary]:
+    def _normalize_quests(self, character_id: str, profile: dict[str, Any]) -> list[QuestSummary]:
         progression = (
-            _component_data(profile, "characterProgressions", {}).get(character_id, {})
-            or {}
+            _component_data(profile, "characterProgressions", {}).get(character_id, {}) or {}
         )
         statuses = progression.get("quests", []) or []
         quests: list[QuestSummary] = []
@@ -805,8 +843,7 @@ class GuardianNormalizer:
             seen_hashes.update({value for value in (quest_hash, step_hash) if value})
 
         inventory_component = (
-            _component_data(profile, "characterInventories", {})
-            .get(character_id, {}) or {}
+            _component_data(profile, "characterInventories", {}).get(character_id, {}) or {}
         )
         raw_items = inventory_component.get("items", []) or []
         for item in raw_items:
@@ -839,8 +876,7 @@ class GuardianNormalizer:
         self, character_id: str, profile: dict[str, Any]
     ) -> list[MilestoneSummary]:
         progression_component = (
-            _component_data(profile, "characterProgressions", {})
-            .get(character_id, {}) or {}
+            _component_data(profile, "characterProgressions", {}).get(character_id, {}) or {}
         )
         raw_values = progression_component.get("milestones", {}) or {}
         milestones: list[MilestoneSummary] = []
@@ -856,9 +892,7 @@ class GuardianNormalizer:
             )
             quest_names = sorted(
                 {
-                    self._definition_name(
-                        "DestinyInventoryItemDefinition", value, "Unknown quest"
-                    )
+                    self._definition_name("DestinyInventoryItemDefinition", value, "Unknown quest")
                     for value in _collect_hashes(raw, "questItemHash")
                 }
             )
@@ -931,10 +965,7 @@ class GuardianNormalizer:
     def _normalize_character_progressions(
         self, character_id: str, profile: dict[str, Any]
     ) -> list[ProgressionSummary]:
-        raw = (
-            _component_data(profile, "characterProgressions", {}).get(character_id, {})
-            or {}
-        )
+        raw = _component_data(profile, "characterProgressions", {}).get(character_id, {}) or {}
         values = [
             self._normalize_progression(value, "character", character_id)
             for value in (raw.get("progressions") or {}).values()
@@ -959,9 +990,7 @@ class GuardianNormalizer:
         ]
         return sorted(meaningful, key=lambda value: value.name)[:50]
 
-    def _normalize_profile_progressions(
-        self, profile: dict[str, Any]
-    ) -> list[ProgressionSummary]:
+    def _normalize_profile_progressions(self, profile: dict[str, Any]) -> list[ProgressionSummary]:
         raw = _component_data(profile, "profileProgression", {})
         artifact = raw.get("seasonalArtifact") or {}
         candidates = [
@@ -969,28 +998,29 @@ class GuardianNormalizer:
             for key in ("powerBonusProgression", "pointProgression")
             if isinstance((value := artifact.get(key)), dict) and value.get("progressionHash")
         ]
-        return [
-            self._normalize_progression(value, "profile", None) for value in candidates
-        ]
+        return [self._normalize_progression(value, "profile", None) for value in candidates]
 
     def _normalize_available_activities(
         self, character_id: str, profile: dict[str, Any]
     ) -> list[AvailableActivitySummary]:
-        raw = (
-            _component_data(profile, "characterActivities", {}).get(character_id, {})
-            or {}
-        )
+        raw = _component_data(profile, "characterActivities", {}).get(character_id, {}) or {}
         values: list[AvailableActivitySummary] = []
         for activity in raw.get("availableActivities", []) or []:
             activity_hash = int(activity.get("activityHash", 0))
             definition = self._definition("DestinyActivityDefinition", activity_hash)
             name, description, _ = _display(definition)
-            activity_type = self._definition_name(
-                "DestinyActivityTypeDefinition", definition.get("activityTypeHash"), ""
-            ) or None
-            destination = self._definition_name(
-                "DestinyDestinationDefinition", definition.get("destinationHash"), ""
-            ) or None
+            activity_type = (
+                self._definition_name(
+                    "DestinyActivityTypeDefinition", definition.get("activityTypeHash"), ""
+                )
+                or None
+            )
+            destination = (
+                self._definition_name(
+                    "DestinyDestinationDefinition", definition.get("destinationHash"), ""
+                )
+                or None
+            )
             difficulty_tier = activity.get("difficultyTier")
             objectives = [
                 self._normalize_objective(value)
@@ -1010,9 +1040,7 @@ class GuardianNormalizer:
                         else None
                     ),
                     display_level=_optional_nonnegative(activity.get("displayLevel")),
-                    recommended_power=_optional_nonnegative(
-                        activity.get("recommendedLight")
-                    ),
+                    recommended_power=_optional_nonnegative(activity.get("recommendedLight")),
                     is_new=bool(activity.get("isNew")),
                     can_lead=bool(activity.get("canLead")),
                     can_join=bool(activity.get("canJoin")),
@@ -1045,18 +1073,24 @@ class GuardianNormalizer:
             )
             definition = self._definition("DestinyActivityDefinition", activity_hash)
             name, description, _ = _display(definition)
-            activity_type = self._definition_name(
-                "DestinyActivityTypeDefinition", definition.get("activityTypeHash"), ""
-            ) or None
-            destination = self._definition_name(
-                "DestinyDestinationDefinition", definition.get("destinationHash"), ""
-            ) or None
+            activity_type = (
+                self._definition_name(
+                    "DestinyActivityTypeDefinition", definition.get("activityTypeHash"), ""
+                )
+                or None
+            )
+            destination = (
+                self._definition_name(
+                    "DestinyDestinationDefinition", definition.get("destinationHash"), ""
+                )
+                or None
+            )
             difficulty_tier = definition.get("tier")
             stats = activity.get("values") or {}
             completed_raw = (stats.get("completed") or {}).get("basic", {}).get("value")
-            duration_raw = (stats.get("activityDurationSeconds") or {}).get(
-                "basic", {}
-            ).get("value")
+            duration_raw = (
+                (stats.get("activityDurationSeconds") or {}).get("basic", {}).get("value")
+            )
             values.append(
                 RecentActivitySummary(
                     activity_hash=activity_hash,
@@ -1064,9 +1098,7 @@ class GuardianNormalizer:
                     description=description,
                     character_id=character_id,
                     period=_parse_datetime(activity.get("period")),
-                    instance_id=(
-                        str(details["instanceId"]) if details.get("instanceId") else None
-                    ),
+                    instance_id=(str(details["instanceId"]) if details.get("instanceId") else None),
                     mode=int(details["mode"]) if details.get("mode") is not None else None,
                     activity_type=activity_type,
                     destination=destination,
@@ -1075,9 +1107,7 @@ class GuardianNormalizer:
                         if difficulty_tier is not None
                         else None
                     ),
-                    recommended_power=_optional_nonnegative(
-                        definition.get("activityLightLevel")
-                    ),
+                    recommended_power=_optional_nonnegative(definition.get("activityLightLevel")),
                     completed=bool(completed_raw) if completed_raw is not None else None,
                     duration_seconds=(
                         max(0, int(duration_raw)) if duration_raw is not None else None
@@ -1130,14 +1160,11 @@ class GuardianNormalizer:
             if any(not int(value.get("state", 0)) & 16 for value in values)
         ]
         completed = sum(
-            any(not int(value.get("state", 0)) & 4 for value in values)
-            for _, values in visible
+            any(not int(value.get("state", 0)) & 4 for value in values) for _, values in visible
         )
 
         near_completion: list[ObjectiveSummary] = []
-        for _, record_hash, objective in _near_record_candidates(
-            profile, NEAR_RECORD_LIMIT
-        ):
+        for _, record_hash, objective in _near_record_candidates(profile, NEAR_RECORD_LIMIT):
             record_definition = self._definition("DestinyRecordDefinition", record_hash)
             record_name = _display(record_definition)[0] if record_definition else "Record"
             near_completion.append(self._normalize_objective(objective, prefix=record_name))
@@ -1183,9 +1210,7 @@ class GuardianNormalizer:
         unavailable: dict[str, str] = {}
         for component_name, key in REQUESTED_COMPONENT_KEYS.items():
             component = profile.get(key)
-            has_profile_data = (
-                isinstance(component, dict) and component.get("data") is not None
-            )
+            has_profile_data = isinstance(component, dict) and component.get("data") is not None
             has_character_data = component_name in {"Collectibles", "Records"} and any(
                 (profile.get(character_key) or {}).get("data") is not None
                 for character_key in (

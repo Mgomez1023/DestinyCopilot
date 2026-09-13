@@ -57,33 +57,35 @@ class BungieClient:
         return await self._get("/User/GetMembershipsForCurrentUser/", access_token=access_token)
 
     async def get_profile(
-        self, membership_type: int, membership_id: str, access_token: str
+        self,
+        membership_type: int,
+        membership_id: str,
+        access_token: str,
+        *,
+        components: tuple[str, ...] | set[str] | None = None,
     ) -> dict[str, Any]:
+        requested_components = components or (
+            "Profiles",
+            "ProfileInventories",
+            "ProfileCurrencies",
+            "ProfileProgression",
+            "Characters",
+            "CharacterInventories",
+            "CharacterProgressions",
+            "CharacterActivities",
+            "CharacterEquipment",
+            "ItemInstances",
+            "ItemObjectives",
+            "ItemSockets",
+            "ItemStats",
+            "Collectibles",
+            "Records",
+            "Craftables",
+        )
         return await self._get(
             f"/Destiny2/{membership_type}/Profile/{membership_id}/",
             access_token=access_token,
-            params={
-                "components": ",".join(
-                    (
-                        "Profiles",
-                        "ProfileInventories",
-                        "ProfileCurrencies",
-                        "ProfileProgression",
-                        "Characters",
-                        "CharacterInventories",
-                        "CharacterProgressions",
-                        "CharacterActivities",
-                        "CharacterEquipment",
-                        "ItemInstances",
-                        "ItemObjectives",
-                        "ItemSockets",
-                        "ItemStats",
-                        "Collectibles",
-                        "Records",
-                        "Craftables",
-                    )
-                )
-            },
+            params={"components": ",".join(sorted(requested_components))},
         )
 
     async def get_activity_history(
@@ -107,6 +109,14 @@ class BungieClient:
 
     async def get_manifest(self) -> dict[str, Any]:
         return await self._get("/Destiny2/Manifest/")
+
+    async def get_public_milestones(self) -> dict[str, Any]:
+        """Return Bungie's public, current milestone view without player data."""
+        return await self._get("/Destiny2/Milestones/")
+
+    async def get_public_vendors(self) -> dict[str, Any]:
+        """Return the small public vendor subset; this endpoint requires no OAuth token."""
+        return await self._get("/Destiny2/Vendors/", params={"components": "400,401,402"})
 
     async def get_public_json(self, path: str) -> dict[str, Any]:
         """Fetch a Bungie-hosted JSON manifest component without Platform wrapping."""

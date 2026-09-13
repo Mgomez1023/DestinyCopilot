@@ -233,18 +233,16 @@ class UnknownKnowledgeToolError(KnowledgeToolError):
 
 class DestinyKnowledgeProvider(Protocol):
     source_name: str
+    knowledge_category: str
+    tool_names: frozenset[str]
 
-    async def search_entities(
-        self, query: str, entity_types: list[str] | None, limit: int
-    ) -> dict[str, Any]: ...
+    def definitions(self) -> list[dict[str, Any]]: ...
 
-    async def get_item_details(self, value: str) -> dict[str, Any]: ...
+    def handles(self, name: str) -> bool: ...
 
-    async def get_activity_details(self, value: str) -> dict[str, Any]: ...
+    async def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]: ...
 
-    async def get_quest_details(self, value: str) -> dict[str, Any]: ...
-
-    async def find_item_source(self, value: str) -> dict[str, Any]: ...
+    async def status(self) -> dict[str, Any]: ...
 
 
 @dataclass(slots=True)
@@ -282,6 +280,8 @@ class KnowledgeIndexEntry:
 
 class ManifestKnowledgeProvider:
     source_name = "bungie_manifest"
+    knowledge_category = "manifest"
+    tool_names = frozenset(value["name"] for value in DESTINY_KNOWLEDGE_TOOL_DEFINITIONS)
 
     def __init__(self, resolver: DefinitionResolver, settings: Settings) -> None:
         self.resolver = resolver
@@ -293,6 +293,31 @@ class ManifestKnowledgeProvider:
         self._indexed_types: list[str] = []
         self._empty_types: list[str] = []
         self._unavailable_types: list[str] = []
+
+    @staticmethod
+    def definitions() -> list[dict[str, Any]]:
+        return DESTINY_KNOWLEDGE_TOOL_DEFINITIONS
+
+    def handles(self, name: str) -> bool:
+        return name in self.tool_names
+
+    async def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        if name == "search_destiny_entities":
+            request = SearchEntitiesRequest.model_validate(arguments)
+            return await self.search_entities(request.query, request.entity_types, request.limit)
+        if name == "get_item_details":
+            request = ItemDetailsRequest.model_validate(arguments)
+            return await self.get_item_details(request.item_name_or_hash)
+        if name == "get_activity_details":
+            request = ActivityDetailsRequest.model_validate(arguments)
+            return await self.get_activity_details(request.activity_name_or_hash)
+        if name == "get_quest_details":
+            request = QuestDetailsRequest.model_validate(arguments)
+            return await self.get_quest_details(request.quest_name_or_hash)
+        if name == "find_item_source":
+            request = ItemDetailsRequest.model_validate(arguments)
+            return await self.find_item_source(request.item_name_or_hash)
+        raise UnknownKnowledgeToolError(f"Unknown Destiny knowledge tool: {name}")
 
     async def _ensure_index(self) -> None:
         if self._entries is not None:
@@ -447,13 +472,9 @@ class ManifestKnowledgeProvider:
         self._entries = entries
         self._indexed_types = sorted({value.definition_type for value in entries})
         self._empty_types = sorted(
-            set(INDEXED_DEFINITION_TYPES)
-            - set(self._indexed_types)
-            - set(self._unavailable_types)
+            set(INDEXED_DEFINITION_TYPES) - set(self._indexed_types) - set(self._unavailable_types)
         )
-        self._hash_lookup = {
-            (value.definition_type, value.entity_hash): value for value in entries
-        }
+        self._hash_lookup = {(value.definition_type, value.entity_hash): value for value in entries}
         trigrams: dict[str, set[int]] = {}
         for index, entry in enumerate(entries):
             for trigram in self._trigrams(_normalized(entry.name)):
@@ -482,8 +503,7 @@ class ManifestKnowledgeProvider:
         assert self._entries is not None
         allowed = self._allowed_types(entity_types)
         quests_only = bool(
-            entity_types
-            and any(value.casefold() in {"quest", "quests"} for value in entity_types)
+            entity_types and any(value.casefold() in {"quest", "quests"} for value in entity_types)
         )
         query_normalized = _normalized(query)
         if not query_normalized:
@@ -526,6 +546,7 @@ class ManifestKnowledgeProvider:
                 score += 0.3
             if score >= 0.28:
                 scored.append((entry, score))
+
         def search_preference(value: tuple[KnowledgeIndexEntry, float]) -> tuple[float, int, str]:
             entry, score = value
             preference = 0
@@ -551,9 +572,7 @@ class ManifestKnowledgeProvider:
             "count": len(matches),
             "source": self.source_name,
             "limitations": (
-                []
-                if matches
-                else ["No matching visible English Manifest entity was found."]
+                [] if matches else ["No matching visible English Manifest entity was found."]
             ),
         }
 
@@ -581,9 +600,7 @@ class ManifestKnowledgeProvider:
         return max(matches, key=preference)[0]
 
     async def _definition(self, entry: KnowledgeIndexEntry) -> dict[str, Any] | None:
-        values = await self.resolver.resolve_many(
-            entry.definition_type, {entry.entity_hash}
-        )
+        values = await self.resolver.resolve_many(entry.definition_type, {entry.entity_hash})
         return values.get(entry.entity_hash)
 
     async def _briefs(
@@ -666,9 +683,7 @@ class ManifestKnowledgeProvider:
         )
         trait_hashes = _unique_hashes(list(definition.get("traitHashes", []) or []))
         stats_raw = (definition.get("stats") or {}).get("stats", {}) or {}
-        stat_hashes = _unique_hashes(
-            [value.get("statHash") for value in stats_raw.values()]
-        )
+        stat_hashes = _unique_hashes([value.get("statHash") for value in stats_raw.values()])
         stat_names = {
             value["hash"]: value["name"]
             for value in await self._briefs("DestinyStatDefinition", stat_hashes)
@@ -683,12 +698,8 @@ class ManifestKnowledgeProvider:
         ][:20]
         collectible = await self._collectible_source(definition)
         class_type = int(definition.get("classType", 3) or 0)
-        damage_type_hashes = _unique_hashes(
-            list(definition.get("damageTypeHashes", []) or [])
-        )
-        category_hashes = _unique_hashes(
-            list(definition.get("itemCategoryHashes", []) or [])
-        )
+        damage_type_hashes = _unique_hashes(list(definition.get("damageTypeHashes", []) or []))
+        category_hashes = _unique_hashes(list(definition.get("itemCategoryHashes", []) or []))
         return {
             "found": True,
             "source": self.source_name,
@@ -711,23 +722,17 @@ class ManifestKnowledgeProvider:
                 ),
                 "display_source": definition.get("displaySource") or None,
                 "collectible": collectible,
-                "intrinsic_perks": await self._briefs(
-                    "DestinySandboxPerkDefinition", perk_hashes
-                ),
+                "intrinsic_perks": await self._briefs("DestinySandboxPerkDefinition", perk_hashes),
                 "default_socket_plugs": await self._briefs(
                     "DestinyInventoryItemDefinition", socket_hashes
                 ),
                 "traits": await self._briefs("DestinyTraitDefinition", trait_hashes),
-                "objectives": await self._briefs(
-                    "DestinyObjectiveDefinition", objective_hashes
-                ),
+                "objectives": await self._briefs("DestinyObjectiveDefinition", objective_hashes),
                 "base_definition_stats": stats,
                 "related_hashes": {
                     "collectible_hash": definition.get("collectibleHash") or None,
                     "lore_hash": definition.get("loreHash") or None,
-                    "item_category_hashes": _unique_hashes(
-                        category_hashes
-                    ),
+                    "item_category_hashes": _unique_hashes(category_hashes),
                 },
                 "item_categories": await self._briefs(
                     "DestinyItemCategoryDefinition", category_hashes
@@ -784,7 +789,7 @@ class ManifestKnowledgeProvider:
                 "destination": destination[0] if destination else None,
                 "place": place[0] if place else None,
                 "difficulty": ACTIVITY_DIFFICULTIES.get(int(tier)) if tier is not None else None,
-                "recommended_power": definition.get("activityLightLevel"),
+                "power_eligibility": "unknown_not_compared",
                 "is_playlist": bool(definition.get("isPlaylist")),
                 "matchmaking": {
                     "enabled": bool(matchmaking.get("isMatchmade")),
@@ -805,14 +810,14 @@ class ManifestKnowledgeProvider:
             },
             "limitations": [
                 "Manifest modifiers, challenges, and rewards are possible static metadata, not a "
-                "guarantee that they are currently active or that a specific item will drop."
+                "guarantee that they are currently active or that a specific item will drop.",
+                "Manifest activity Power is not exposed for player eligibility comparisons because "
+                "its semantics may be obsolete or incompatible with current Guardian Power.",
             ],
         }
 
     async def get_quest_details(self, value: str) -> dict[str, Any]:
-        entry = await self._resolve_entry(
-            value, "DestinyInventoryItemDefinition", quest=True
-        )
+        entry = await self._resolve_entry(value, "DestinyInventoryItemDefinition", quest=True)
         if entry is None or not entry.is_quest:
             return self._not_found(value, "quest")
         definition = await self._definition(entry)
@@ -846,9 +851,7 @@ class ManifestKnowledgeProvider:
                 for index, objective_hash in enumerate(objective_hashes)
                 if index < len(activity_hashes) and activity_hashes[index]
             }
-            objective_details = await self._briefs(
-                "DestinyObjectiveDefinition", objective_hashes
-            )
+            objective_details = await self._briefs("DestinyObjectiveDefinition", objective_hashes)
             for objective in objective_details:
                 objective["activity_hash"] = activity_by_objective.get(objective["hash"])
             steps.append(
@@ -865,10 +868,7 @@ class ManifestKnowledgeProvider:
             "DestinyActivityDefinition", set(related_activity_hashes)
         )
         destination_hashes = _unique_hashes(
-            [
-                activity.get("destinationHash")
-                for activity in activity_definitions.values()
-            ]
+            [activity.get("destinationHash") for activity in activity_definitions.values()]
         )
         return {
             "found": True,
@@ -927,15 +927,11 @@ class ManifestKnowledgeProvider:
         source_hashes: list[int] = []
         source_data = definition.get("sourceData") or {}
         if isinstance(source_data, dict):
-            source_hashes.extend(
-                _unique_hashes(list(source_data.get("sourceHashes", []) or []))
-            )
+            source_hashes.extend(_unique_hashes(list(source_data.get("sourceHashes", []) or [])))
         elif isinstance(source_data, list):
             for source in source_data:
                 if isinstance(source, dict):
-                    source_hashes.extend(
-                        _unique_hashes(list(source.get("sourceHashes", []) or []))
-                    )
+                    source_hashes.extend(_unique_hashes(list(source.get("sourceHashes", []) or [])))
         for source in await self._briefs("DestinyRewardSourceDefinition", source_hashes):
             evidence.append(
                 {
@@ -1018,6 +1014,9 @@ class ManifestKnowledgeProvider:
             "unavailable_definition_types": self._unavailable_types,
         }
 
+    async def status(self) -> dict[str, Any]:
+        return await self.index_status()
+
 
 class DestinyKnowledgeService:
     """Tool-facing game knowledge service with replaceable normalized providers."""
@@ -1027,36 +1026,47 @@ class DestinyKnowledgeService:
             raise ValueError("DestinyKnowledgeService requires at least one provider.")
         self.providers = providers
 
-    @staticmethod
-    def definitions() -> list[dict[str, Any]]:
-        return DESTINY_KNOWLEDGE_TOOL_DEFINITIONS
+    def definitions(self) -> list[dict[str, Any]]:
+        definitions: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for provider in self.providers:
+            for definition in provider.definitions():
+                name = str(definition["name"])
+                if name not in seen:
+                    definitions.append(definition)
+                    seen.add(name)
+        return definitions
 
-    async def execute(
-        self, name: str, arguments: dict[str, Any] | None = None
-    ) -> dict[str, Any]:
-        values = arguments or {}
-        provider = self.providers[0]
-        if name == "search_destiny_entities":
-            request = SearchEntitiesRequest.model_validate(values)
-            return await provider.search_entities(
-                request.query, request.entity_types, request.limit
-            )
-        if name == "get_item_details":
-            request = ItemDetailsRequest.model_validate(values)
-            return await provider.get_item_details(request.item_name_or_hash)
-        if name == "get_activity_details":
-            request = ActivityDetailsRequest.model_validate(values)
-            return await provider.get_activity_details(request.activity_name_or_hash)
-        if name == "get_quest_details":
-            request = QuestDetailsRequest.model_validate(values)
-            return await provider.get_quest_details(request.quest_name_or_hash)
-        if name == "find_item_source":
-            request = ItemDetailsRequest.model_validate(values)
-            return await provider.find_item_source(request.item_name_or_hash)
-        raise UnknownKnowledgeToolError(f"Unknown Destiny knowledge tool: {name}")
+    def provider_for_tool(self, name: str) -> DestinyKnowledgeProvider | None:
+        return next((value for value in self.providers if value.handles(name)), None)
+
+    def handles(self, name: str) -> bool:
+        return self.provider_for_tool(name) is not None
+
+    def category_for_tool(self, name: str) -> str | None:
+        provider = self.provider_for_tool(name)
+        return provider.knowledge_category if provider else None
+
+    def has_category(self, category: str) -> bool:
+        return any(provider.knowledge_category == category for provider in self.providers)
+
+    async def execute(self, name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
+        provider = self.provider_for_tool(name)
+        if provider is None:
+            raise UnknownKnowledgeToolError(f"Unknown Destiny knowledge tool: {name}")
+        return await provider.execute(name, arguments or {})
 
     async def index_status(self) -> dict[str, Any]:
-        provider = self.providers[0]
-        if isinstance(provider, ManifestKnowledgeProvider):
-            return await provider.index_status()
-        return {"source": provider.source_name, "indexed_definition_types": []}
+        statuses = await asyncio.gather(*(provider.status() for provider in self.providers))
+        manifest = next(
+            (value for value in statuses if value.get("source") == "bungie_manifest"), {}
+        )
+        return {
+            **manifest,
+            "source": "multiple" if len(statuses) > 1 else statuses[0].get("source"),
+            "provider_count": len(statuses),
+            "providers": statuses,
+        }
+
+
+BungieManifestProvider = ManifestKnowledgeProvider

@@ -1,0 +1,326 @@
+{
+  "version": "2026-09-12.1",
+  "guides": [
+    {
+      "guide_id": "wish-ender-acquisition",
+      "title": "Wish-Ender acquisition through Hunter's Remembrance",
+      "subject": "Wish-Ender",
+      "guide_type": "exotic_acquisition",
+      "aliases": ["wish ender", "wishender", "Hunter's Remembrance reward"],
+      "freshness": "semi_stable",
+      "summary": "Obtain Hunter's Remembrance, carry its Awoken Memento on the same character, purify three objectives through hidden events in The Shattered Throne, then claim Wish-Ender at Sjur Eido's statue after Vorgeth.",
+      "associated_entities": [
+        {"name": "Wish-Ender", "entity_type": "item", "entity_hash": 814876684},
+        {"name": "Hunter's Remembrance", "entity_type": "quest", "entity_hash": null},
+        {"name": "The Shattered Throne", "entity_type": "activity", "entity_hash": null}
+      ],
+      "prerequisites": [
+        "Own access to The Shattered Throne through the Forsaken Pack or the current equivalent entitlement.",
+        "Obtain or recover Hunter's Remembrance from Petra Venj or the Quest Archive.",
+        "Keep the Awoken Memento on the same character that is progressing the quest and leave room in that character's kinetic weapon inventory."
+      ],
+      "steps": [
+        {
+          "order": 1,
+          "title": "Purify the first memento in Erebus",
+          "description": "Take the Arc charge from the Dragon/Tower of the Deep roof to the empty-handed statue on the central Ingress roof. Defeat Theratos, Archersbane and then Querim, the Waking.",
+          "location": "Erebus, The Shattered Throne",
+          "activity": "The Shattered Throne",
+          "objective": "Defeat the first hidden Taken enemies and confirm the first purification objective advances.",
+          "tips": ["The event can now be summoned even after the normal Erebus encounter is complete."]
+        },
+        {
+          "order": 2,
+          "title": "Purify the second memento during the descent",
+          "description": "Carry the first charge across the Hallowed Ogre rafter room to its statue. In the slowed Thrallway, carry the second charge through the field, turn right after the exit veil, and deposit it to open Eriviks's side room. Defeat Eriviks, the Waking.",
+          "location": "The Descent and slowed Thrallway",
+          "activity": "The Shattered Throne",
+          "objective": "Complete both charge deposits and defeat Eriviks.",
+          "tips": ["If a charge is dropped, return to its original pedestal.", "Confirm objective progress before crossing the next load transition."]
+        },
+        {
+          "order": 3,
+          "title": "Purify the third memento during Vorgeth",
+          "description": "Complete one four-Mark collection to break Vorgeth's shield, defeat the Fleeting Shade near the exit stairs, carry its charge to the entrance-left statue, and defeat Xavoth, the Waking. Then finish Vorgeth.",
+          "location": "Vorgeth arena",
+          "activity": "The Shattered Throne",
+          "objective": "Defeat Xavoth and confirm the third purification objective.",
+          "tips": ["Prepare the four Keeper Wizards before starting the timed Mark collection."]
+        },
+        {
+          "order": 4,
+          "title": "Claim Wish-Ender",
+          "description": "After Vorgeth, interact with Sjur Eido's statue while all three quest objectives show purified. Follow the live quest prompt, including a return to Petra if requested.",
+          "location": "Sjur Eido's statue after Vorgeth",
+          "activity": "The Shattered Throne",
+          "objective": "Present the purified mementos and receive Wish-Ender.",
+          "tips": ["If there is no valid interaction, verify that this character owns both the quest and its Awoken Memento."]
+        }
+      ],
+      "reward": {"name": "Wish-Ender", "item_type": "Exotic Combat Bow"},
+      "encounters": [],
+      "farming": null,
+      "warnings": [
+        "Older guides describing three separate Dreaming Tokens and a Tangled Shore mission document a retired quest flow.",
+        "Trust the current quest objective names and progress returned for the player's character when they differ from an old guide."
+      ],
+      "factual_claims": [
+        "Hunter's Remembrance is the current quest route associated with Wish-Ender.",
+        "The three purification events are tied to Querim, Eriviks, and Xavoth inside The Shattered Throne.",
+        "Sjur Eido's statue after Vorgeth is the quest hand-in location."
+      ],
+      "claim_evidence": [
+        {"claim_key": "quest_structure", "value": "Hunter's Remembrance with one Awoken Memento and three objectives", "source_id": "vaexil-shattered-throne-2026", "authority": "structured_community", "updated_at": "2026-08-01T00:00:00Z"},
+        {"claim_key": "quest_structure", "value": "Legacy three-token and Tangled Shore mission flow", "source_id": "shacknews-wish-ender-2018", "authority": "editorial", "updated_at": "2018-10-08T00:00:00Z"}
+      ],
+      "sources": [
+        {
+          "source_id": "bungie-wish-ender-definition",
+          "title": "Wish-Ender (Exotic Combat Bow)",
+          "provider": "Bungie",
+          "source_url": "https://www.bungie.net/en/Explore/Detail/DestinyInventoryItemDefinition/814876684",
+          "retrieved_at": "2026-09-12T00:00:00Z",
+          "published_at": null,
+          "updated_at": null,
+          "relevant_section": "Item identity and Exotic catalyst socket",
+          "confidence": "high",
+          "relevance_score": 0.82,
+          "time_sensitive": false,
+          "factual_claims": ["Wish-Ender is an Exotic Combat Bow."]
+        },
+        {
+          "source_id": "bungie-update-9-1-5-3",
+          "title": "Destiny 2 Update 9.1.5.3",
+          "provider": "Bungie",
+          "source_url": "https://www.bungie.net/7/en/News/Article/destiny_update_9_1_5_3",
+          "retrieved_at": "2026-09-12T00:00:00Z",
+          "published_at": "2025-10-28T00:00:00Z",
+          "updated_at": "2025-10-28T00:00:00Z",
+          "relevant_section": "Activities / Dungeons",
+          "confidence": "high",
+          "relevance_score": 0.9,
+          "time_sensitive": false,
+          "factual_claims": ["Theratos and Querim can be summoned after the main Erebus encounter is completed."]
+        },
+        {
+          "source_id": "vaexil-shattered-throne-2026",
+          "title": "The Shattered Throne Dungeon Guide",
+          "provider": "Vaexil.tv",
+          "source_url": "https://destiny2.vaexil.tv/guides/dungeons/the-shattered-throne",
+          "retrieved_at": "2026-09-12T00:00:00Z",
+          "published_at": null,
+          "updated_at": "2026-08-01T00:00:00Z",
+          "relevant_section": "Wish-Ender Quest and Catalyst",
+          "confidence": "high",
+          "relevance_score": 1.0,
+          "time_sensitive": true,
+          "factual_claims": ["Current quest boundary and the three hidden-event routes inside the dungeon."]
+        },
+        {
+          "source_id": "shacknews-wish-ender-2018",
+          "title": "How to get the Wish-Ender Exotic bow in Destiny 2",
+          "provider": "Shacknews",
+          "source_url": "https://www.shacknews.com/article/107708/how-to-get-the-wish-ender-exotic-bow-in-destiny-2",
+          "retrieved_at": "2026-09-12T00:00:00Z",
+          "published_at": "2018-10-08T00:00:00Z",
+          "updated_at": "2018-10-08T00:00:00Z",
+          "relevant_section": "Hidden enemies and relic route only",
+          "confidence": "medium",
+          "relevance_score": 0.65,
+          "time_sensitive": true,
+          "factual_claims": ["Spatial corroboration for the Querim, Eriviks, and Xavoth events; its surrounding quest structure is obsolete."]
+        }
+      ]
+    },
+    {
+      "guide_id": "hunters-remembrance-walkthrough",
+      "title": "Hunter's Remembrance quest walkthrough",
+      "subject": "Hunter's Remembrance",
+      "guide_type": "quest_walkthrough",
+      "aliases": ["hunters remembrance", "hunter remembrance", "hunters rememberence", "wish ender quest"],
+      "freshness": "semi_stable",
+      "summary": "Progress the quest on the character carrying the Awoken Memento by completing the Querim, Eriviks, and Xavoth purification objectives in The Shattered Throne, then present them at Sjur Eido's statue.",
+      "associated_entities": [
+        {"name": "Hunter's Remembrance", "entity_type": "quest", "entity_hash": null},
+        {"name": "Wish-Ender", "entity_type": "item", "entity_hash": 814876684},
+        {"name": "The Shattered Throne", "entity_type": "activity", "entity_hash": null}
+      ],
+      "prerequisites": ["The quest and Awoken Memento must be on the character completing the dungeon objectives."],
+      "steps": [
+        {"order": 1, "title": "Querim purification", "description": "Deposit the Erebus rooftop Arc charge at the central statue and defeat Theratos and Querim.", "location": "Erebus", "activity": "The Shattered Throne", "objective": "First memento", "tips": []},
+        {"order": 2, "title": "Eriviks purification", "description": "Complete the linked charge carries in the rafter room and slowed Thrallway, enter the opened side room, and defeat Eriviks.", "location": "The Descent", "activity": "The Shattered Throne", "objective": "Second memento", "tips": ["Confirm progress before advancing."]},
+        {"order": 3, "title": "Xavoth purification", "description": "During Vorgeth, break the shield, defeat the Fleeting Shade, deposit its charge at the entrance-left statue, defeat Xavoth, then finish Vorgeth.", "location": "Vorgeth arena", "activity": "The Shattered Throne", "objective": "Third memento", "tips": []},
+        {"order": 4, "title": "Present the mementos", "description": "Interact with Sjur Eido's statue after Vorgeth and follow the current quest prompt.", "location": "Sjur Eido's statue", "activity": "The Shattered Throne", "objective": "Claim Wish-Ender", "tips": []}
+      ],
+      "reward": {"name": "Wish-Ender"},
+      "encounters": [],
+      "farming": null,
+      "warnings": ["Do not substitute legacy three-token quest instructions for the player's current objective state."],
+      "factual_claims": ["The quest has three purification objectives completed in dungeon order before the statue hand-in."],
+      "claim_evidence": [],
+      "sources": [
+        {
+          "source_id": "vaexil-shattered-throne-2026",
+          "title": "The Shattered Throne Dungeon Guide",
+          "provider": "Vaexil.tv",
+          "source_url": "https://destiny2.vaexil.tv/guides/dungeons/the-shattered-throne",
+          "retrieved_at": "2026-09-12T00:00:00Z",
+          "published_at": null,
+          "updated_at": "2026-08-01T00:00:00Z",
+          "relevant_section": "Wish-Ender Quest and Catalyst",
+          "confidence": "high",
+          "relevance_score": 1.0,
+          "time_sensitive": true,
+          "factual_claims": ["Current objective sequence and locations."]
+        },
+        {
+          "source_id": "bungie-update-9-1-5-3",
+          "title": "Destiny 2 Update 9.1.5.3",
+          "provider": "Bungie",
+          "source_url": "https://www.bungie.net/7/en/News/Article/destiny_update_9_1_5_3",
+          "retrieved_at": "2026-09-12T00:00:00Z",
+          "published_at": "2025-10-28T00:00:00Z",
+          "updated_at": "2025-10-28T00:00:00Z",
+          "relevant_section": "Activities / Dungeons",
+          "confidence": "high",
+          "relevance_score": 0.84,
+          "time_sensitive": false,
+          "factual_claims": ["The Erebus hidden Minotaurs remain summonable after normal encounter completion."]
+        }
+      ]
+    },
+    {
+      "guide_id": "shattered-throne-walkthrough",
+      "title": "The Shattered Throne practical walkthrough",
+      "subject": "The Shattered Throne",
+      "guide_type": "activity_walkthrough",
+      "aliases": ["shattered throne", "the shattered throne dungeon"],
+      "freshness": "stable",
+      "summary": "Traverse Erebus by following its changing symbol route, cross the Descent, defeat Vorgeth by collecting four Petitioner marks and extinguishing a sigil, then defeat Dul Incaru using Finite Thought from her three Knights.",
+      "associated_entities": [{"name": "The Shattered Throne", "entity_type": "activity", "entity_hash": null}],
+      "prerequisites": ["One to three players; the activity has no matchmaking."],
+      "steps": [],
+      "reward": null,
+      "encounters": [
+        {
+          "name": "Erebus",
+          "mechanics": ["Defeat each Architect group, read the symbol it reveals, and travel to the structure carrying that symbol.", "When the diving-bird symbol appears, return to the starting Ingress structure and clear it to open the descent."],
+          "failure_conditions": ["A full fireteam wipe resets the current darkness-zone encounter.", "Following a memorized symbol sequence can send the team to the wrong structure because the order changes."],
+          "tips": ["Call the symbol before moving and clear long-range Taken threats before exposed crossings."]
+        },
+        {
+          "name": "The Descent",
+          "mechanics": ["Cross the sniper bridge, Ogre rafter room, slowed Thrallway, and Taken launch-trap wall."],
+          "failure_conditions": ["Ogre blasts and launch traps can knock players from narrow paths.", "Normal sprint, jumping mobility, and health recovery are restricted in the slowed Thrallway."],
+          "tips": ["Move between broad safe landings, clear Ogres before crossing their firing lanes, and use direct healing in the Thrallway."]
+        },
+        {
+          "name": "Vorgeth, the Boundless Hunger",
+          "mechanics": ["Weaken and defeat four Keeper Wizards, collecting their timed Petitioner marks.", "The fourth mark becomes Petitioner’s Burden; use it at a central sigil to lower Vorgeth's shield and begin damage."],
+          "failure_conditions": ["The Mark timer expiring kills its holder.", "A carrier death loses the active collection.", "If Vorgeth survives, the shield and Keeper cycle return."],
+          "tips": ["Clear minor enemies and weaken all four Keepers before collecting the first Mark.", "Destroy Vorgeth's tracking darts during damage."]
+        },
+        {
+          "name": "Dul Incaru, the Eternal Return",
+          "mechanics": ["Defeat the three Fatesmith Knights and collect their Finite Thought orbs to damage Dul Incaru.", "Destroy crystals when they protect the Knights.", "Cleanse Finite Thought at the center brazier before its timer expires."],
+          "failure_conditions": ["Expired Finite Thought kills its holder.", "Uncontrolled Taken Psions multiply and overrun the arena.", "Fatesmith Knights can return after a cycle."],
+          "tips": ["Clear Psions first, weaken the Knights together, then collect all three orbs for a stronger damage phase."]
+        }
+      ],
+      "farming": null,
+      "warnings": ["Loot tiers, featured status, and weekly farming rules are volatile and require live knowledge."],
+      "factual_claims": ["Erebus uses a changing symbol route.", "Vorgeth damage requires Petitioner’s Burden.", "Finite Thought enables damage to Dul Incaru and must be cleansed before expiry."],
+      "claim_evidence": [],
+      "sources": [
+        {
+          "source_id": "vaexil-shattered-throne-2026",
+          "title": "The Shattered Throne Dungeon Guide",
+          "provider": "Vaexil.tv",
+          "source_url": "https://destiny2.vaexil.tv/guides/dungeons/the-shattered-throne",
+          "retrieved_at": "2026-09-12T00:00:00Z",
+          "published_at": null,
+          "updated_at": "2026-08-01T00:00:00Z",
+          "relevant_section": "Encounter walkthroughs",
+          "confidence": "high",
+          "relevance_score": 1.0,
+          "time_sensitive": false,
+          "factual_claims": ["Current encounter sequence, mechanics, failure states, and recovery steps."]
+        },
+        {
+          "source_id": "shacknews-shattered-throne-2018",
+          "title": "Shattered Throne dungeon guide",
+          "provider": "Shacknews",
+          "source_url": "https://www.shacknews.com/article/107607/shattered-throne-dungeon-guide-destiny-2",
+          "retrieved_at": "2026-09-12T00:00:00Z",
+          "published_at": "2018-09-28T00:00:00Z",
+          "updated_at": "2018-09-28T00:00:00Z",
+          "relevant_section": "Erebus, Vorgeth, and Dul Incaru mechanics",
+          "confidence": "medium",
+          "relevance_score": 0.78,
+          "time_sensitive": false,
+          "factual_claims": ["Independent corroboration of the base dungeon route and boss mechanics."]
+        }
+      ]
+    },
+    {
+      "guide_id": "vorgeth-mechanics",
+      "title": "Vorgeth encounter mechanics",
+      "subject": "Vorgeth, the Boundless Hunger",
+      "guide_type": "encounter_mechanics",
+      "aliases": ["vorgeth", "shattered throne ogre boss", "keeper of petitions"],
+      "freshness": "stable",
+      "summary": "Prepare all four Keeper Wizards, collect four timed Petitioner marks, extinguish one central sigil with Petitioner’s Burden, and damage Vorgeth while controlling tracking darts.",
+      "associated_entities": [{"name": "The Shattered Throne", "entity_type": "activity", "entity_hash": null}],
+      "prerequisites": [],
+      "steps": [],
+      "reward": null,
+      "encounters": [{"name": "Vorgeth, the Boundless Hunger", "mechanics": ["Four Keeper Wizard kills and pickups create Petitioner’s Burden.", "Extinguishing a sigil removes Vorgeth's shield for damage."], "failure_conditions": ["The timed Mark expires or the carrier dies.", "Vorgeth survives and the cycle resets."], "tips": ["Weaken every Keeper before the first pickup.", "Use pillars for cover and shoot tracking darts."]}],
+      "farming": null,
+      "warnings": [],
+      "factual_claims": ["Four timed marks are required before a sigil can be extinguished."],
+      "claim_evidence": [],
+      "sources": [{"source_id": "vaexil-shattered-throne-2026", "title": "The Shattered Throne Dungeon Guide", "provider": "Vaexil.tv", "source_url": "https://destiny2.vaexil.tv/guides/dungeons/the-shattered-throne", "retrieved_at": "2026-09-12T00:00:00Z", "published_at": null, "updated_at": "2026-08-01T00:00:00Z", "relevant_section": "Defeat Vorgeth", "confidence": "high", "relevance_score": 1.0, "time_sensitive": false, "factual_claims": ["Mechanic cycle and failure recovery."]}]
+    },
+    {
+      "guide_id": "dul-incaru-mechanics",
+      "title": "Dul Incaru encounter mechanics",
+      "subject": "Dul Incaru, the Eternal Return",
+      "guide_type": "encounter_mechanics",
+      "aliases": ["dul incaru", "dul incarnu", "shattered throne final boss", "finite thought"],
+      "freshness": "stable",
+      "summary": "Control multiplying Psions, weaken and defeat all three Fatesmith Knights, collect Finite Thought for boss damage, and cleanse the timed buff at the center brazier if Dul Incaru survives.",
+      "associated_entities": [{"name": "The Shattered Throne", "entity_type": "activity", "entity_hash": null}],
+      "prerequisites": [],
+      "steps": [],
+      "reward": null,
+      "encounters": [{"name": "Dul Incaru, the Eternal Return", "mechanics": ["Knight orbs grant stacking Finite Thought, enabling boss damage.", "Dul Incaru's crystals protect the Knights and must be destroyed.", "The center brazier cleanses Finite Thought."], "failure_conditions": ["Finite Thought expires.", "Psions multiply unchecked.", "Knights respawn after a cycle."], "tips": ["Clear Psions, weaken all Knights, then collect three orbs together."]}],
+      "farming": null,
+      "warnings": [],
+      "factual_claims": ["Finite Thought is both the damage-enabling buff and a lethal timer if not cleansed."],
+      "claim_evidence": [],
+      "sources": [{"source_id": "vaexil-shattered-throne-2026", "title": "The Shattered Throne Dungeon Guide", "provider": "Vaexil.tv", "source_url": "https://destiny2.vaexil.tv/guides/dungeons/the-shattered-throne", "retrieved_at": "2026-09-12T00:00:00Z", "published_at": null, "updated_at": "2026-08-01T00:00:00Z", "relevant_section": "Defeat Dul Incaru", "confidence": "high", "relevance_score": 1.0, "time_sensitive": false, "factual_claims": ["Mechanic cycle and failure recovery."]}]
+    },
+    {
+      "guide_id": "wish-ender-catalyst",
+      "title": "Wish-Ender catalyst acquisition",
+      "subject": "Wish-Ender Catalyst",
+      "guide_type": "catalyst",
+      "aliases": ["wish ender catalyst", "wishender catalyst"],
+      "freshness": "semi_stable",
+      "summary": "For an eligible Wish-Ender owner, the catalyst can drop randomly from The Shattered Throne's final encounter. It is not guaranteed; Bungie fixed a final-encounter drop issue in Update 9.7.0.1.",
+      "associated_entities": [{"name": "Wish-Ender", "entity_type": "item", "entity_hash": 814876684}, {"name": "The Shattered Throne", "entity_type": "activity", "entity_hash": null}],
+      "prerequisites": ["Own Wish-Ender."],
+      "steps": [{"order": 1, "title": "Complete the final encounter", "description": "Defeat Dul Incaru in The Shattered Throne for a chance at the catalyst.", "location": "Dul Incaru encounter", "activity": "The Shattered Throne", "objective": "Random catalyst drop", "tips": ["A completion does not guarantee the drop."]}],
+      "reward": {"name": "Wish-Ender Catalyst", "unlock_requirement": "Defeat targets with Wish-Ender after the catalyst drops."},
+      "encounters": [],
+      "farming": null,
+      "warnings": ["Drop chance and farming rules may change; the guide provider does not claim a drop rate."],
+      "factual_claims": ["The catalyst is associated with the dungeon's final encounter and is not guaranteed."],
+      "claim_evidence": [],
+      "sources": [
+        {"source_id": "bungie-update-9-7-0-1", "title": "Destiny 2 Update 9.7.0.1", "provider": "Bungie", "source_url": "https://www.bungie.net/7/en/News/Article/destiny_update_9_7_0_1", "retrieved_at": "2026-09-12T00:00:00Z", "published_at": "2026-06-16T00:00:00Z", "updated_at": "2026-06-16T00:00:00Z", "relevant_section": "Activities / Dungeons", "confidence": "high", "relevance_score": 0.95, "time_sensitive": true, "factual_claims": ["Bungie fixed the Shattered Throne final encounter not dropping the Wish-Ender catalyst."]},
+        {"source_id": "vaexil-shattered-throne-2026", "title": "The Shattered Throne Dungeon Guide", "provider": "Vaexil.tv", "source_url": "https://destiny2.vaexil.tv/guides/dungeons/the-shattered-throne", "retrieved_at": "2026-09-12T00:00:00Z", "published_at": null, "updated_at": "2026-08-01T00:00:00Z", "relevant_section": "Wish-Ender catalyst", "confidence": "high", "relevance_score": 1.0, "time_sensitive": true, "factual_claims": ["Eligibility, random final-encounter drop, and catalyst completion summary."]}
+      ]
+    }
+  ]
+}
