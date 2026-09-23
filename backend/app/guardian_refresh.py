@@ -15,6 +15,7 @@ from typing import Any, Protocol
 
 from app.bungie.guardian import GuardianService
 from app.config import Settings
+from app.content_progression import mentioned_content_names
 from app.models import (
     CharacterSummary,
     CollectionProgressSummary,
@@ -26,7 +27,7 @@ from app.models import (
 )
 
 logger = logging.getLogger(__name__)
-CACHE_SCHEMA_VERSION = 1
+CACHE_SCHEMA_VERSION = 2
 
 
 class GuardianSlice(StrEnum):
@@ -88,6 +89,7 @@ TOOL_SLICE_DEPENDENCIES: dict[str, set[GuardianSlice]] = {
     "get_character_summary": {GuardianSlice.PROFILE, GuardianSlice.EQUIPMENT},
     "get_equipped_loadout": {GuardianSlice.EQUIPMENT},
     "get_active_quests": {GuardianSlice.QUESTS_PROGRESS},
+    "get_content_progression": {GuardianSlice.PROFILE, GuardianSlice.QUESTS_PROGRESS},
     "get_available_activities": {GuardianSlice.PROFILE, GuardianSlice.QUESTS_PROGRESS},
     "get_recent_activities": {GuardianSlice.ACTIVITY_HISTORY},
     "get_progression": {
@@ -100,6 +102,14 @@ TOOL_SLICE_DEPENDENCIES: dict[str, set[GuardianSlice]] = {
         GuardianSlice.EQUIPMENT,
     },
     "get_build_details": {
+        GuardianSlice.EQUIPMENT,
+        GuardianSlice.INVENTORY,
+    },
+    "analyze_current_build": {
+        GuardianSlice.EQUIPMENT,
+        GuardianSlice.INVENTORY,
+    },
+    "find_build_alternatives": {
         GuardianSlice.EQUIPMENT,
         GuardianSlice.INVENTORY,
     },
@@ -367,7 +377,8 @@ class GuardianRefreshService:
         text = prompt.casefold()
         intents: set[RefreshIntent] = set()
         if re.search(
-            r"\b(what should i do|what next|do next|work on|i have \d+ minutes?)\b",
+            r"\b(what should i do|what next|do next|work on|worth doing|"
+            r"i have \d+ minutes?)\b",
             text,
         ):
             intents.add(RefreshIntent.WHAT_SHOULD_I_DO)
@@ -375,7 +386,11 @@ class GuardianRefreshService:
             intents.add(RefreshIntent.BUILD_ANALYSIS)
         elif re.search(r"\b(equipped|loadout|wearing|currently using|current gear)\b", text):
             intents.add(RefreshIntent.CURRENT_LOADOUT)
-        if re.search(r"\b(quest|objective|quest progress|did i finish)\b", text):
+        if re.search(
+            r"\b(quest|objective|quest progress|did i finish|have i (?:completed|finished)|"
+            r"how far am i|campaign)\b",
+            text,
+        ) or mentioned_content_names(prompt):
             intents.add(RefreshIntent.QUEST_STATUS)
         if re.search(r"\b(inventory|vault|do i own|did i get|weapon|armor)\b", text):
             intents.add(RefreshIntent.CURRENT_INVENTORY)

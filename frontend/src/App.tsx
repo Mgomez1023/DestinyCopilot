@@ -175,6 +175,7 @@ export default function App() {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
+  const [chatStatus, setChatStatus] = useState<string | null>(null);
   const [debugOpen, setDebugOpen] = useState(false);
   const [toolName, setToolName] = useState(guardianToolPresets[0].name);
   const [toolArguments, setToolArguments] = useState(
@@ -209,6 +210,15 @@ export default function App() {
   const messageEnd = useRef<HTMLDivElement>(null);
   const accountDrawer = useRef<HTMLElement>(null);
   const accountMenuButton = useRef<HTMLButtonElement>(null);
+  const activeChat = useRef<AbortController | null>(null);
+  const chatRequestId = useRef(0);
+
+  useEffect(() => {
+    return () => {
+      chatRequestId.current += 1;
+      activeChat.current?.abort();
+    };
+  }, []);
 
   useEffect(() => {
     const query = new URLSearchParams(window.location.search);
@@ -318,7 +328,7 @@ export default function App() {
   useEffect(() => {
     const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     messageEnd.current?.scrollIntoView({ behavior: reducedMotion ? "auto" : "smooth" });
-  }, [messages, sending]);
+  }, [messages, sending, chatStatus]);
 
   useEffect(() => {
     if (!auth?.authenticated || !refreshStatus?.refreshing) return;
@@ -340,17 +350,58 @@ export default function App() {
     const clean = text.trim();
     if (!clean || sending || !guardian) return;
     const userMessage: ChatMessage = { role: "user", content: clean };
-    const priorHistory = messages.slice(-10);
-    setMessages((current) => [...current, userMessage]);
+    const assistantMessage: ChatMessage = { role: "assistant", content: "" };
+    const priorHistory = messages.slice(-12);
+    activeChat.current?.abort();
+    const controller = new AbortController();
+    activeChat.current = controller;
+    const requestId = ++chatRequestId.current;
+    setMessages((current) => [...current, userMessage, assistantMessage]);
     setInput("");
     setSending(true);
+    setChatStatus("Checking your Guardian…");
     setError(null);
+    let completed = false;
     try {
-      const result = await api.chat(clean, priorHistory);
-      setMessages((current) => [
-        ...current,
-        { role: "assistant", content: result.message },
-      ]);
+      await api.chatStream(
+        clean,
+        priorHistory,
+        {
+          onEvent: (event) => {
+            if (chatRequestId.current !== requestId) return;
+            if (event.type === "status") {
+              setChatStatus(event.label);
+              return;
+            }
+            if (event.type === "message_delta") {
+              setChatStatus(null);
+              setMessages((current) => {
+                const next = [...current];
+                const last = next[next.length - 1];
+                if (last?.role !== "assistant") return current;
+                next[next.length - 1] = { ...last, content: last.content + event.delta };
+                return next;
+              });
+              return;
+            }
+            if (event.type === "sources") {
+              setMessages((current) => {
+                const next = [...current];
+                const last = next[next.length - 1];
+                if (last?.role !== "assistant") return current;
+                next[next.length - 1] = { ...last, sources: event.sources };
+                return next;
+              });
+              return;
+            }
+            if (event.type === "completed") {
+              completed = true;
+              setChatStatus(null);
+            }
+          },
+        },
+        controller.signal,
+      );
       if (auth?.debug_enabled) {
         try {
           setChatTrace(await api.latestChatTrace());
@@ -359,9 +410,19 @@ export default function App() {
         }
       }
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "The Copilot could not respond.");
+      if (chatRequestId.current !== requestId) return;
+      setMessages((current) =>
+        current[current.length - 1]?.role === "assistant" ? current.slice(0, -1) : current,
+      );
+      if (!(caught instanceof DOMException && caught.name === "AbortError")) {
+        setError(caught instanceof Error ? caught.message : "The Copilot could not respond.");
+      }
     } finally {
-      setSending(false);
+      if (chatRequestId.current === requestId) {
+        if (!completed) setChatStatus(null);
+        activeChat.current = null;
+        setSending(false);
+      }
     }
   }
 
@@ -371,6 +432,11 @@ export default function App() {
   }
 
   async function disconnect() {
+    chatRequestId.current += 1;
+    activeChat.current?.abort();
+    activeChat.current = null;
+    setSending(false);
+    setChatStatus(null);
     try {
       await api.logout();
       setAuth((current) =>
@@ -822,19 +888,43 @@ export default function App() {
                 </div>
               </div>
             ) : (
-              <div className="message-list" aria-live="polite">
+              <div className="message-list">
                 {messages.map((message, index) => (
                   <div className={`message ${message.role}`} key={`${message.role}-${index}`}>
                     <span className="message-label">{message.role === "user" ? "You" : "Copilot"}</span>
-                    <p>{message.content}</p>
+                    {message.role === "assistant" && !message.content && sending ? (
+                      <div
+                        className="stream-status"
+                        role="status"
+                        aria-live="polite"
+                        aria-atomic="true"
+                      >
+                        <span>{chatStatus ?? "Working…"}</span>
+                        <span className="status-dots" aria-hidden="true"><i /><i /><i /></span>
+                      </div>
+                    ) : (
+                      <p>{message.content}</p>
+                    )}
+                    {message.sources && message.sources.length > 0 && (
+                      <div className="message-sources">
+                        <span>Sources</span>
+                        <ul>
+                          {message.sources.map((source) => (
+                            <li key={source.url}>
+                              <a href={source.url} target="_blank" rel="noopener noreferrer">
+                                <span>{source.title}</span>
+                                {source.domain &&
+                                  source.domain.toLowerCase() !== source.title.toLowerCase() && (
+                                    <small>{source.domain}</small>
+                                  )}
+                              </a>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
                   </div>
                 ))}
-                {sending && (
-                  <div className="message assistant typing">
-                    <span className="message-label">Copilot</span>
-                    <p><span /><span /><span /></p>
-                  </div>
-                )}
                 <div ref={messageEnd} />
               </div>
             )}

@@ -10,6 +10,7 @@ from pydantic import ValidationError
 
 from app.bungie.client import BUNGIE_ROOT_URL, BungieAPIError, BungieClient
 from app.bungie.manifest import DefinitionResolver
+from app.content_progression import terminal_record_hashes
 from app.models import (
     AvailableActivitySummary,
     CharacterSummary,
@@ -27,6 +28,7 @@ from app.models import (
     QuestSummary,
     RecentActivitySummary,
     RecordProgressSummary,
+    RecordSummary,
     SocketedPlugSummary,
 )
 
@@ -63,6 +65,8 @@ QUEST_ITEM_TYPES = {12, 15, 26}
 ACTIVITY_LIMIT_PER_CHARACTER = 30
 RECENT_ACTIVITY_LIMIT_PER_CHARACTER = 25
 NEAR_RECORD_LIMIT = 12
+RETAINED_RECORD_LIMIT = 64
+RECORD_OBJECTIVE_LIMIT = 4
 ACTIVITY_DIFFICULTY_NAMES = {
     0: "Trivial",
     1: "Easy",
@@ -158,6 +162,49 @@ def _iter_component_map(
             values = (component or {}).get(leaf_key, {})
             if isinstance(values, dict):
                 yield from ((str(key), value) for key, value in values.items())
+
+
+def _iter_scoped_records(
+    payload: dict[str, Any],
+) -> Iterable[tuple[int, dict[str, Any], str, str | None]]:
+    profile_values = _component_data(payload, "profileRecords", {}).get("records", {})
+    if isinstance(profile_values, dict):
+        for record_hash, value in profile_values.items():
+            yield int(record_hash), value, "profile", None
+    character_components = _component_data(payload, "characterRecords", {})
+    if isinstance(character_components, dict):
+        for character_id, component in character_components.items():
+            values = (component or {}).get("records", {})
+            if isinstance(values, dict):
+                for record_hash, value in values.items():
+                    yield int(record_hash), value, "character", str(character_id)
+
+
+def _retained_record_candidates(
+    profile: dict[str, Any], limit: int
+) -> tuple[list[tuple[int, dict[str, Any], str, str | None]], int]:
+    """Retain mapped records first, then completed visible records, within a hard cap.
+
+    Unrelated incomplete Records are deliberately excluded so the normalized context does
+    not become a compacted copy of the full Bungie Records payload.
+    """
+    terminal_hashes = terminal_record_hashes()
+    candidates = [
+        value
+        for value in _iter_scoped_records(profile)
+        if not int(value[1].get("state", 0)) & 16
+        and (value[0] in terminal_hashes or not int(value[1].get("state", 0)) & 4)
+    ]
+    candidates.sort(
+        key=lambda value: (
+            value[0] not in terminal_hashes,
+            bool(int(value[1].get("state", 0)) & 4),
+            value[2],
+            value[3] or "",
+            value[0],
+        )
+    )
+    return candidates[:limit], len(candidates)
 
 
 def _collect_hashes(value: Any, key_name: str) -> set[int]:
@@ -441,6 +488,8 @@ class GuardianNormalizer:
         }
         near_records = _near_record_candidates(profile, NEAR_RECORD_LIMIT)
         objective_sources["nearRecords"] = [value[2] for value in near_records]
+        retained_records, _ = _retained_record_candidates(profile, RETAINED_RECORD_LIMIT)
+        objective_sources["retainedRecords"] = [value[1] for value in retained_records]
         objective_hashes = _collect_hashes(objective_sources, "objectiveHash")
         activity_sources = {
             "progressions": profile.get("characterProgressions"),
@@ -462,6 +511,7 @@ class GuardianNormalizer:
         )
         season_hashes: set[int] = set()
         record_hashes = {value[1] for value in near_records}
+        record_hashes.update(value[0] for value in retained_records)
 
         for raw in _component_data(profile, "characters", {}).values():
             if raw.get("classHash"):
@@ -522,9 +572,7 @@ class GuardianNormalizer:
             if value.get("activityTypeHash")
         }
         self.definitions.setdefault("DestinyDestinationDefinition", {}).update(
-            await self._safe_resolve_many(
-                "DestinyDestinationDefinition", referenced_destinations
-            )
+            await self._safe_resolve_many("DestinyDestinationDefinition", referenced_destinations)
         )
         self.resolver.release_table("DestinyDestinationDefinition")
         self.definitions["DestinyActivityTypeDefinition"] = await self._safe_resolve_many(
@@ -654,6 +702,7 @@ class GuardianNormalizer:
         instance_id = str(raw["itemInstanceId"]) if raw.get("itemInstanceId") else None
         instances = _item_component_data(profile, "instances")
         instance = instances.get(instance_id, {}) if instance_id else {}
+        instance_data_available = bool(instance_id and instance_id in instances)
         primary_stat = instance.get("primaryStat") or {}
         primary_value = _optional_nonnegative(primary_stat.get("value"))
         power = primary_value if item_type_value in {2, 3} and primary_value is not None else None
@@ -666,6 +715,7 @@ class GuardianNormalizer:
 
         stats: list[ItemStatSummary] = []
         stats_component = _item_component_data(profile, "stats")
+        stat_data_available = bool(instance_id and instance_id in stats_component)
         raw_stats = (
             (stats_component.get(instance_id, {}) or {}).get("stats", {}) if instance_id else {}
         )
@@ -677,6 +727,7 @@ class GuardianNormalizer:
         socketed_plugs: list[str] = []
         socketed_plug_details: list[SocketedPlugSummary] = []
         socket_components = _item_component_data(profile, "sockets")
+        socket_data_available = bool(instance_id and instance_id in socket_components)
         sockets = (
             (socket_components.get(instance_id, {}) or {}).get("sockets", []) if instance_id else []
         )
@@ -725,6 +776,15 @@ class GuardianNormalizer:
             is_crafted=bool(state & 8),
             energy_capacity=_optional_nonnegative(energy.get("energyCapacity")),
             energy_used=_optional_nonnegative(energy.get("energyUsed")),
+            instance_data_available=instance_data_available,
+            socket_data_available=socket_data_available if include_details else None,
+            stat_data_available=stat_data_available if include_details else None,
+            socket_count=len(sockets) if socket_data_available and include_details else None,
+            empty_socket_count=(
+                sum(not socket.get("plugHash") for socket in sockets)
+                if socket_data_available and include_details
+                else None
+            ),
             stats=stats,
             socketed_plugs=socketed_plugs,
             socketed_plug_details=socketed_plug_details,
@@ -1184,10 +1244,44 @@ class GuardianNormalizer:
             record_definition = self._definition("DestinyRecordDefinition", record_hash)
             record_name = _display(record_definition)[0] if record_definition else "Record"
             near_completion.append(self._normalize_objective(objective, prefix=record_name))
+        retained, retained_total = _retained_record_candidates(profile, RETAINED_RECORD_LIMIT)
+        record_summaries: list[RecordSummary] = []
+        for record_hash, raw, scope, character_id in retained:
+            definition = self._definition("DestinyRecordDefinition", record_hash)
+            name, description, _ = _display(definition) if definition else ("Unknown", None, None)
+            raw_objectives = [
+                value
+                for value in (
+                    (raw.get("objectives", []) or []) + (raw.get("intervalObjectives", []) or [])
+                )
+                if value.get("visible", True)
+            ][:RECORD_OBJECTIVE_LIMIT]
+            objectives_complete = (
+                all(bool(value["complete"]) for value in raw_objectives)
+                if raw_objectives and all("complete" in value for value in raw_objectives)
+                else None
+            )
+            state = int(raw.get("state", 0))
+            record_summaries.append(
+                RecordSummary(
+                    record_hash=record_hash,
+                    name=name,
+                    description=description[:500] if description else None,
+                    scope=scope,
+                    character_id=character_id,
+                    completed=not bool(state & 4),
+                    redeemed=bool(state & 1),
+                    objectives_complete=objectives_complete,
+                    objectives=[self._normalize_objective(value) for value in raw_objectives],
+                    manifest_resolved=bool(definition),
+                )
+            )
         return RecordProgressSummary(
             total_visible=len(visible),
             completed=completed,
             near_completion=near_completion,
+            records=record_summaries,
+            records_truncated=retained_total > len(record_summaries),
         )
 
     def _normalize_crafting(self, profile: dict[str, Any]) -> CraftingProgressSummary:

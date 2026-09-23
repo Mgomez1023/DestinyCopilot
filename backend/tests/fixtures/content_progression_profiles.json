@@ -1,0 +1,89 @@
+{
+  "version": 1,
+  "description": "Sanitized normalized application-level progression snapshots. IDs are synthetic fixtures.",
+  "cases": [
+    {
+      "id": "campaign_active_on_titan",
+      "query_character": "Titan",
+      "content_name": "The Edge of Fate",
+      "characters": [
+        {"character_id": "fixture-titan", "class_name": "Titan", "quests": [{"quest_hash": 1, "name": "The Edge of Fate", "step_name": "World Tier: Brave", "character_id": "fixture-titan"}]}
+      ],
+      "records": [],
+      "expected": {"status": "in_progress", "completion_state": "UNKNOWN", "profile_completion_state": "UNKNOWN", "completion_scope": "unknown", "active_quest_state": "KNOWN_TRUE"}
+    },
+    {
+      "id": "character_scoped_terminal_completion",
+      "query_character": "Titan",
+      "content_name": "The Edge of Fate",
+      "characters": [{"character_id": "fixture-titan", "class_name": "Titan", "quests": []}],
+      "records": [{"record_hash": 3854636015, "name": "At Fate's Edge", "description": "Complete the main quest \"The Edge of Fate\" on Kepler.", "scope": "character", "character_id": "fixture-titan", "completed": true, "objectives_complete": true, "manifest_resolved": true}],
+      "expected": {"status": "completed", "completion_state": "KNOWN_TRUE", "profile_completion_state": "UNKNOWN", "completion_scope": "character", "active_quest_state": "NOT_RETURNED"}
+    },
+    {
+      "id": "profile_scoped_terminal_completion",
+      "query_character": "Titan",
+      "content_name": "The Final Shape",
+      "characters": [{"character_id": "fixture-titan", "class_name": "Titan", "quests": []}],
+      "records": [{"record_hash": 1580882372, "name": "The Final Shape - Legendary", "description": "Complete all campaign missions on Legendary difficulty.", "scope": "profile", "completed": true, "objectives_complete": true, "manifest_resolved": true}],
+      "expected": {"status": "unknown", "completion_state": "UNKNOWN", "profile_completion_state": "KNOWN_TRUE", "completion_scope": "profile", "active_quest_state": "NOT_RETURNED"}
+    },
+    {
+      "id": "no_active_or_terminal_evidence",
+      "query_character": "Titan",
+      "content_name": "The Final Shape",
+      "characters": [{"character_id": "fixture-titan", "class_name": "Titan", "quests": []}],
+      "records": [],
+      "expected": {"status": "unknown", "completion_state": "UNKNOWN", "profile_completion_state": "UNKNOWN", "completion_scope": "unknown", "active_quest_state": "NOT_RETURNED"}
+    },
+    {
+      "id": "conflicting_active_and_character_completion",
+      "query_character": "Titan",
+      "content_name": "The Edge of Fate",
+      "characters": [{"character_id": "fixture-titan", "class_name": "Titan", "quests": [{"quest_hash": 2, "name": "The Edge of Fate", "step_name": "Replay", "character_id": "fixture-titan"}]}],
+      "records": [{"record_hash": 3854636015, "name": "At Fate's Edge", "description": "Complete the main quest \"The Edge of Fate\" on Kepler.", "scope": "character", "character_id": "fixture-titan", "completed": true, "objectives_complete": true, "manifest_resolved": true}],
+      "expected": {"status": "unknown", "completion_state": "UNKNOWN", "profile_completion_state": "UNKNOWN", "completion_scope": "character", "active_quest_state": "KNOWN_TRUE"}
+    },
+    {
+      "id": "campaign_active_only_on_hunter",
+      "query_character": "Titan",
+      "content_name": "The Edge of Fate",
+      "characters": [{"character_id": "fixture-titan", "class_name": "Titan", "quests": []}, {"character_id": "fixture-hunter", "class_name": "Hunter", "quests": [{"quest_hash": 3, "name": "The Edge of Fate", "character_id": "fixture-hunter"}]}],
+      "records": [],
+      "expected": {"status": "unknown", "completion_state": "UNKNOWN", "profile_completion_state": "UNKNOWN", "completion_scope": "unknown", "active_quest_state": "NOT_RETURNED"}
+    },
+    {
+      "id": "final_shape_vs_edge_different_scopes",
+      "query_character": "Titan",
+      "content_name": null,
+      "characters": [{"character_id": "fixture-titan", "class_name": "Titan", "quests": [{"quest_hash": 4, "name": "The Edge of Fate", "step_name": "World Tier: Brave", "character_id": "fixture-titan"}]}],
+      "records": [{"record_hash": 1580882372, "name": "The Final Shape - Legendary", "description": "Complete all campaign missions on Legendary difficulty.", "scope": "profile", "completed": true, "objectives_complete": true, "manifest_resolved": true}],
+      "expected_contents": {"The Final Shape": {"status": "unknown", "profile_completion_state": "KNOWN_TRUE", "completion_scope": "profile"}, "The Edge of Fate": {"status": "in_progress", "profile_completion_state": "UNKNOWN", "completion_scope": "unknown"}}
+    },
+    {
+      "id": "missing_records_component",
+      "query_character": "Titan",
+      "content_name": "The Final Shape",
+      "characters": [{"character_id": "fixture-titan", "class_name": "Titan", "quests": []}],
+      "records": [],
+      "unavailable_components": {"Records": "Bungie did not return Records."},
+      "expected": {"status": "unknown", "completion_state": "UNKNOWN", "profile_completion_state": "UNKNOWN", "completion_scope": "unknown", "active_quest_state": "NOT_RETURNED"}
+    },
+    {
+      "id": "completed_terminal_record_incomplete_objectives",
+      "query_character": "Titan",
+      "content_name": "The Edge of Fate",
+      "characters": [{"character_id": "fixture-titan", "class_name": "Titan", "quests": []}],
+      "records": [{"record_hash": 3854636015, "name": "At Fate's Edge", "description": "Complete the main quest \"The Edge of Fate\" on Kepler.", "scope": "character", "character_id": "fixture-titan", "completed": true, "objectives_complete": false, "manifest_resolved": true, "objectives": [{"objective_hash": 9, "name": "Complete the main quest", "complete": false}]}],
+      "expected": {"status": "unknown", "completion_state": "UNKNOWN", "profile_completion_state": "UNKNOWN", "completion_scope": "unknown", "active_quest_state": "NOT_RETURNED"}
+    },
+    {
+      "id": "unsupported_content",
+      "query_character": "Titan",
+      "content_name": "Curse of Osiris",
+      "characters": [{"character_id": "fixture-titan", "class_name": "Titan", "quests": []}],
+      "records": [],
+      "expected": {"status": "unknown", "completion_state": "UNKNOWN", "profile_completion_state": "UNKNOWN", "completion_scope": "unknown", "active_quest_state": "NOT_RETURNED", "supported": false}
+    }
+  ]
+}

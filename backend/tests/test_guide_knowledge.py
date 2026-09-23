@@ -114,9 +114,7 @@ def test_exotic_acquisition_guide_is_practical_and_bounded() -> None:
 
 
 def test_quest_walkthrough_and_activity_walkthrough() -> None:
-    quest = asyncio.run(
-        provider().get_guide("Hunter's Remembrance", "quest_walkthrough")
-    )
+    quest = asyncio.run(provider().get_guide("Hunter's Remembrance", "quest_walkthrough"))
     activity = asyncio.run(
         provider().get_guide("Walk me through Shattered Throne", "activity_walkthrough")
     )
@@ -200,15 +198,12 @@ def test_stale_semi_stable_information_warns() -> None:
     result = asyncio.run(guides.get_guide("Wish-Ender", "exotic_acquisition"))
 
     assert any(
-        "current availability should be re-verified" in value
-        for value in result["warnings"]
+        "current availability should be re-verified" in value for value in result["warnings"]
     )
 
 
 def test_volatile_information_bypasses_guide_cache() -> None:
-    result = asyncio.run(
-        provider().get_guide("What's the featured dungeon this week?")
-    )
+    result = asyncio.run(provider().get_guide("What's the featured dungeon this week?"))
 
     assert result["found"] is False
     assert result["freshness"] == "volatile"
@@ -300,7 +295,8 @@ class FakeOpenAI:
 def test_general_acquisition_orchestration_uses_manifest_and_guide() -> None:
     knowledge = FakeCombinedKnowledge()
     service = RecommendationService(
-        Settings(openai_api_key="test-key"), knowledge  # type: ignore[arg-type]
+        Settings(openai_api_key="test-key"),
+        knowledge,  # type: ignore[arg-type]
     )
     service.client = FakeOpenAI(
         [
@@ -326,6 +322,7 @@ def test_general_acquisition_orchestration_uses_manifest_and_guide() -> None:
         "manifest": True,
         "guide_provider": True,
         "live_provider": False,
+        "web_research": False,
     }
     assert service.latest_trace()["tool_trace"] == [
         {
@@ -344,7 +341,8 @@ def test_general_acquisition_orchestration_uses_manifest_and_guide() -> None:
 def test_personalized_orchestration_uses_all_grounding_categories() -> None:
     knowledge = FakeCombinedKnowledge()
     service = RecommendationService(
-        Settings(openai_api_key="test-key"), knowledge  # type: ignore[arg-type]
+        Settings(openai_api_key="test-key"),
+        knowledge,  # type: ignore[arg-type]
     )
     service.client = FakeOpenAI(
         [
@@ -375,6 +373,7 @@ def test_personalized_orchestration_uses_all_grounding_categories() -> None:
         "manifest": True,
         "guide_provider": True,
         "live_provider": False,
+        "web_research": False,
     }
     assert service.latest_trace()["tool_trace"] == [
         {"name": "get_active_quests", "category": "guardian"},
@@ -411,7 +410,8 @@ def test_volatile_query_cannot_be_satisfied_by_non_live_sources_or_model() -> No
     for attempted_calls in attempted_tool_sequences:
         knowledge = FakeCombinedKnowledge()
         service = RecommendationService(
-            Settings(openai_api_key="test-key"), knowledge  # type: ignore[arg-type]
+            Settings(openai_api_key="test-key"),
+            knowledge,  # type: ignore[arg-type]
         )
         fake = FakeOpenAI(attempted_calls)
         service.client = fake
@@ -486,7 +486,8 @@ def test_model_cannot_answer_volatile_query_without_successful_live_tool_result(
 
     knowledge = FakeRegisteredLiveKnowledge()
     service = RecommendationService(
-        Settings(openai_api_key="test-key"), knowledge  # type: ignore[arg-type]
+        Settings(openai_api_key="test-key"),
+        knowledge,  # type: ignore[arg-type]
     )
     fake = FakeOpenAI([])
     service.client = fake
@@ -507,7 +508,8 @@ def test_model_cannot_answer_volatile_query_without_successful_live_tool_result(
 def test_follow_up_keeps_conversation_context_for_referent() -> None:
     knowledge = FakeCombinedKnowledge()
     service = RecommendationService(
-        Settings(openai_api_key="test-key"), knowledge  # type: ignore[arg-type]
+        Settings(openai_api_key="test-key"),
+        knowledge,  # type: ignore[arg-type]
     )
     fake = FakeOpenAI(
         [

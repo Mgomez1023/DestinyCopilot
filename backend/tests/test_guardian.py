@@ -52,9 +52,7 @@ def test_profile_and_activity_history_use_official_read_endpoints() -> None:
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
             client = BungieClient(settings, http)
             await client.get_profile(3, "membership", "access-token")
-            await client.get_activity_history(
-                3, "membership", "character", "access-token", count=5
-            )
+            await client.get_activity_history(3, "membership", "character", "access-token", count=5)
 
     asyncio.run(exercise())
 
@@ -128,7 +126,23 @@ def test_normalizes_private_profile_components_without_raw_envelopes() -> None:
         "DestinyDestinationDefinition": {602: _definition("Cosmodrome")},
         "DestinyMilestoneDefinition": {700: _definition("Weekly Test")},
         "DestinyProgressionDefinition": {800: _definition("Season Rank")},
-        "DestinyRecordDefinition": {900: _definition("Almost There")},
+        "DestinyRecordDefinition": {
+            900: _definition("Almost There"),
+            1580882372: {
+                "displayProperties": {
+                    "name": "The Final Shape - Legendary",
+                    "description": "Complete all campaign missions on Legendary difficulty.",
+                },
+                "scope": 0,
+            },
+            3854636015: {
+                "displayProperties": {
+                    "name": "At Fate's Edge",
+                    "description": 'Complete the main quest "The Edge of Fate" on Kepler.',
+                },
+                "scope": 1,
+            },
+        },
     }
     profile = {
         "profile": {
@@ -276,9 +290,7 @@ def test_normalizes_private_profile_components_without_raw_envelopes() -> None:
                     }
                 }
             },
-            "sockets": {
-                "data": {"subclass-item": {"sockets": [{"plugHash": 401}]}}
-            },
+            "sockets": {"data": {"subclass-item": {"sockets": [{"plugHash": 401}]}}},
             "stats": {"data": {}},
         },
         "profileCollectibles": {
@@ -305,11 +317,42 @@ def test_normalizes_private_profile_components_without_raw_envelopes() -> None:
                                 "visible": True,
                             }
                         ],
+                    },
+                    "1580882372": {
+                        "state": 1,
+                        "objectives": [
+                            {
+                                "objectiveHash": 500,
+                                "progress": 10,
+                                "completionValue": 10,
+                                "complete": True,
+                                "visible": True,
+                            }
+                        ],
+                    },
+                }
+            }
+        },
+        "characterRecords": {
+            "data": {
+                "c1": {
+                    "records": {
+                        "3854636015": {
+                            "state": 0,
+                            "objectives": [
+                                {
+                                    "objectiveHash": 500,
+                                    "progress": 10,
+                                    "completionValue": 10,
+                                    "complete": True,
+                                    "visible": True,
+                                }
+                            ],
+                        }
                     }
                 }
             }
         },
-        "characterRecords": {"data": {}},
         "characterCraftables": {
             "data": {
                 "c1": {
@@ -360,6 +403,10 @@ def test_normalizes_private_profile_components_without_raw_envelopes() -> None:
     assert context.characters[0].subclass.name == "Solar"
     assert context.characters[0].subclass.power is None
     assert context.characters[0].subclass.socketed_plugs == ["Test Perk"]
+    assert context.characters[0].subclass.instance_data_available is True
+    assert context.characters[0].subclass.socket_data_available is True
+    assert context.characters[0].subclass.socket_count == 1
+    assert context.characters[0].subclass.empty_socket_count == 0
     assert context.characters[0].quests[0].objectives[0].progress_percent == 80.0
     assert context.characters[0].available_activities[0].name == "Test Strike"
     assert context.characters[0].available_activities[0].activity_type == "Strike"
@@ -370,6 +417,14 @@ def test_normalizes_private_profile_components_without_raw_envelopes() -> None:
     assert context.characters[0].recent_activities[0].difficulty == "Hard"
     assert context.collectibles.model_dump() == {"total_visible": 2, "acquired": 1}
     assert context.records.near_completion[0].name == "Almost There: Defeat targets"
+    records = {value.record_hash: value for value in context.records.records}
+    assert records[1580882372].scope == "profile"
+    assert records[1580882372].character_id is None
+    assert records[1580882372].completed is True
+    assert records[1580882372].redeemed is True
+    assert records[3854636015].scope == "character"
+    assert records[3854636015].character_id == "c1"
+    assert records[3854636015].completed is True
     assert context.crafting.requirements_met == 1
     assert context.crafting.incomplete_pattern_names == ["Pattern Two"]
     serialized = context.model_dump()
@@ -385,12 +440,29 @@ def test_missing_private_components_are_reported_instead_of_guessed() -> None:
     membership = {"membershipId": "123", "membershipType": 3, "displayName": "Guardian"}
 
     context = asyncio.run(
-        GuardianNormalizer(cast(Any, FakeResolver({}))).normalize(
-            {}, membership, profile
-        )
+        GuardianNormalizer(cast(Any, FakeResolver({}))).normalize({}, membership, profile)
     )
 
     assert context.inventory.total_items == 0
     assert context.characters == []
     assert "ProfileInventories" in context.data_availability.unavailable_components
     assert "ItemObjectives" in context.data_availability.unavailable_components
+
+
+def test_record_identity_retention_is_bounded_and_prioritizes_terminal_rules() -> None:
+    completed = {str(value): {"state": 0} for value in range(1000, 1070)}
+    completed["3854636015"] = {"state": 4}
+    completed["999"] = {"state": 4}
+    profile = {
+        "profileRecords": {"data": {"records": completed}},
+        "characterRecords": {"data": {}},
+    }
+    normalizer = GuardianNormalizer(cast(Any, FakeResolver({})))
+
+    result = normalizer._normalize_records(profile)
+
+    assert len(result.records) == 64
+    assert result.records_truncated is True
+    terminal = next(value for value in result.records if value.record_hash == 3854636015)
+    assert terminal.completed is False
+    assert all(value.record_hash != 999 for value in result.records)

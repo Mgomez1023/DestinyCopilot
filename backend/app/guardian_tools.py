@@ -3,6 +3,13 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.build_analysis import (
+    BUILD_TOOL_DEFINITIONS,
+    AnalyzeCurrentBuildRequest,
+    BuildAnalysisService,
+    FindBuildAlternativesRequest,
+)
+from app.content_progression import ContentProgressionResolver
 from app.models import (
     CharacterSummary,
     GuardianContext,
@@ -22,6 +29,10 @@ class OptionalCharacterRequest(ToolRequest):
 
 class CharacterRequest(ToolRequest):
     character_id: str
+
+
+class ContentProgressionRequest(CharacterRequest):
+    content_name: str | None
 
 
 class RecentActivitiesRequest(OptionalCharacterRequest):
@@ -90,6 +101,20 @@ GUARDIAN_TOOL_DEFINITIONS: list[dict[str, Any]] = [
         {"character_id": _nullable_string("Character ID, or null for every character.")},
     ),
     _strict_tool(
+        "get_content_progression",
+        (
+            "Resolve conservative major campaign/content progress for one character using "
+            "maintained Bungie-backed evidence rules. Prefer this over reconstructing campaign "
+            "completion from generic quest data."
+        ),
+        {
+            "character_id": {"type": "string", "description": "Required character ID."},
+            "content_name": _nullable_string(
+                "Supported campaign/content name, alias, or null for every supported line."
+            ),
+        },
+    ),
+    _strict_tool(
         "get_available_activities",
         "Get compact, deduplicated activities currently visible to the character(s).",
         {"character_id": _nullable_string("Character ID, or null for every character.")},
@@ -145,6 +170,7 @@ REQUEST_MODELS: dict[str, type[ToolRequest]] = {
     "get_character_summary": OptionalCharacterRequest,
     "get_equipped_loadout": CharacterRequest,
     "get_active_quests": OptionalCharacterRequest,
+    "get_content_progression": ContentProgressionRequest,
     "get_available_activities": OptionalCharacterRequest,
     "get_recent_activities": RecentActivitiesRequest,
     "get_progression": OptionalCharacterRequest,
@@ -161,9 +187,15 @@ class GuardianToolService:
 
     @staticmethod
     def definitions() -> list[dict[str, Any]]:
-        return GUARDIAN_TOOL_DEFINITIONS
+        return [*GUARDIAN_TOOL_DEFINITIONS, *BUILD_TOOL_DEFINITIONS]
 
     def execute(self, name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
+        if name == "analyze_current_build":
+            request = AnalyzeCurrentBuildRequest.model_validate(arguments or {})
+            return BuildAnalysisService(self.context).analyze_current_build(request)
+        if name == "find_build_alternatives":
+            request = FindBuildAlternativesRequest.model_validate(arguments or {})
+            return BuildAnalysisService(self.context).find_build_alternatives(request)
         request_model = REQUEST_MODELS.get(name)
         if request_model is None:
             raise UnknownGuardianToolError(f"Unknown Guardian tool: {name}")
@@ -174,6 +206,9 @@ class GuardianToolService:
             return self.get_equipped_loadout(request.character_id)  # type: ignore[attr-defined]
         if name == "get_active_quests":
             return self.get_active_quests(request.character_id)  # type: ignore[attr-defined]
+        if name == "get_content_progression":
+            progression = ContentProgressionRequest.model_validate(request.model_dump())
+            return self.get_content_progression(progression.character_id, progression.content_name)
         if name == "get_available_activities":
             return self.get_available_activities(request.character_id)  # type: ignore[attr-defined]
         if name == "get_recent_activities":
@@ -336,6 +371,13 @@ class GuardianToolService:
             "truncated": len(quests) > limit,
         }
 
+    def get_content_progression(
+        self, character_id: str, content_name: str | None
+    ) -> dict[str, Any]:
+        character = self._characters(character_id)[0]
+        result = ContentProgressionResolver(self.context).resolve(character, content_name)
+        return result.model_dump(mode="json")
+
     def get_available_activities(self, character_id: str | None = None) -> dict[str, Any]:
         merged: dict[int, dict[str, Any]] = {}
         for character in self._characters(character_id):
@@ -462,7 +504,7 @@ class GuardianToolService:
             ],
             "characters": characters,
             "collectibles": self.context.collectibles.model_dump(mode="json"),
-            "records": self.context.records.model_dump(mode="json"),
+            "records": self.context.records.model_dump(mode="json", exclude={"records"}),
             "crafting": self.context.crafting.model_dump(mode="json"),
         }
 

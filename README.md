@@ -286,14 +286,15 @@ Never add Bungie or OpenAI credentials to Vercel and never give them a `VITE_` p
 - Manifest-resolved names, descriptions, icons, item/bucket types, perks, stats, activities, objectives, milestones, progressions, and season metadata
 - Explicit data-availability and truncation notes in `GuardianContext`
 - Temporary **Inspect context** frontend view showing the complete normalized payload
-- Eight bounded read-only Guardian tools for character, loadout, quest, activity, history, progression, inventory, and build queries
+- Eleven bounded read-only Guardian tools for character, loadout, quest, activity, history,
+  progression, inventory, and focused build analysis
 - Five normalized Destiny knowledge tools for entity search, item, activity, quest, and acquisition-evidence queries
 - Two detailed guide tools for compact guide search and practical normalized walkthrough retrieval
 - Five live-data tools for source status, weekly rotations, public vendors, current activities,
   and live search
 - Versioned local fuzzy-search index derived from public English Manifest definitions; it rebuilds only when Bungie's Manifest version changes
 - A versioned, source-attributed guide corpus containing concise factual extracts rather than copied articles
-- One AI tool loop that can combine Guardian account, Manifest, and guide tools
+- One AI tool loop that can combine Guardian account, Manifest, Guide, Live, and Web evidence
 - Server-side OpenAI Responses API function-calling loop; the complete `GuardianContext` is not sent to the model
 
 ## Guardian tools and debugging
@@ -305,11 +306,22 @@ Available tools are:
 - `get_character_summary`
 - `get_equipped_loadout`
 - `get_active_quests`
+- `get_content_progression`
 - `get_available_activities`
 - `get_recent_activities`
 - `get_progression`
 - `search_inventory`
 - `get_build_details`
+- `analyze_current_build`
+- `find_build_alternatives`
+
+The focused build tools operate only on normalized Guardian inventory and Manifest-resolved item
+metadata. `analyze_current_build` returns a compact factual view of the equipped subclass, weapons,
+Exotics, mods, stats, actual socketed plugs, observable gaps, locked items, and data limitations; it
+does not create a universal score or tier. `find_build_alternatives` returns at most eight owned
+copies filtered by slot, type, subtype, damage type, rarity, Exotic state, equipped state, location,
+and actual returned perks. Vault items remain eligible for the requested character, other
+characters' inventory is excluded, and missing roll data is reported rather than inferred.
 
 While signed in, open `https://localhost:8000/docs` to invoke a tool manually through `POST /api/debug/guardian-tools/{tool_name}`. For example, invoke `search_inventory` with:
 
@@ -409,10 +421,18 @@ The status endpoint separates tables with indexed named entries from empty and u
 
 The production chat tool loop follows the official [OpenAI function-calling flow](https://developers.openai.com/api/docs/guides/function-calling): it sends the user request and all available tool definitions, executes requested functions locally, replays every returned output item, appends each matching `function_call_output` by `call_id`, and asks the model for a final grounded response.
 
+The frontend uses `POST /api/chat/stream`, a credentialed Server-Sent Events endpoint with
+`status`, `message_delta`, `sources`, `completed`, and `error` events. OpenAI Responses are consumed
+through the SDK streaming interface across every tool round, but assistant text is buffered until
+the existing safety and response-quality checks accept it. The accepted answer is then sent in
+bounded deltas. `POST /api/chat` remains available as the non-streaming fallback API; the frontend
+does not automatically retry against it after a stream failure because that could duplicate model
+and tool execution.
+
 When debug tools are enabled, the frontend inspector includes a **Guide Knowledge** panel showing
 canonical resolution, normalized content, provenance, freshness, cache status, conflicts, and
-warnings. It also shows the latest compact AI trace. The trace stores only the user question, tool
-names, grounding categories, and answer status—never tool arguments, raw Guardian payloads, OAuth
+warnings. It also shows the latest compact AI trace. The trace stores only the user-message length,
+tool names, grounding categories, and answer status—never tool arguments, raw Guardian payloads, OAuth
 tokens, or secrets. Trace JSON is available at `GET /api/debug/chat-traces/latest` and
 `GET /api/debug/chat-traces/{trace_id}`; `GET /api/debug/chat-traces` lists recent traces for
 development investigation.

@@ -1,0 +1,344 @@
+{
+  "version": 5,
+  "cases": [
+    {
+      "prompt": "What should I do next?",
+      "planning": true,
+      "intent": "general",
+      "relevant_categories": ["guardian"],
+      "relevant_guardian_tools": ["get_character_summary", "get_active_quests", "get_progression", "get_available_activities"],
+      "content_progression_relevant": false,
+      "external_knowledge_may_be_needed": true,
+      "forbidden_behaviors": ["select the first returned activity", "treat an active quest as automatically best"],
+      "response_style": "concise recommendation with at most one targeted follow-up"
+    },
+    {
+      "prompt": "I have 30 minutes. What should I do on my Titan?",
+      "planning": true,
+      "intent": "time_limited",
+      "relevant_categories": ["guardian"],
+      "relevant_guardian_tools": ["get_character_summary", "get_active_quests", "get_available_activities"],
+      "content_progression_relevant": false,
+      "external_knowledge_may_be_needed": true,
+      "forbidden_behaviors": ["ignore the time constraint", "recommend switching characters"],
+      "response_style": "one time-fit recommendation and a short backup"
+    },
+    {
+      "prompt": "I want better gear.",
+      "planning": true,
+      "intent": "gear",
+      "relevant_categories": ["guardian", "manifest", "live"],
+      "relevant_guardian_tools": ["get_character_summary", "search_inventory", "get_available_activities"],
+      "content_progression_relevant": false,
+      "external_knowledge_may_be_needed": true,
+      "forbidden_behaviors": ["invent current loot", "compare incompatible Power values"],
+      "response_style": "concise goal-oriented recommendation"
+    },
+    {
+      "prompt": "Give me something chill to do on my Titan.",
+      "planning": true,
+      "intent": "casual",
+      "relevant_categories": ["guardian"],
+      "relevant_guardian_tools": ["get_available_activities", "get_recent_activities"],
+      "content_progression_relevant": false,
+      "external_knowledge_may_be_needed": false,
+      "forbidden_behaviors": ["recommend switching characters", "ignore the casual-play constraint"],
+      "response_style": "one low-stress option and an optional backup"
+    },
+    {
+      "prompt": "Have I completed The Final Shape on my Titan?",
+      "planning": false,
+      "intent": "story",
+      "relevant_categories": ["guardian"],
+      "relevant_guardian_tools": ["get_content_progression"],
+      "content_progression_relevant": true,
+      "external_knowledge_may_be_needed": false,
+      "forbidden_behaviors": ["infer completion from Prismatic", "use web results as personal evidence", "treat profile completion as Titan completion"],
+      "completion_scope_outcomes": ["character", "profile", "unknown"],
+      "response_style": "direct status with one uncertainty statement when needed"
+    },
+    {
+      "prompt": "How far am I into The Final Shape?",
+      "planning": false,
+      "intent": "story",
+      "relevant_categories": ["guardian"],
+      "relevant_guardian_tools": ["get_content_progression"],
+      "content_progression_relevant": true,
+      "external_knowledge_may_be_needed": false,
+      "forbidden_behaviors": ["reconstruct campaign progress from indirect unlocks"],
+      "response_style": "direct bounded progress summary"
+    },
+    {
+      "prompt": "Given my Titan, should I complete The Final Shape or The Edge of Fate next?",
+      "planning": true,
+      "intent": "story",
+      "relevant_categories": ["guardian", "manifest", "guide", "web"],
+      "relevant_guardian_tools": ["get_content_progression"],
+      "content_progression_relevant": true,
+      "external_knowledge_may_be_needed": true,
+      "forbidden_behaviors": ["choose Edge only because it is active", "recommend switching to Hunter", "invent either campaign's unlocks", "flatten profile completion into Titan completion"],
+      "response_style": "concise grounded recommendation or conditional answer"
+    },
+    {
+      "prompt": "What does completing The Final Shape unlock?",
+      "planning": false,
+      "intent": "story",
+      "relevant_categories": ["manifest", "guide", "web"],
+      "relevant_guardian_tools": [],
+      "content_progression_relevant": false,
+      "external_knowledge_may_be_needed": true,
+      "forbidden_behaviors": ["ask what the user means when the campaign is obvious", "invent unlocks"],
+      "response_style": "direct sourced explanation"
+    },
+    {
+      "prompt": "What weapons do I have equipped?",
+      "planning": false,
+      "intent": "gear",
+      "relevant_categories": ["guardian"],
+      "relevant_guardian_tools": ["get_equipped_loadout"],
+      "content_progression_relevant": false,
+      "external_knowledge_may_be_needed": false,
+      "forbidden_behaviors": ["expose character IDs", "use web search for ownership"],
+      "response_style": "short factual inventory answer"
+    },
+    {
+      "prompt": "What's worth doing this week?",
+      "planning": true,
+      "intent": "general",
+      "relevant_categories": ["guardian", "live"],
+      "relevant_guardian_tools": ["get_available_activities", "get_progression"],
+      "content_progression_relevant": false,
+      "external_knowledge_may_be_needed": true,
+      "forbidden_behaviors": ["treat Guardian availability as the featured rotation", "invent current weekly state"],
+      "response_style": "concise current recommendation with uncertainty preserved"
+    }
+  ],
+  "multi_turn_cases": [
+    {
+      "name": "retain character and time while replacing story with chill",
+      "history": ["I have an hour and want story on my Titan."],
+      "current": "Actually something chill.",
+      "expected_preferences": {"character": "Titan", "time_minutes": 60, "primary_goal": "casual_chill", "intensity": "chill"},
+      "forbidden_behaviors": ["discard Titan", "discard the time window", "retain story as the primary goal"]
+    },
+    {
+      "name": "override character and retain chill",
+      "history": ["Give me something chill on my Titan."],
+      "current": "Hunter instead.",
+      "expected_preferences": {"character": "Hunter", "primary_goal": "casual_chill", "intensity": "chill"},
+      "forbidden_behaviors": ["recommend Titan", "discard the chill constraint"]
+    },
+    {
+      "name": "replace stale time",
+      "history": ["I have 30 minutes."],
+      "current": "I have another hour now.",
+      "expected_preferences": {"time_minutes": 60},
+      "forbidden_behaviors": ["retain the stale 30-minute limit", "add the two time windows"]
+    },
+    {
+      "name": "retain exclusion while updating goal",
+      "history": ["No PvP."],
+      "current": "I want better gear.",
+      "expected_preferences": {"primary_goal": "gear_rewards", "exclusions": ["pvp"]},
+      "forbidden_behaviors": ["recommend PvP for its loot", "discard the PvP exclusion"]
+    },
+    {
+      "name": "clear only story goal",
+      "history": ["I have an hour and want story on my Titan."],
+      "current": "Forget the story preference.",
+      "expected_preferences": {"character": "Titan", "time_minutes": 60, "primary_goal": "unspecified"},
+      "forbidden_behaviors": ["retain story", "clear character or time"]
+    },
+    {
+      "name": "do not reask known constraints",
+      "history": ["I have 45 minutes and want story on my Titan."],
+      "current": "What should I do?",
+      "expected_preferences": {"character": "Titan", "time_minutes": 45, "primary_goal": "story_progression"},
+      "forbidden_behaviors": ["ask which character", "ask how much time", "ask story or loot"]
+    },
+    {
+      "name": "current turn overrides every conflict",
+      "history": ["I have an hour and want story on my Titan."],
+      "current": "Give me a 20-minute gear run on Hunter.",
+      "expected_preferences": {"character": "Hunter", "time_minutes": 20, "primary_goal": "gear_rewards"},
+      "forbidden_behaviors": ["retain Titan", "retain story", "retain 60 minutes"]
+    },
+    {
+      "name": "do not infer preferences from Guardian history",
+      "history": [],
+      "current": "What should I do next?",
+      "guardian_recent_activity": "Crucible Control",
+      "expected_preferences": {"character": "unspecified", "time_minutes": null, "primary_goal": "unspecified", "activity_mode": "unspecified", "exclusions": []},
+      "forbidden_behaviors": ["infer a PvP preference from recent Crucible activity"]
+    }
+  ],
+  "response_style_cases": [
+    {
+      "prompt": "I want better loot specifically. I want to increase my power level on my Titan.",
+      "planning": true,
+      "response_mode": "recommendation",
+      "detail_expectation": "moderate",
+      "follow_up_allowed": true,
+      "max_follow_up_count": 1,
+      "timed_itinerary_allowed": false,
+      "suppress_account_metadata": true,
+      "source_limit": 4
+    },
+    {
+      "prompt": "I don't want to do raids. Solo activities or matchmaking activities preferably.",
+      "planning": true,
+      "response_mode": "recommendation",
+      "detail_expectation": "moderate",
+      "follow_up_allowed": true,
+      "max_follow_up_count": 1,
+      "timed_itinerary_allowed": false,
+      "suppress_account_metadata": true,
+      "source_limit": 4
+    },
+    {
+      "prompt": "What weapons do I have equipped?",
+      "planning": false,
+      "response_mode": "direct_fact",
+      "detail_expectation": "concise",
+      "follow_up_allowed": true,
+      "max_follow_up_count": 1,
+      "timed_itinerary_allowed": false,
+      "suppress_account_metadata": true,
+      "source_limit": 4
+    },
+    {
+      "prompt": "I have 30 minutes, what should I do on my Titan?",
+      "planning": true,
+      "response_mode": "recommendation",
+      "detail_expectation": "moderate",
+      "follow_up_allowed": true,
+      "max_follow_up_count": 1,
+      "timed_itinerary_allowed": false,
+      "suppress_account_metadata": true,
+      "source_limit": 4
+    },
+    {
+      "prompt": "Give me something chill to do on my Titan.",
+      "planning": true,
+      "response_mode": "recommendation",
+      "detail_expectation": "moderate",
+      "follow_up_allowed": true,
+      "max_follow_up_count": 1,
+      "timed_itinerary_allowed": false,
+      "suppress_account_metadata": true,
+      "source_limit": 4
+    },
+    {
+      "prompt": "Given my Titan, Final Shape or Edge?",
+      "planning": true,
+      "response_mode": "comparison",
+      "detail_expectation": "moderate",
+      "follow_up_allowed": true,
+      "max_follow_up_count": 1,
+      "timed_itinerary_allowed": false,
+      "suppress_account_metadata": true,
+      "source_limit": 4
+    },
+    {
+      "prompt": "Give me a detailed step-by-step 30-minute plan.",
+      "planning": true,
+      "response_mode": "walkthrough",
+      "detail_expectation": "detailed",
+      "follow_up_allowed": true,
+      "max_follow_up_count": 1,
+      "timed_itinerary_allowed": true,
+      "suppress_account_metadata": true,
+      "source_limit": 8
+    }
+  ],
+  "build_cases": [
+    {
+      "prompt": "Is my Titan build good?",
+      "relevant_guardian_tools": ["analyze_current_build"],
+      "relevant_categories": ["guardian", "manifest", "guide"],
+      "locked_items": [],
+      "max_normal_changes": 3,
+      "response_mode": "build_advice",
+      "forbidden_behaviors": ["numeric build score", "tier-list rating", "raw IDs"]
+    },
+    {
+      "prompt": "Build around Sunshot.",
+      "relevant_guardian_tools": ["analyze_current_build", "find_build_alternatives"],
+      "relevant_categories": ["guardian", "manifest", "guide"],
+      "locked_items": ["Sunshot"],
+      "guardian_ownership_required": true,
+      "max_normal_changes": 3,
+      "response_mode": "build_advice",
+      "forbidden_behaviors": ["replace Sunshot", "recommend two Exotic weapons", "raw IDs"]
+    },
+    {
+      "prompt": "Keep Hallowfire Heart and make this better for solo PvE.",
+      "relevant_guardian_tools": ["analyze_current_build", "find_build_alternatives"],
+      "relevant_categories": ["guardian", "manifest", "guide"],
+      "locked_items": ["Hallowfire Heart"],
+      "constraints": ["solo", "pve"],
+      "max_normal_changes": 3,
+      "response_mode": "build_advice",
+      "forbidden_behaviors": ["replace Hallowfire Heart", "optimize for group-only utility"]
+    },
+    {
+      "prompt": "Make this good for boss DPS.",
+      "relevant_guardian_tools": ["analyze_current_build", "find_build_alternatives"],
+      "relevant_categories": ["guardian", "manifest", "guide", "live", "web"],
+      "guardian_ownership_required": true,
+      "current_meta_grounding_required": true,
+      "max_normal_changes": 3,
+      "response_mode": "build_advice",
+      "forbidden_behaviors": ["unsupported best-DPS claim", "invented roll quality"]
+    },
+    {
+      "prompt": "Prep me for The Shattered Throne.",
+      "relevant_guardian_tools": ["analyze_current_build", "find_build_alternatives"],
+      "relevant_categories": ["guardian", "manifest", "guide"],
+      "guide_relevance": "encounter mechanics and practical requirements",
+      "max_normal_changes": 3,
+      "response_mode": "build_advice",
+      "forbidden_behaviors": ["full walkthrough without request", "aspirational gear before owned options"]
+    },
+    {
+      "prompt": "Do I own a better heavy weapon?",
+      "relevant_guardian_tools": ["analyze_current_build", "find_build_alternatives"],
+      "relevant_categories": ["guardian"],
+      "guardian_ownership_required": true,
+      "actual_roll_data_required_when_available": true,
+      "max_candidates": 8,
+      "response_mode": "build_advice",
+      "forbidden_behaviors": ["ownership from external knowledge", "unbounded inventory dump"]
+    },
+    {
+      "prompt": "What is the current best Titan meta build?",
+      "relevant_guardian_tools": ["analyze_current_build"],
+      "relevant_categories": ["guardian", "manifest", "live", "web"],
+      "current_meta_grounding_required": true,
+      "max_normal_changes": 3,
+      "response_mode": "build_advice",
+      "forbidden_behaviors": ["current meta from Manifest alone", "unsourced patch claims"]
+    },
+    {
+      "prompt": "Use what I own now, but tell me the ideal item to chase later.",
+      "relevant_guardian_tools": ["analyze_current_build", "find_build_alternatives"],
+      "relevant_categories": ["guardian", "manifest", "guide", "web"],
+      "guardian_ownership_required": true,
+      "separate_owned_from_aspirational": true,
+      "max_normal_changes": 3,
+      "response_mode": "build_advice",
+      "forbidden_behaviors": ["call aspirational gear owned", "recommend farming before owned option"]
+    },
+    {
+      "prompt": "Compare my two Apex Predator rolls even if one has missing perk data.",
+      "relevant_guardian_tools": ["find_build_alternatives"],
+      "relevant_categories": ["guardian", "manifest"],
+      "guardian_ownership_required": true,
+      "actual_roll_data_required_when_available": true,
+      "missing_roll_uncertainty_required": true,
+      "max_candidates": 8,
+      "response_mode": "build_advice",
+      "forbidden_behaviors": ["invent missing perks", "judge roll from archetype alone"]
+    }
+  ]
+}

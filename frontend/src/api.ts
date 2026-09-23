@@ -6,6 +6,8 @@ import type {
   GuardianRefreshStatus,
   GuardianStateResponse,
 } from "./types";
+import type { ChatStreamEvent } from "./types";
+import { ChatSseParser } from "./chatStream";
 
 const configuredApiBaseUrl = (import.meta.env.VITE_API_BASE_URL ?? "").trim();
 const apiBaseUrl = configuredApiBaseUrl.replace(/\/+$/, "");
@@ -41,6 +43,75 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     throw new Error(message);
   }
   return (await response.json()) as T;
+}
+
+export interface ChatStreamHandlers {
+  onEvent: (event: ChatStreamEvent) => void;
+}
+
+async function chatStream(
+  message: string,
+  history: ChatMessage[],
+  handlers: ChatStreamHandlers,
+  signal: AbortSignal,
+): Promise<void> {
+  const response = await fetch(apiUrl("/api/chat/stream"), {
+    method: "POST",
+    credentials: "include",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "text/event-stream",
+    },
+    body: JSON.stringify({
+      message,
+      history: history.map(({ role, content }) => ({ role, content })),
+    }),
+    signal,
+  });
+  if (!response.ok) {
+    let message = `Request failed (${response.status})`;
+    try {
+      const body = (await response.json()) as { detail?: string };
+      if (body.detail) message = body.detail;
+    } catch {
+      // Keep the status-based message for non-JSON errors.
+    }
+    throw new Error(message);
+  }
+  if (!response.headers.get("content-type")?.toLowerCase().includes("text/event-stream")) {
+    throw new Error("The backend did not return a chat event stream.");
+  }
+  if (!response.body) throw new Error("The chat stream is unavailable in this browser.");
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const parser = new ChatSseParser();
+  let completed = false;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const events = parser.push(decoder.decode(value, { stream: true }));
+      for (const event of events) {
+        if (event.type === "error") throw new Error(event.message);
+        handlers.onEvent(event);
+        if (event.type === "completed") completed = true;
+      }
+    }
+    const tail = decoder.decode();
+    if (tail) {
+      for (const event of parser.push(tail)) {
+        if (event.type === "error") throw new Error(event.message);
+        handlers.onEvent(event);
+        if (event.type === "completed") completed = true;
+      }
+    }
+    parser.finish();
+    if (!completed) throw new Error("The chat stream ended before the answer was completed.");
+  } finally {
+    if (!completed) await reader.cancel().catch(() => undefined);
+    reader.releaseLock();
+  }
 }
 
 export const api = {
@@ -79,8 +150,12 @@ export const api = {
   chat: (message: string, history: ChatMessage[]) =>
     request<ChatResponse>("/api/chat", {
       method: "POST",
-      body: JSON.stringify({ message, history }),
+      body: JSON.stringify({
+        message,
+        history: history.map(({ role, content }) => ({ role, content })),
+      }),
     }),
+  chatStream,
   latestChatTrace: () =>
     request<Record<string, unknown>>("/api/debug/chat-traces/latest"),
   logout: async () => {

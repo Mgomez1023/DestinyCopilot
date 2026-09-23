@@ -1,7 +1,8 @@
 from datetime import datetime
 from typing import Literal
+from urllib.parse import urlsplit
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class ObjectiveSummary(BaseModel):
@@ -48,6 +49,11 @@ class ItemSummary(BaseModel):
     is_crafted: bool = False
     energy_capacity: int | None = Field(default=None, ge=0)
     energy_used: int | None = Field(default=None, ge=0)
+    instance_data_available: bool | None = None
+    socket_data_available: bool | None = None
+    stat_data_available: bool | None = None
+    socket_count: int | None = Field(default=None, ge=0)
+    empty_socket_count: int | None = Field(default=None, ge=0)
     stats: list[ItemStatSummary] = Field(default_factory=list)
     socketed_plugs: list[str] = Field(default_factory=list)
     socketed_plug_details: list[SocketedPlugSummary] = Field(default_factory=list)
@@ -160,10 +166,25 @@ class CollectionProgressSummary(BaseModel):
     acquired: int = Field(default=0, ge=0)
 
 
+class RecordSummary(BaseModel):
+    record_hash: int
+    name: str
+    description: str | None = Field(default=None, max_length=500)
+    scope: Literal["profile", "character", "unknown"]
+    character_id: str | None = None
+    completed: bool = False
+    redeemed: bool = False
+    objectives_complete: bool | None = None
+    objectives: list[ObjectiveSummary] = Field(default_factory=list, max_length=4)
+    manifest_resolved: bool = False
+
+
 class RecordProgressSummary(BaseModel):
     total_visible: int = Field(default=0, ge=0)
     completed: int = Field(default=0, ge=0)
     near_completion: list[ObjectiveSummary] = Field(default_factory=list)
+    records: list[RecordSummary] = Field(default_factory=list, max_length=64)
+    records_truncated: bool = False
 
 
 class CraftingProgressSummary(BaseModel):
@@ -235,6 +256,32 @@ class ChatRequest(BaseModel):
     history: list[ChatTurn] = Field(default_factory=list, max_length=12)
 
 
+class ChatSource(BaseModel):
+    title: str = Field(min_length=1, max_length=300)
+    url: str = Field(min_length=1, max_length=2048)
+    domain: str | None = Field(default=None, min_length=1, max_length=253)
+
+    @field_validator("title", "url", "domain", mode="before")
+    @classmethod
+    def strip_source_fields(cls, value: str | None) -> str | None:
+        return value.strip() if isinstance(value, str) else value
+
+    @field_validator("url")
+    @classmethod
+    def validate_external_url(cls, value: str) -> str:
+        parsed = urlsplit(value)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or any(ord(character) < 32 for character in value)
+        ):
+            raise ValueError("Source URL must be an HTTP(S) URL without credentials.")
+        return value
+
+
 class ChatResponse(BaseModel):
     message: str
     source: Literal["openai", "local"]
+    sources: list[ChatSource] = Field(default_factory=list, max_length=8)

@@ -1,0 +1,44 @@
+{
+  "DestinyRecordDefinition": {
+    "2024002713": {
+      "hash": 2024002713,
+      "scope": 0,
+      "recordTypeName": "Triumphs",
+      "redacted": false,
+      "displayProperties": {
+        "name": "Lightfall—Legendary",
+        "description": "Complete all Lightfall missions on Legendary difficulty."
+      }
+    },
+    "1580882372": {
+      "hash": 1580882372,
+      "scope": 0,
+      "recordTypeName": "Triumphs",
+      "redacted": false,
+      "displayProperties": {
+        "name": "The Final Shape - Legendary",
+        "description": "Complete all campaign missions on Legendary difficulty."
+      }
+    },
+    "3854636015": {
+      "hash": 3854636015,
+      "scope": 1,
+      "recordTypeName": "Triumphs",
+      "redacted": false,
+      "displayProperties": {
+        "name": "At Fate's Edge",
+        "description": "Complete the main quest \"The Edge of Fate\" on Kepler."
+      }
+    },
+    "587536046": {
+      "hash": 587536046,
+      "scope": 1,
+      "recordTypeName": "Triumphs",
+      "redacted": false,
+      "displayProperties": {
+        "name": "Renegade's Journey",
+        "description": "Complete the main quest \"Renegades.\""
+      }
+    }
+  }
+}

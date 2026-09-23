@@ -17,6 +17,15 @@ def test_auth_status_without_configuration() -> None:
     assert response.json()["authenticated"] is False
 
 
+def test_streaming_chat_rejects_unauthenticated_request_before_sse_starts() -> None:
+    with TestClient(app) as client:
+        response = client.post("/api/chat/stream", json={"message": "What should I do?"})
+
+    assert response.status_code == 401
+    assert response.headers["content-type"].startswith("application/json")
+    assert response.json()["detail"] == "Connect your Bungie account first."
+
+
 def test_exact_https_oauth_callback_path_is_registered() -> None:
     with TestClient(app) as client:
         response = client.get("/api/auth/callback")
@@ -28,7 +37,9 @@ def test_debug_guardian_tool_catalog_is_available_in_development() -> None:
     with TestClient(app) as client:
         response = client.get("/api/debug/guardian-tools")
     assert response.status_code == 200
-    assert len(response.json()["tools"]) == 8
+    tools = response.json()["tools"]
+    assert len(tools) == 11
+    assert "get_content_progression" in {value["name"] for value in tools}
 
 
 def test_debug_destiny_knowledge_catalog_is_available_in_development() -> None:

@@ -196,12 +196,48 @@ export interface GuardianContext {
 export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
+  sources?: ChatSource[];
+}
+
+export interface ChatSource {
+  title: string;
+  url: string;
+  domain?: string | null;
 }
 
 export interface ChatResponse {
   message: string;
   source: "openai" | "local";
+  sources: ChatSource[];
 }
+
+export type ChatResponseMode =
+  | "direct_fact"
+  | "recommendation"
+  | "comparison"
+  | "walkthrough"
+  | "build_advice"
+  | "account_summary"
+  | "troubleshooting";
+
+export type ChatStreamStatusStage =
+  | "guardian"
+  | "loadout"
+  | "inventory"
+  | "manifest"
+  | "guide"
+  | "live"
+  | "web"
+  | "comparison"
+  | "build"
+  | "final";
+
+export type ChatStreamEvent =
+  | { type: "status"; stage: ChatStreamStatusStage; label: string }
+  | { type: "message_delta"; delta: string }
+  | { type: "sources"; sources: ChatSource[] }
+  | { type: "completed"; response_mode: ChatResponseMode; source: "openai" | "local" }
+  | { type: "error"; message: string };
 
 export interface GuardianSliceStatus {
   present: boolean;

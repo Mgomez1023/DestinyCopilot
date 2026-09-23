@@ -1,0 +1,85 @@
+{
+  "version": 2,
+  "contents": [
+    {
+      "canonical_name": "Lightfall",
+      "aliases": ["Lightfall"],
+      "match_names": ["Lightfall"],
+      "completion_quest_names": [],
+      "completion_milestone_names": [],
+      "completion_progression_names": [],
+      "terminal_evidence": [
+        {
+          "entity_type": "DestinyRecordDefinition",
+          "hash": 2024002713,
+          "resolved_name": "Lightfall—Legendary",
+          "expected_description": "Complete all Lightfall missions on Legendary difficulty.",
+          "expected_scope": "profile",
+          "semantic": "campaign_completion",
+          "source_reference": "Bungie mobile Manifest record definition; completing every campaign mission on Legendary is sufficient evidence that the campaign was completed somewhere on the profile."
+        }
+      ],
+      "rule_reason": "Match the canonical public content title. The verified profile-scoped Legendary triumph proves account completion but does not identify the completing character."
+    },
+    {
+      "canonical_name": "The Final Shape",
+      "aliases": ["The Final Shape", "Final Shape", "TFS"],
+      "match_names": ["The Final Shape", "Final Shape"],
+      "completion_quest_names": [],
+      "completion_milestone_names": [],
+      "completion_progression_names": [],
+      "terminal_evidence": [
+        {
+          "entity_type": "DestinyRecordDefinition",
+          "hash": 1580882372,
+          "resolved_name": "The Final Shape - Legendary",
+          "expected_description": "Complete all campaign missions on Legendary difficulty.",
+          "expected_scope": "profile",
+          "semantic": "campaign_completion",
+          "source_reference": "Bungie mobile Manifest record definition under The Final Shape campaign; completing every Legendary campaign mission proves profile-level campaign completion but not which character completed it."
+        }
+      ],
+      "rule_reason": "Match the canonical title and common unambiguous aliases. The verified profile-scoped Legendary triumph proves account completion; subclasses, rewards, and destinations remain non-terminal."
+    },
+    {
+      "canonical_name": "The Edge of Fate",
+      "aliases": ["The Edge of Fate", "Edge of Fate"],
+      "match_names": ["The Edge of Fate", "Edge of Fate"],
+      "completion_quest_names": [],
+      "completion_milestone_names": [],
+      "completion_progression_names": [],
+      "terminal_evidence": [
+        {
+          "entity_type": "DestinyRecordDefinition",
+          "hash": 3854636015,
+          "resolved_name": "At Fate's Edge",
+          "expected_description": "Complete the main quest \"The Edge of Fate\" on Kepler.",
+          "expected_scope": "character",
+          "semantic": "campaign_completion",
+          "source_reference": "Bungie mobile Manifest record definition explicitly describes completion of the main Edge of Fate quest and declares character scope."
+        }
+      ],
+      "rule_reason": "Match the canonical title and its article-free form. The verified character-scoped main-quest triumph is terminal evidence only for the character component that returned it."
+    },
+    {
+      "canonical_name": "Renegades",
+      "aliases": ["Renegades"],
+      "match_names": ["Renegades"],
+      "completion_quest_names": [],
+      "completion_milestone_names": [],
+      "completion_progression_names": [],
+      "terminal_evidence": [
+        {
+          "entity_type": "DestinyRecordDefinition",
+          "hash": 587536046,
+          "resolved_name": "Renegade's Journey",
+          "expected_description": "Complete the main quest \"Renegades.\"",
+          "expected_scope": "character",
+          "semantic": "campaign_completion",
+          "source_reference": "Bungie mobile Manifest record definition explicitly describes completion of the Renegades main quest and declares character scope."
+        }
+      ],
+      "rule_reason": "Match the canonical public content title. The verified character-scoped main-quest triumph is terminal evidence only for the character component that returned it."
+    }
+  ]
+}

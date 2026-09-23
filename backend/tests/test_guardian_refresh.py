@@ -150,6 +150,10 @@ async def test_tool_refresh_dependencies_do_not_fetch_unrelated_vault_data() -> 
     assert TOOL_SLICE_DEPENDENCIES["get_active_quests"] == {
         GuardianSlice.QUESTS_PROGRESS,
     }
+    assert TOOL_SLICE_DEPENDENCIES["get_content_progression"] == {
+        GuardianSlice.PROFILE,
+        GuardianSlice.QUESTS_PROGRESS,
+    }
 
 
 @pytest.mark.asyncio
