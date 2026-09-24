@@ -26,6 +26,14 @@ def test_streaming_chat_rejects_unauthenticated_request_before_sse_starts() -> N
     assert response.json()["detail"] == "Connect your Bungie account first."
 
 
+def test_chat_rejects_actual_unauthenticated_request_with_connect_guidance() -> None:
+    with TestClient(app) as client:
+        response = client.post("/api/chat", json={"message": "Check my Titan build."})
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Connect your Bungie account first."
+
+
 def test_exact_https_oauth_callback_path_is_registered() -> None:
     with TestClient(app) as client:
         response = client.get("/api/auth/callback")

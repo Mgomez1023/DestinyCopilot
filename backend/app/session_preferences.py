@@ -393,7 +393,10 @@ def _apply_message(
     pvp_excluded = bool(_EXCLUSION_PATTERNS["pvp"].search(message))
     pve_excluded = bool(_EXCLUSION_PATTERNS["pve"].search(message))
     if not pvp_excluded and re.search(
-        r"(?:^|\b(?:want|play|something|prefer)\s+)pvp\b", message, re.I
+        r"(?:^|\b(?:want|play|something|prefer)\s+)pvp\b|"
+        r"\b(?:crucible|iron banner)\b",
+        message,
+        re.I,
     ):
         context.activity_mode = "pvp"
         context.exclusions = [value for value in context.exclusions if value != "pvp"]

@@ -235,6 +235,23 @@ def test_current_build_is_compact_factual_and_has_no_universal_score_or_ids() ->
     assert "item_hash" not in encoded
 
 
+def test_build_tools_resolve_titan_class_for_analysis_and_owned_alternatives() -> None:
+    service = BuildAnalysisService(build_context())
+
+    analysis = service.analyze_current_build(AnalyzeCurrentBuildRequest(character_class="Titan"))
+    alternatives = service.find_build_alternatives(
+        FindBuildAlternativesRequest(
+            character_class="Titan",
+            item_type="Weapon",
+            subtype="Hand Cannon",
+            preserve_exotics=True,
+        )
+    )
+
+    assert analysis["character_class"] == "Titan"
+    assert alternatives["character_class"] == "Titan"
+
+
 @pytest.mark.parametrize(
     ("overrides", "expected"),
     [
@@ -418,6 +435,196 @@ def test_build_locks_persist_across_history_until_explicitly_released() -> None:
 
 
 @pytest.mark.parametrize(
+    (
+        "message",
+        "requires_current",
+        "requires_owned",
+        "focused",
+    ),
+    [
+        ("Check my Titan and give suggestions.", True, False, False),
+        ("Check my weapons and suggest changes.", True, False, False),
+        ("What should I use if I'm jumping into Iron Banner?", True, False, True),
+        (
+            "What should I use if I'm jumping into Iron Banner? Check my Guardian and give "
+            "personalized recommendations.",
+            True,
+            False,
+            True,
+        ),
+        ("I want to use a different hand cannon. Check my vault for a good one.", True, True, True),
+        ("Anything better in my vault?", True, True, True),
+        ("What gun should I run?", True, False, True),
+        ("Find me a good hand cannon that I own.", False, True, True),
+        ("What hand cannon that I own should I use?", True, True, True),
+        ("Recommend a shotgun that I own.", False, True, True),
+        ("Check my rolls.", False, True, True),
+        ("What should I equip for PvP?", True, False, True),
+        ("What perks are on my Thorn?", False, True, True),
+    ],
+)
+def test_natural_personalized_gear_requests_route_to_bounded_build_evidence(
+    message: str,
+    requires_current: bool,
+    requires_owned: bool,
+    focused: bool,
+) -> None:
+    result = derive_build_request_context(message, SessionPreferenceContext())
+
+    assert result.is_build_request is True
+    assert result.requires_current_build_analysis is requires_current
+    assert result.requires_owned_inventory is requires_owned
+    assert result.focused_recommendation is focused
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Is Thorn good?",
+        "What does Explosive Payload do?",
+        "What hand cannons are good this season?",
+        "Should I keep doing this quest or start the campaign?",
+    ],
+)
+def test_public_item_questions_are_not_personalized_build_requests(message: str) -> None:
+    result = derive_build_request_context(message, SessionPreferenceContext())
+
+    assert result.is_build_request is False
+    assert result.requires_current_build_analysis is False
+    assert result.requires_owned_inventory is False
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Check perks too.",
+        "Anything better in my vault?",
+        "What else do I have?",
+        "Nah, I don't wanna use Thorn. What else do I have?",
+    ],
+)
+def test_natural_followups_keep_recent_personalized_build_context(message: str) -> None:
+    history = [
+        ChatTurn(
+            role="user",
+            content="What should I use for PvP? Check my Guardian and give suggestions.",
+        )
+    ]
+
+    result = derive_build_request_context(message, SessionPreferenceContext(), history)
+
+    assert result.is_build_request is True
+    assert result.is_followup is True
+    assert result.requires_owned_inventory is True
+
+
+def test_owned_roll_followups_preserve_the_exact_live_conversation_context() -> None:
+    opening = ChatTurn(
+        role="user",
+        content=(
+            "Check my Titan and my vault. I'm playing Iron Banner and want to use a different "
+            "hand cannon. Compare the hand cannons I actually own, check the perks on my "
+            "copies, and recommend the best one for PvP with one backup."
+        ),
+    )
+    rejection = "Nah I don't want that one. What else do I have?"
+
+    second_turn = derive_build_request_context(
+        rejection,
+        SessionPreferenceContext(),
+        [opening],
+    )
+    third_turn = derive_build_request_context(
+        "Which exact copy has the better roll, and what perks make it better?",
+        SessionPreferenceContext(),
+        [opening, ChatTurn(role="user", content=rejection)],
+    )
+
+    assert second_turn.is_build_request is True
+    assert second_turn.is_followup is True
+    assert second_turn.followup_kind == "owned_inventory"
+    assert second_turn.requires_owned_inventory is True
+    assert third_turn.is_build_request is True
+    assert third_turn.is_followup is True
+    assert third_turn.followup_kind == "owned_inventory"
+    assert third_turn.requires_owned_inventory is True
+    assert third_turn.requires_current_build_analysis is False
+
+
+def test_roll_comparison_without_recent_personalized_context_stays_general() -> None:
+    result = derive_build_request_context(
+        "Which exact copy has the better roll?",
+        SessionPreferenceContext(),
+    )
+
+    assert result.is_build_request is False
+    assert result.is_followup is False
+    assert result.requires_owned_inventory is False
+
+
+def test_assistant_text_alone_cannot_create_personalized_roll_context() -> None:
+    result = derive_build_request_context(
+        "Which roll is better?",
+        SessionPreferenceContext(),
+        [
+            ChatTurn(
+                role="assistant",
+                content="I checked your vault and compared your owned hand cannon rolls.",
+            )
+        ],
+    )
+
+    assert result.is_build_request is False
+    assert result.is_followup is False
+    assert result.requires_owned_inventory is False
+
+
+def test_explanation_followup_preserves_build_context_without_forcing_inventory() -> None:
+    history = [
+        ChatTurn(
+            role="user",
+            content="Check my rolls and recommend the best hand cannon that I own for PvP.",
+        )
+    ]
+
+    result = derive_build_request_context(
+        "Why that one?",
+        SessionPreferenceContext(),
+        history,
+    )
+
+    assert result.is_build_request is True
+    assert result.is_followup is True
+    assert result.followup_kind == "explanation"
+    assert result.requires_owned_inventory is False
+    assert result.requires_current_build_analysis is False
+
+
+def test_detailed_whole_build_review_is_not_focused_or_inventory_forced() -> None:
+    result = derive_build_request_context(
+        "Review my whole Titan build in detail.", SessionPreferenceContext()
+    )
+
+    assert result.is_build_request is True
+    assert result.requires_current_build_analysis is True
+    assert result.requires_owned_inventory is False
+    assert result.focused_recommendation is False
+    assert result.normal_change_limit is None
+
+
+def test_rejected_item_is_released_from_prior_build_lock() -> None:
+    result = derive_build_request_context(
+        "Nah, I don't wanna use Thorn. What else do I have?",
+        SessionPreferenceContext(),
+        [ChatTurn(role="user", content="Build around Thorn.")],
+    )
+
+    assert result.is_followup is True
+    assert result.locked_items == []
+    assert result.requires_owned_inventory is True
+
+
+@pytest.mark.parametrize(
     ("message", "goal", "activity", "activity_mode", "fireteam"),
     [
         ("Make my loadout work for a campaign.", None, None, "pve", "either"),
@@ -523,6 +730,335 @@ async def test_build_tool_preserves_stateless_function_call_loop_and_safe_output
 
 
 @pytest.mark.asyncio
+async def test_iron_banner_runtime_call_resolves_titan_by_class() -> None:
+    class TitanBuildResponses:
+        def __init__(self) -> None:
+            self.requests: list[dict[str, Any]] = []
+
+        async def create(self, **kwargs: Any) -> Any:
+            self.requests.append(kwargs)
+            if len(self.requests) == 1:
+                output = [
+                    SimpleNamespace(
+                        type="function_call",
+                        name="analyze_current_build",
+                        arguments=(
+                            '{"character_id":null,"character_class":"Titan",'
+                            '"goal":"pvp","activity":"Iron Banner",'
+                            '"locked_items":null,"preserve_exotics":false}'
+                        ),
+                        call_id="titan-build-1",
+                    )
+                ]
+                text = ""
+            else:
+                text = "For Iron Banner, keep Sunshot and tune the rest of your Titan setup."
+                output = [
+                    SimpleNamespace(
+                        type="message",
+                        id=f"titan-build-message-{len(self.requests)}",
+                        role="assistant",
+                        status="completed",
+                        content=[SimpleNamespace(type="output_text", text=text, annotations=[])],
+                    )
+                ]
+            return SimpleNamespace(
+                output=output,
+                output_text=text,
+                status="completed",
+                incomplete_details=None,
+                error=None,
+                usage=None,
+            )
+
+    responses = TitanBuildResponses()
+    service = RecommendationService(Settings(openai_api_key="test-key"))
+    service.client = SimpleNamespace(responses=responses)
+
+    answer = await service.chat(
+        ChatRequest(
+            message=(
+                "What should I use if I'm jumping into Iron Banner? Check my Titan and give "
+                "personalized recommendations."
+            )
+        ),
+        build_context(),
+    )
+
+    assert answer.message.startswith("For Iron Banner")
+    assert len(responses.requests) == 2
+    tool_output = next(
+        item
+        for item in responses.requests[1]["input"]
+        if isinstance(item, dict) and item.get("type") == "function_call_output"
+    )
+    assert json.loads(tool_output["output"])["character_class"] == "Titan"
+    assert "Active or nearly complete objectives" not in answer.message
+    analysis_trace = service.latest_trace()["tool_trace"][0]
+    assert analysis_trace["success"] is True
+    assert analysis_trace["request"]["character_class"] == "Titan"
+    assert analysis_trace["result_summary"]["character_class"] == "Titan"
+    assert analysis_trace["result_summary"]["equipped_weapon_names"] == ["Sunshot"]
+    assert analysis_trace["result_summary"]["equipped_exotic_names"] == [
+        "Sunshot",
+        "Hallowfire Heart",
+    ]
+    assert analysis_trace["result_summary"]["roll_data_complete"] is True
+
+
+@pytest.mark.asyncio
+async def test_vault_hand_cannon_runtime_calls_use_authenticated_guardian_data() -> None:
+    class VaultResponses:
+        def __init__(self) -> None:
+            self.requests: list[dict[str, Any]] = []
+
+        async def create(self, **kwargs: Any) -> Any:
+            self.requests.append(kwargs)
+            if len(self.requests) == 1:
+                calls = [
+                    SimpleNamespace(
+                        type="function_call",
+                        name="analyze_current_build",
+                        arguments=(
+                            '{"character_id":null,"character_class":"Titan",'
+                            '"goal":null,"activity":null,"locked_items":null,'
+                            '"preserve_exotics":false}'
+                        ),
+                        call_id="vault-analysis",
+                    ),
+                    SimpleNamespace(
+                        type="function_call",
+                        name="find_build_alternatives",
+                        arguments=(
+                            '{"character_id":null,"character_class":"Titan","slot":null,'
+                            '"item_type":"Weapon","subtype":"Hand Cannon",'
+                            '"damage_type":null,"rarity":null,"required_perks":null,'
+                            '"exotic":null,"equipped":false,"locations":["vault"],'
+                            '"preserve_exotics":true,"locked_items":null,"limit":8}'
+                        ),
+                        call_id="vault-options",
+                    ),
+                ]
+                text = ""
+            else:
+                text = "I checked your Titan and found several returned hand cannon copies."
+                calls = [
+                    SimpleNamespace(
+                        type="message",
+                        content=[SimpleNamespace(type="output_text", text=text, annotations=[])],
+                    )
+                ]
+            return SimpleNamespace(
+                output=calls,
+                output_text=text,
+                status="completed",
+                incomplete_details=None,
+                error=None,
+                usage=None,
+            )
+
+    responses = VaultResponses()
+    service = RecommendationService(Settings(openai_api_key="test-key", enable_debug_tools=True))
+    service.client = SimpleNamespace(responses=responses)
+    context = build_context()
+    context.inventory.items.extend(
+        item(
+            f"Vault Hand Cannon {index}",
+            "Weapon",
+            subtype="Hand Cannon",
+            bucket="Kinetic Weapons",
+            location="vault",
+            plugs=[plug(f"Returned Perk {index}")],
+        )
+        for index in range(10)
+    )
+
+    answer = await service.chat(
+        ChatRequest(
+            message=(
+                "I want to use a different hand cannon. Check my vault for a good one. "
+                "Check perks too."
+            ),
+            history=[ChatTurn(role="user", content="Keep this scoped to my Titan.")],
+        ),
+        context,
+    )
+
+    assert "several returned hand cannon copies" in answer.message
+    assert "sign in" not in answer.message.casefold()
+    assert "link bungie" not in answer.message.casefold()
+    assert "Pass character_class=Titan" in responses.requests[0]["instructions"]
+    trace = service.latest_trace()
+    assert trace["build_analysis"]["alternative_search_used"] is True
+    alternative_trace = next(
+        value for value in trace["tool_trace"] if value["name"] == "find_build_alternatives"
+    )
+    assert alternative_trace["success"] is True
+    assert alternative_trace["request"]["character_class"] == "Titan"
+    assert alternative_trace["request"]["item_type"] == "Weapon"
+    assert alternative_trace["request"]["subtype"] == "Hand Cannon"
+    assert alternative_trace["request"]["locations"] == ["vault"]
+    assert alternative_trace["request"]["limit"] == 8
+    assert alternative_trace["result_summary"]["returned"] == 8
+    assert alternative_trace["result_summary"]["total_matching"] == 10
+    assert alternative_trace["result_summary"]["truncated"] is True
+    assert len(alternative_trace["result_summary"]["item_names"]) == 8
+    encoded_trace = json.dumps(alternative_trace)
+    assert "character_id" not in encoded_trace
+    assert "instance_id" not in encoded_trace
+    assert "membership_id" not in encoded_trace
+    assert "private-" not in encoded_trace
+
+
+@pytest.mark.asyncio
+async def test_authenticated_character_lookup_failure_is_not_an_authentication_failure() -> None:
+    service = RecommendationService(Settings(openai_api_key="test-key"))
+
+    result = await service._execute_tool_call(  # noqa: SLF001 - regression boundary
+        GuardianToolService(build_context()),
+        "analyze_current_build",
+        '{"character_id":null,"character_class":"Warlock"}',
+    )
+
+    assert result == {
+        "error": {
+            "code": "character_not_found",
+            "message": "A Warlock was not found in Guardian data.",
+            "authentication_required": False,
+        }
+    }
+    assert "sign in" not in json.dumps(result).casefold()
+
+
+def test_search_inventory_trace_is_sanitized_and_bounded() -> None:
+    result = {
+        "items": [
+            {
+                "name": f"Hand Cannon {index}",
+                "character_id": "private-character",
+                "instance_id": f"private-instance-{index}",
+                "perks_and_sockets": ["Private full perk payload"],
+            }
+            for index in range(12)
+        ],
+        "total_matching": 12,
+        "limit": 12,
+        "truncated": False,
+    }
+
+    trace = RecommendationService._safe_tool_trace(  # noqa: SLF001 - trace contract
+        "search_inventory",
+        "guardian",
+        json.dumps(
+            {
+                "query": "private user query",
+                "character_id": "private-character",
+                "character_class": None,
+                "item_type": "Weapon",
+                "subtype": "Hand Cannon",
+                "bucket": None,
+                "equipped_only": False,
+                "limit": 12,
+            }
+        ),
+        result,
+    )
+
+    assert trace["success"] is True
+    assert trace["request"] == {
+        "bucket": None,
+        "character_class": None,
+        "equipped_only": False,
+        "item_type": "Weapon",
+        "limit": 12,
+        "subtype": "Hand Cannon",
+    }
+    assert trace["result_summary"] == {
+        "item_names": [f"Hand Cannon {index}" for index in range(8)],
+        "returned": 12,
+        "total_matching": 12,
+        "truncated": False,
+    }
+    encoded = json.dumps(trace)
+    assert "private user query" not in encoded
+    assert "private-character" not in encoded
+    assert "private-instance" not in encoded
+    assert "perks_and_sockets" not in encoded
+
+
+def test_failed_guardian_tool_trace_records_only_safe_error_type() -> None:
+    trace = RecommendationService._safe_tool_trace(  # noqa: SLF001 - trace contract
+        "analyze_current_build",
+        "guardian",
+        '{"character_id":"private-character","character_class":null}',
+        {
+            "error": {
+                "code": "character_not_found",
+                "message": "Private character private-character was not found.",
+                "authentication_required": False,
+            }
+        },
+    )
+
+    assert trace == {
+        "name": "analyze_current_build",
+        "category": "guardian",
+        "request": {"character_class": None},
+        "success": False,
+        "error_type": "character_not_found",
+    }
+    assert "private-character" not in json.dumps(trace)
+
+
+@pytest.mark.asyncio
+async def test_build_validation_failure_uses_build_fallback_not_session_planning_copy() -> None:
+    class InvalidBuildResponses:
+        def __init__(self) -> None:
+            self.requests: list[dict[str, Any]] = []
+
+        async def create(self, **kwargs: Any) -> Any:
+            self.requests.append(kwargs)
+            text = "Use whatever objective is closest to completion."
+            return SimpleNamespace(
+                output=[
+                    SimpleNamespace(
+                        type="message",
+                        id=f"invalid-build-{len(self.requests)}",
+                        role="assistant",
+                        status="completed",
+                        content=[SimpleNamespace(type="output_text", text=text, annotations=[])],
+                    )
+                ],
+                output_text=text,
+                status="completed",
+                incomplete_details=None,
+                error=None,
+                usage=None,
+            )
+
+    responses = InvalidBuildResponses()
+    service = RecommendationService(Settings(openai_api_key="test-key"))
+    service.client = SimpleNamespace(responses=responses)
+
+    answer = await service.chat(
+        ChatRequest(
+            message=(
+                "What should I use if I'm jumping into Iron Banner? Check my Titan and give "
+                "personalized recommendations."
+            )
+        ),
+        build_context(),
+    )
+
+    assert answer.message == (
+        "I couldn't inspect the required build data, so I can't give a grounded personalized "
+        "loadout recommendation yet."
+    )
+    assert "Active or nearly complete objectives" not in answer.message
+    assert service.latest_trace()["planning_correction"]["fallback"] == "build_evidence"
+
+
+@pytest.mark.asyncio
 async def test_build_quality_failure_uses_the_existing_single_correction_retry() -> None:
     class CorrectionResponses:
         def __init__(self) -> None:
@@ -530,9 +1066,25 @@ async def test_build_quality_failure_uses_the_existing_single_correction_retry()
 
         async def create(self, **kwargs: Any) -> Any:
             self.requests.append(kwargs)
+            if len(self.requests) == 1:
+                return SimpleNamespace(
+                    output=[
+                        SimpleNamespace(
+                            type="function_call",
+                            name="analyze_current_build",
+                            arguments='{"character_id":"titan-private-id"}',
+                            call_id="analysis-1",
+                        )
+                    ],
+                    output_text="",
+                    status="completed",
+                    incomplete_details=None,
+                    error=None,
+                    usage=None,
+                )
             text = (
                 "Build score: 82/100. This is A Tier."
-                if len(self.requests) == 1
+                if len(self.requests) == 2
                 else "Keep Sunshot and focus the remaining slots on your stated goal."
             )
             return SimpleNamespace(
@@ -559,8 +1111,8 @@ async def test_build_quality_failure_uses_the_existing_single_correction_retry()
     answer = await service.chat(ChatRequest(message="Is my Titan build good?"), build_context())
 
     assert answer.message == "Keep Sunshot and focus the remaining slots on your stated goal."
-    assert len(responses.requests) == 2
-    assert responses.requests[1]["tool_choice"] == "none"
+    assert len(responses.requests) == 3
+    assert responses.requests[2]["tool_choice"] == "none"
     trace = service.latest_trace()
     assert trace is not None
     assert trace["planning_correction"] == {
@@ -568,6 +1120,66 @@ async def test_build_quality_failure_uses_the_existing_single_correction_retry()
         "violation_codes": ["fake_build_score"],
         "succeeded": True,
     }
+
+
+@pytest.mark.asyncio
+async def test_missing_required_build_evidence_uses_safe_correction_path() -> None:
+    class MissingEvidenceResponses:
+        def __init__(self) -> None:
+            self.requests: list[dict[str, Any]] = []
+
+        async def create(self, **kwargs: Any) -> Any:
+            self.requests.append(kwargs)
+            text = (
+                "Use the hand cannon in your vault; it is better than your current weapon."
+                if len(self.requests) == 1
+                else (
+                    "I can't make a personalized hand-cannon choice until I can check your "
+                    "current setup and verify the owned copies in your vault."
+                )
+            )
+            return SimpleNamespace(
+                output=[
+                    SimpleNamespace(
+                        type="message",
+                        id=f"message-{len(self.requests)}",
+                        role="assistant",
+                        status="completed",
+                        content=[SimpleNamespace(type="output_text", text=text, annotations=[])],
+                    )
+                ],
+                output_text=text,
+                status="completed",
+                incomplete_details=None,
+                error=None,
+                usage=None,
+            )
+
+    responses = MissingEvidenceResponses()
+    service = RecommendationService(Settings(openai_api_key="test-key", enable_debug_tools=True))
+    service.client = SimpleNamespace(responses=responses)
+
+    answer = await service.chat(
+        ChatRequest(message="Anything better in my vault?"), build_context()
+    )
+
+    assert answer.message.startswith("I can't make a personalized")
+    assert len(responses.requests) == 2
+    instructions = responses.requests[0]["instructions"]
+    assert '"requires_current_build_analysis":true' in instructions
+    assert '"requires_owned_inventory":true' in instructions
+    assert "typical useful answer is about 50-120 words" in instructions
+    trace = service.latest_trace()
+    assert trace is not None
+    assert trace["response_mode"] == "build_advice"
+    assert trace["build_analysis"]["focused_recommendation"] is True
+    assert trace["build_analysis"]["requires_current_build_analysis"] is True
+    assert trace["build_analysis"]["requires_owned_inventory"] is True
+    assert set(trace["planning_correction"]["violation_codes"]) == {
+        "missing_current_build_analysis",
+        "missing_owned_inventory_evidence",
+    }
+    assert trace["planning_correction"]["succeeded"] is True
 
 
 def test_build_routing_requires_guardian_ownership_and_external_current_grounding() -> None:

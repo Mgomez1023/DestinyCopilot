@@ -9,6 +9,12 @@ from app.build_analysis import (
     BuildAnalysisService,
     FindBuildAlternativesRequest,
 )
+from app.character_selection import (
+    CharacterClass,
+    CharacterNotFoundError,
+    GuardianCharacterResolver,
+    GuardianToolError,
+)
 from app.content_progression import ContentProgressionResolver
 from app.models import (
     CharacterSummary,
@@ -18,6 +24,8 @@ from app.models import (
     SocketedPlugSummary,
 )
 
+__all__ = ["CharacterNotFoundError", "GuardianToolError", "GuardianToolService"]
+
 
 class ToolRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -25,10 +33,11 @@ class ToolRequest(BaseModel):
 
 class OptionalCharacterRequest(ToolRequest):
     character_id: str | None = None
+    character_class: CharacterClass | None = None
 
 
-class CharacterRequest(ToolRequest):
-    character_id: str
+class CharacterRequest(OptionalCharacterRequest):
+    pass
 
 
 class ContentProgressionRequest(CharacterRequest):
@@ -53,20 +62,26 @@ class ToolInvocationResponse(BaseModel):
     result: dict[str, Any]
 
 
-class GuardianToolError(ValueError):
-    pass
-
-
-class CharacterNotFoundError(GuardianToolError):
-    pass
-
-
 class UnknownGuardianToolError(GuardianToolError):
     pass
 
 
 def _nullable_string(description: str) -> dict[str, Any]:
     return {"type": ["string", "null"], "description": description}
+
+
+def _character_selector(*, optional: bool) -> dict[str, Any]:
+    scope = "or null for every character" if optional else "or null when character_class is used"
+    return {
+        "character_id": _nullable_string(f"Opaque character ID, {scope}."),
+        "character_class": {
+            "type": ["string", "null"],
+            "enum": ["Titan", "Hunter", "Warlock", None],
+            "description": (
+                "Character class selector, or null. Do not provide this together with character_id."
+            ),
+        },
+    }
 
 
 def _strict_tool(name: str, description: str, properties: dict[str, Any]) -> dict[str, Any]:
@@ -88,17 +103,17 @@ GUARDIAN_TOOL_DEFINITIONS: list[dict[str, Any]] = [
     _strict_tool(
         "get_character_summary",
         "Get compact character identity, equipped gear names, subclass, and progression.",
-        {"character_id": _nullable_string("Character ID, or null for every character.")},
+        _character_selector(optional=True),
     ),
     _strict_tool(
         "get_equipped_loadout",
         "Get one character's equipped weapons, armor, subclass, stats, and socketed perks.",
-        {"character_id": {"type": "string", "description": "Required character ID."}},
+        _character_selector(optional=False),
     ),
     _strict_tool(
         "get_active_quests",
         "Get active quests and their current, resolved objective progress.",
-        {"character_id": _nullable_string("Character ID, or null for every character.")},
+        _character_selector(optional=True),
     ),
     _strict_tool(
         "get_content_progression",
@@ -108,7 +123,7 @@ GUARDIAN_TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "completion from generic quest data."
         ),
         {
-            "character_id": {"type": "string", "description": "Required character ID."},
+            **_character_selector(optional=False),
             "content_name": _nullable_string(
                 "Supported campaign/content name, alias, or null for every supported line."
             ),
@@ -117,13 +132,13 @@ GUARDIAN_TOOL_DEFINITIONS: list[dict[str, Any]] = [
     _strict_tool(
         "get_available_activities",
         "Get compact, deduplicated activities currently visible to the character(s).",
-        {"character_id": _nullable_string("Character ID, or null for every character.")},
+        _character_selector(optional=True),
     ),
     _strict_tool(
         "get_recent_activities",
         "Get recent activity history, sorted newest first.",
         {
-            "character_id": _nullable_string("Character ID, or null for every character."),
+            **_character_selector(optional=True),
             "limit": {
                 "type": "integer",
                 "minimum": 1,
@@ -135,14 +150,14 @@ GUARDIAN_TOOL_DEFINITIONS: list[dict[str, Any]] = [
     _strict_tool(
         "get_progression",
         "Get season, reputation, milestone, quest, record, collection, and crafting progress.",
-        {"character_id": _nullable_string("Character ID, or null for every character.")},
+        _character_selector(optional=True),
     ),
     _strict_tool(
         "search_inventory",
         "Search normalized owned and equipped items using name and structured filters.",
         {
             "query": _nullable_string("Case-insensitive item-name substring, or null."),
-            "character_id": _nullable_string("Character ID filter, or null."),
+            **_character_selector(optional=True),
             "item_type": _nullable_string("Item type filter such as Weapon or Armor, or null."),
             "subtype": _nullable_string("Subtype filter such as Auto Rifle, or null."),
             "bucket": _nullable_string("Bucket-name filter, or null."),
@@ -161,7 +176,7 @@ GUARDIAN_TOOL_DEFINITIONS: list[dict[str, Any]] = [
     _strict_tool(
         "get_build_details",
         "Get a build-focused subclass, exotic, weapon perk, armor stat, and mod view.",
-        {"character_id": {"type": "string", "description": "Required character ID."}},
+        _character_selector(optional=False),
     ),
 ]
 
@@ -184,6 +199,7 @@ class GuardianToolService:
 
     def __init__(self, context: GuardianContext) -> None:
         self.context = context
+        self.characters = GuardianCharacterResolver(context)
 
     @staticmethod
     def definitions() -> list[dict[str, Any]]:
@@ -201,34 +217,52 @@ class GuardianToolService:
             raise UnknownGuardianToolError(f"Unknown Guardian tool: {name}")
         request = request_model.model_validate(arguments or {})
         if name == "get_character_summary":
-            return self.get_character_summary(request.character_id)  # type: ignore[attr-defined]
+            return self.get_character_summary(  # type: ignore[attr-defined]
+                request.character_id, request.character_class
+            )
         if name == "get_equipped_loadout":
-            return self.get_equipped_loadout(request.character_id)  # type: ignore[attr-defined]
+            return self.get_equipped_loadout(  # type: ignore[attr-defined]
+                request.character_id, request.character_class
+            )
         if name == "get_active_quests":
-            return self.get_active_quests(request.character_id)  # type: ignore[attr-defined]
+            return self.get_active_quests(  # type: ignore[attr-defined]
+                request.character_id, request.character_class
+            )
         if name == "get_content_progression":
             progression = ContentProgressionRequest.model_validate(request.model_dump())
-            return self.get_content_progression(progression.character_id, progression.content_name)
+            return self.get_content_progression(
+                progression.character_id,
+                progression.content_name,
+                progression.character_class,
+            )
         if name == "get_available_activities":
-            return self.get_available_activities(request.character_id)  # type: ignore[attr-defined]
+            return self.get_available_activities(  # type: ignore[attr-defined]
+                request.character_id, request.character_class
+            )
         if name == "get_recent_activities":
             recent = RecentActivitiesRequest.model_validate(request.model_dump())
-            return self.get_recent_activities(recent.character_id, recent.limit)
+            return self.get_recent_activities(
+                recent.character_id, recent.limit, recent.character_class
+            )
         if name == "get_progression":
-            return self.get_progression(request.character_id)  # type: ignore[attr-defined]
+            return self.get_progression(  # type: ignore[attr-defined]
+                request.character_id, request.character_class
+            )
         if name == "search_inventory":
             search = InventorySearchRequest.model_validate(request.model_dump())
             return self.search_inventory(search)
         build = CharacterRequest.model_validate(request.model_dump())
-        return self.get_build_details(build.character_id)
+        return self.get_build_details(build.character_id, build.character_class)
 
-    def _characters(self, character_id: str | None) -> list[CharacterSummary]:
-        if character_id is None:
-            return self.context.characters
-        for character in self.context.characters:
-            if character.character_id == character_id:
-                return [character]
-        raise CharacterNotFoundError(f"Character {character_id} was not found in GuardianContext.")
+    def _characters(
+        self,
+        character_id: str | None,
+        character_class: CharacterClass | None = None,
+    ) -> list[CharacterSummary]:
+        return self.characters.resolve_many(
+            character_id=character_id,
+            character_class=character_class,
+        )
 
     @staticmethod
     def _progression(value: ProgressionSummary) -> dict[str, Any]:
@@ -283,9 +317,13 @@ class GuardianToolService:
                 groups["mods"].append(plug.name)
         return {key: list(dict.fromkeys(values)) for key, values in groups.items()}
 
-    def get_character_summary(self, character_id: str | None = None) -> dict[str, Any]:
+    def get_character_summary(
+        self,
+        character_id: str | None = None,
+        character_class: CharacterClass | None = None,
+    ) -> dict[str, Any]:
         characters = []
-        for character in self._characters(character_id):
+        for character in self._characters(character_id, character_class):
             characters.append(
                 {
                     "character_id": character.character_id,
@@ -308,8 +346,15 @@ class GuardianToolService:
             )
         return {"characters": characters}
 
-    def get_equipped_loadout(self, character_id: str) -> dict[str, Any]:
-        character = self._characters(character_id)[0]
+    def get_equipped_loadout(
+        self,
+        character_id: str | None = None,
+        character_class: CharacterClass | None = None,
+    ) -> dict[str, Any]:
+        character = self.characters.resolve_one(
+            character_id=character_id,
+            character_class=character_class,
+        )
         weapons = [item for item in character.equipped_gear if item.item_type == "Weapon"]
         armor = [item for item in character.equipped_gear if item.item_type == "Armor"]
         subclass_groups = self._plug_groups(
@@ -334,9 +379,13 @@ class GuardianToolService:
             "armor_stats": armor_stats,
         }
 
-    def get_active_quests(self, character_id: str | None = None) -> dict[str, Any]:
+    def get_active_quests(
+        self,
+        character_id: str | None = None,
+        character_class: CharacterClass | None = None,
+    ) -> dict[str, Any]:
         quests: list[dict[str, Any]] = []
-        for character in self._characters(character_id):
+        for character in self._characters(character_id, character_class):
             for quest in character.quests:
                 if quest.completed and quest.redeemed:
                     continue
@@ -372,15 +421,25 @@ class GuardianToolService:
         }
 
     def get_content_progression(
-        self, character_id: str, content_name: str | None
+        self,
+        character_id: str | None,
+        content_name: str | None,
+        character_class: CharacterClass | None = None,
     ) -> dict[str, Any]:
-        character = self._characters(character_id)[0]
+        character = self.characters.resolve_one(
+            character_id=character_id,
+            character_class=character_class,
+        )
         result = ContentProgressionResolver(self.context).resolve(character, content_name)
         return result.model_dump(mode="json")
 
-    def get_available_activities(self, character_id: str | None = None) -> dict[str, Any]:
+    def get_available_activities(
+        self,
+        character_id: str | None = None,
+        character_class: CharacterClass | None = None,
+    ) -> dict[str, Any]:
         merged: dict[int, dict[str, Any]] = {}
-        for character in self._characters(character_id):
+        for character in self._characters(character_id, character_class):
             for activity in character.available_activities:
                 if not activity.is_visible:
                     continue
@@ -437,11 +496,14 @@ class GuardianToolService:
         }
 
     def get_recent_activities(
-        self, character_id: str | None = None, limit: int = 10
+        self,
+        character_id: str | None = None,
+        limit: int = 10,
+        character_class: CharacterClass | None = None,
     ) -> dict[str, Any]:
         activities = [
             value
-            for character in self._characters(character_id)
+            for character in self._characters(character_id, character_class)
             for value in character.recent_activities
         ]
         activities.sort(
@@ -461,9 +523,13 @@ class GuardianToolService:
             "limit": limit,
         }
 
-    def get_progression(self, character_id: str | None = None) -> dict[str, Any]:
+    def get_progression(
+        self,
+        character_id: str | None = None,
+        character_class: CharacterClass | None = None,
+    ) -> dict[str, Any]:
         characters: list[dict[str, Any]] = []
-        for character in self._characters(character_id):
+        for character in self._characters(character_id, character_class):
             milestones = []
             for milestone in character.milestones[:12]:
                 milestones.append(
@@ -509,8 +575,12 @@ class GuardianToolService:
         }
 
     def search_inventory(self, request: InventorySearchRequest) -> dict[str, Any]:
-        if request.character_id is not None:
-            self._characters(request.character_id)
+        selected_character_id: str | None = None
+        if request.character_id is not None or request.character_class is not None:
+            selected_character_id = self.characters.resolve_one(
+                character_id=request.character_id,
+                character_class=request.character_class,
+            ).character_id
         items = list(self.context.inventory.items)
         items.extend(
             item for character in self.context.characters for item in character.equipped_gear
@@ -526,7 +596,7 @@ class GuardianToolService:
             and matches(item.item_type, request.item_type)
             and matches(item.item_subtype, request.subtype)
             and matches(item.bucket_name, request.bucket)
-            and (request.character_id is None or item.character_id == request.character_id)
+            and (selected_character_id is None or item.character_id == selected_character_id)
             and (not request.equipped_only or item.is_equipped)
         ]
         tier_order = {"Exotic": 4, "Legendary": 3, "Rare": 2, "Uncommon": 1}
@@ -546,9 +616,16 @@ class GuardianToolService:
             "truncated": len(filtered) > request.limit,
         }
 
-    def get_build_details(self, character_id: str) -> dict[str, Any]:
-        character = self._characters(character_id)[0]
-        loadout = self.get_equipped_loadout(character_id)
+    def get_build_details(
+        self,
+        character_id: str | None = None,
+        character_class: CharacterClass | None = None,
+    ) -> dict[str, Any]:
+        character = self.characters.resolve_one(
+            character_id=character_id,
+            character_class=character_class,
+        )
+        loadout = self.get_equipped_loadout(character.character_id)
         exotics = [
             self._item(item)
             for item in character.equipped_gear

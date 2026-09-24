@@ -365,7 +365,11 @@ def test_guardian_tool_schema_and_result_are_strict_bounded_and_id_free() -> Non
         value for value in GUARDIAN_TOOL_DEFINITIONS if value["name"] == "get_content_progression"
     )
     assert definition["strict"] is True
-    assert definition["parameters"]["required"] == ["character_id", "content_name"]
+    assert definition["parameters"]["required"] == [
+        "character_id",
+        "character_class",
+        "content_name",
+    ]
     assert definition["parameters"]["additionalProperties"] is False
 
     titan = character("secret-character-id", "Titan")

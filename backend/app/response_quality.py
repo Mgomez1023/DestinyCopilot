@@ -4,6 +4,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from app.build_analysis import is_explicit_build_request
 from app.session_planning import (
     PlanningAnswerValidator,
     PlanningViolation,
@@ -30,10 +31,14 @@ class ResponseModeContext(BaseModel):
     detailed_requested: bool = False
     timed_itinerary_requested: bool = False
     continuation: bool = False
+    focused_build: bool = False
 
 
 class BuildResponseValidationContext(BaseModel):
     is_build_request: bool = False
+    requires_current_build_analysis: bool = False
+    requires_owned_inventory: bool = False
+    current_build_analysis_used: bool = False
     guardian_build_data_used: bool = False
     inventory_ownership_checked: bool = False
     preserve_equipped_exotics: bool = False
@@ -62,13 +67,6 @@ _TIMED_PLAN = re.compile(
 _COMPARISON = re.compile(
     r"\b(?:compare|versus|vs\.?)\b|\b(?:should|would) i\b.{0,180}\bor\b|"
     r"\bgiven\b.{0,180}\bor\b|\bwhich\b.{0,100}\b(?:better|next)\b",
-    re.IGNORECASE,
-)
-_BUILD = re.compile(
-    r"\b(?:build|loadout|armor stats?|mods?|subclass setup|exotic synergy|buildcraft|"
-    r"boss dps|add clear|survivability|solo pve|what should i replace|do i own a better|"
-    r"prep(?:are)? me for|what should i run for|don'?t change my exotic|use what i own|"
-    r"compare my\b.{0,80}\brolls?)\b",
     re.IGNORECASE,
 )
 _TROUBLESHOOTING = re.compile(
@@ -101,10 +99,12 @@ _EXTERNAL_KNOWLEDGE_REQUEST = re.compile(
 )
 
 
-def classify_response_mode(message: str, *, session_planning: bool) -> ResponseMode:
+def classify_response_mode(
+    message: str, *, session_planning: bool, build_request: bool | None = None
+) -> ResponseMode:
     if _TROUBLESHOOTING.search(message):
         return "troubleshooting"
-    if _BUILD.search(message):
+    if build_request is True or (build_request is None and is_explicit_build_request(message)):
         return "build_advice"
     if _COMPARISON.search(message):
         return "comparison"
@@ -133,8 +133,14 @@ def response_mode_context(
     *,
     session_planning: bool,
     continuation: bool,
+    build_request: bool | None = None,
+    focused_build: bool = False,
 ) -> ResponseModeContext:
-    mode = classify_response_mode(message, session_planning=session_planning)
+    mode = classify_response_mode(
+        message,
+        session_planning=session_planning,
+        build_request=build_request,
+    )
     detailed = bool(_DETAILED.search(message))
     timed = bool(_TIMED_PLAN.search(message))
     targets: dict[ResponseMode, tuple[int | None, int | None, str, int]] = {
@@ -147,6 +153,8 @@ def response_mode_context(
         "troubleshooting": (None, None, "as_needed", 8),
     }
     minimum, maximum, detail_level, source_limit = targets[mode]
+    if mode == "build_advice" and focused_build and not detailed:
+        minimum, maximum, detail_level, source_limit = (50, 120, "concise", 4)
     if detailed:
         detail_level = "detailed"
         source_limit = 8
@@ -159,6 +167,7 @@ def response_mode_context(
         detailed_requested=detailed,
         timed_itinerary_requested=timed,
         continuation=continuation,
+        focused_build=bool(mode == "build_advice" and focused_build and not detailed),
     )
 
 
@@ -189,8 +198,11 @@ def response_mode_instruction(context: ResponseModeContext) -> str:
             "state important uncertainty naturally, and optionally give one next step."
         ),
         "build_advice": (
-            "Lead with the main build change, then explain the relevant gear, subclass, stats, "
-            "and tradeoffs. Headings or bullets are useful when they improve scanning."
+            "Lead with the item choice and one or two grounded reasons; keep the answer focused on "
+            "the requested gear decision."
+            if context.focused_build
+            else "Lead with the main build change, then explain the relevant gear, subclass, "
+            "stats, and tradeoffs. Headings or bullets are useful when they improve scanning."
         ),
         "walkthrough": (
             "Give ordered, actionable steps. Headings and bullets are appropriate, and the answer "
@@ -311,6 +323,8 @@ class ResponseQualityValidator:
             "walkthrough": 700,
             "troubleshooting": 700,
         }[mode.mode]
+        if mode.focused_build:
+            extreme_max = 220
         word_count = len(re.findall(r"\b[\w'-]+\b", answer))
         if not mode.detailed_requested and word_count > extreme_max:
             violations.append(
@@ -375,6 +389,61 @@ class ResponseQualityValidator:
     ) -> list[PlanningViolation]:
         normalized = answer.casefold()
         violations: list[PlanningViolation] = []
+        missing_evidence_acknowledged = bool(
+            re.search(
+                r"\b(?:can(?:not|'t)|could(?: not|n'?t)|unable|need|would need)\b"
+                r"[^.!?]{0,120}\b(?:verify|inspect|check|review|see)\b",
+                answer,
+                re.IGNORECASE,
+            )
+        )
+        if (
+            context.requires_current_build_analysis
+            and not context.current_build_analysis_used
+            and not missing_evidence_acknowledged
+        ):
+            violations.append(
+                PlanningViolation(
+                    code="missing_current_build_analysis",
+                    correction=(
+                        "Do not judge or recommend changes to the current setup because its "
+                        "equipped build was not verified. State briefly that personalized advice "
+                        "is unavailable until the current setup is checked."
+                    ),
+                )
+            )
+        if (
+            context.requires_owned_inventory
+            and not context.inventory_ownership_checked
+            and not missing_evidence_acknowledged
+        ):
+            violations.append(
+                PlanningViolation(
+                    code="missing_owned_inventory_evidence",
+                    correction=(
+                        "Do not name or recommend an owned or vault option because no owned "
+                        "candidates or instance perks were verified. State briefly that a "
+                        "personalized choice is unavailable until owned gear is checked."
+                    ),
+                )
+            )
+        if re.search(
+            r"\b(?:sign in(?: again)?|log in(?: again)?|connect|reconnect|link)\b"
+            r"[^.!?]{0,50}\b(?:bungie|account|platform)\b|"
+            r"\bprovide\b[^.!?]{0,40}\b(?:platform|account)\b",
+            answer,
+            re.IGNORECASE,
+        ):
+            violations.append(
+                PlanningViolation(
+                    code="false_authentication_guidance",
+                    correction=(
+                        "Guardian context is already authenticated. Remove sign-in, account-link, "
+                        "and platform guidance; describe only the specific build or character "
+                        "lookup limitation."
+                    ),
+                )
+            )
         ownership_claim = re.search(
             r"\b(?:you|your (?:guardian|titan|hunter|warlock))\s+"
             r"(?:already\s+)?(?:own|have|possess)\b",
@@ -591,6 +660,25 @@ class ResponseQualityValidator:
                 )
             )
         return violations
+
+    @staticmethod
+    def safe_build_answer(context: BuildResponseValidationContext) -> str:
+        """Return a build-specific evidence fallback without activity-planning copy."""
+
+        if context.requires_owned_inventory:
+            return (
+                "I couldn't retrieve a grounded shortlist of your owned gear and its returned "
+                "perk data, so I don't want to guess."
+            )
+        if context.requires_current_build_analysis:
+            return (
+                "I couldn't inspect the required build data, so I can't give a grounded "
+                "personalized loadout recommendation yet."
+            )
+        return (
+            "I couldn't retrieve the required build evidence, so I can't give a grounded "
+            "personalized recommendation yet."
+        )
 
     @staticmethod
     def correction_instruction(violations: list[PlanningViolation]) -> str:

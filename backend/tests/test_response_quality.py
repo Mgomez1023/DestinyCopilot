@@ -26,6 +26,60 @@ def test_response_mode_classification(message: str, planning: bool, expected: st
     assert classify_response_mode(message, session_planning=planning) == expected
 
 
+@pytest.mark.parametrize(
+    "message",
+    [
+        "What should I use if I'm jumping into Iron Banner?",
+        "What gun should I run?",
+        "Find me a good hand cannon that I own.",
+        "What hand cannon that I own should I use?",
+        "Recommend a shotgun that I own.",
+        "Check my rolls.",
+        "What should I equip for PvP?",
+    ],
+)
+def test_natural_personalized_gear_prompts_use_build_response_mode(message: str) -> None:
+    assert classify_response_mode(message, session_planning=False) == "build_advice"
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Is Thorn good?",
+        "What does Explosive Payload do?",
+        "What hand cannons are good this season?",
+    ],
+)
+def test_public_weapon_questions_do_not_use_build_response_mode(message: str) -> None:
+    assert classify_response_mode(message, session_planning=False) == "direct_fact"
+
+
+def test_focused_gear_guidance_is_shorter_than_full_build_review() -> None:
+    focused = response_mode_context(
+        "Anything better in my vault?",
+        session_planning=False,
+        continuation=True,
+        build_request=True,
+        focused_build=True,
+    )
+    detailed = response_mode_context(
+        "Review my whole Titan build in detail.",
+        session_planning=False,
+        continuation=False,
+        build_request=True,
+        focused_build=False,
+    )
+
+    assert focused.mode == "build_advice"
+    assert focused.focused_build is True
+    assert (focused.target_min_words, focused.target_max_words) == (50, 120)
+    assert focused.detail_level == "concise"
+    assert "item choice and one or two grounded reasons" in response_mode_instruction(focused)
+    assert detailed.focused_build is False
+    assert (detailed.target_min_words, detailed.target_max_words) == (100, 220)
+    assert detailed.detail_level == "detailed"
+
+
 def test_only_pure_account_fact_questions_suppress_external_research() -> None:
     assert is_account_fact_only("What weapons do I have equipped?") is True
     assert is_account_fact_only("What quests are active?") is True
@@ -198,6 +252,103 @@ def test_build_quality_failures_are_detected(
     violations = ResponseQualityValidator().validate(answer, mode, message, None, context)
 
     assert expected in {value.code for value in violations}
+
+
+def test_personalized_build_validation_requires_only_relevant_guardian_evidence() -> None:
+    current_only = BuildResponseValidationContext(
+        is_build_request=True,
+        requires_current_build_analysis=True,
+    )
+    owned_alternatives = BuildResponseValidationContext(
+        is_build_request=True,
+        requires_current_build_analysis=True,
+        requires_owned_inventory=True,
+    )
+    mode = response_mode_context(
+        "Anything better in my vault?",
+        session_planning=False,
+        continuation=False,
+        build_request=True,
+        focused_build=True,
+    )
+
+    current_codes = {
+        value.code
+        for value in ResponseQualityValidator().validate(
+            "Your current build looks good.",
+            mode,
+            "How does my current build look?",
+            None,
+            current_only,
+        )
+    }
+    owned_codes = {
+        value.code
+        for value in ResponseQualityValidator().validate(
+            "Use a better hand cannon from your vault.",
+            mode,
+            "Anything better in my vault?",
+            None,
+            owned_alternatives,
+        )
+    }
+
+    assert current_codes == {"missing_current_build_analysis"}
+    assert owned_codes == {
+        "missing_current_build_analysis",
+        "missing_owned_inventory_evidence",
+    }
+
+    current_only.current_build_analysis_used = True
+    verified_codes = {
+        value.code
+        for value in ResponseQualityValidator().validate(
+            "Your current build has a clear close-range focus.",
+            mode,
+            "How does my current build look?",
+            None,
+            current_only,
+        )
+    }
+    assert "missing_current_build_analysis" not in verified_codes
+    assert "missing_owned_inventory_evidence" not in verified_codes
+
+
+def test_safe_build_answer_is_specific_to_missing_owned_evidence() -> None:
+    answer = ResponseQualityValidator.safe_build_answer(
+        BuildResponseValidationContext(
+            is_build_request=True,
+            requires_current_build_analysis=True,
+            requires_owned_inventory=True,
+        )
+    )
+
+    assert "grounded shortlist of your owned gear" in answer
+    assert "don't want to guess" in answer
+    assert "objectives" not in answer
+
+
+def test_authenticated_build_failure_rejects_false_sign_in_guidance() -> None:
+    context = BuildResponseValidationContext(
+        is_build_request=True,
+        requires_current_build_analysis=True,
+    )
+    mode = response_mode_context(
+        "Check my Titan build.",
+        session_planning=False,
+        continuation=False,
+        build_request=True,
+    )
+
+    violations = ResponseQualityValidator().validate(
+        "I can't access your Titan. Sign in again or link your Bungie account.",
+        mode,
+        "Check my Titan build.",
+        None,
+        context,
+    )
+
+    assert "false_authentication_guidance" in {value.code for value in violations}
 
 
 def test_normal_build_advice_is_limited_to_three_changes_but_detailed_rebuild_is_not() -> None:

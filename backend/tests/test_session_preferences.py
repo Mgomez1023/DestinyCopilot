@@ -79,6 +79,16 @@ def test_new_goal_preserves_pvp_exclusion() -> None:
     assert result.preferences.exclusions == ["pvp"]
 
 
+def test_iron_banner_personalized_gear_request_preserves_pvp_context() -> None:
+    result = derive_session_preferences(
+        [],
+        "What should I use if I'm jumping into Iron Banner? Check my Guardian.",
+    )
+
+    assert result.preferences.activity_mode == "pvp"
+    assert result.current_turn_updates == ["activity_mode"]
+
+
 def test_relevant_reset_clears_only_story() -> None:
     result = derive_session_preferences(
         history("I have an hour and want story on my Titan."),

@@ -11,6 +11,7 @@ from openai import AsyncOpenAI, OpenAIError
 from pydantic import ValidationError
 
 from app.build_analysis import BuildRequestContext, derive_build_request_context
+from app.character_selection import CharacterResolutionError
 from app.chat_stream import (
     StreamStatusReporter,
     is_web_search_stream_event,
@@ -165,6 +166,11 @@ Build and loadout behavior:
   build. Use find_build_alternatives for concrete swaps or ownership questions. Do not dump the
   full inventory. Normal advice should prioritize one to three high-impact changes; provide a
   larger rebuild only when the user explicitly asks for complete detail.
+- Character-scoped Guardian tools accept character_class for Titan, Hunter, or Warlock; use that
+  selector when the user names a class. Do not ask for or expose an opaque character ID. A
+  character-selection or build lookup failure is not an authentication failure: when Guardian
+  context is present, do not tell the user to sign in, link Bungie, or provide platform/account
+  details. Report the specific lookup or evidence limitation instead.
 - Explicit user constraints outrank generic optimization. Pass named preserved items and the
   preserve-Exotic constraint into build tools. "Build around Sunshot" locks Sunshot. "Don't change
   my Exotic" preserves the relevant equipped Exotic. Never recommend replacing a locked item.
@@ -242,6 +248,28 @@ response for the user. Do not end the turn with reasoning or tool calls only."""
 MAX_TOOL_ROUNDS = 4
 MAX_TOOL_CALLS = 10
 MAX_CHAT_SOURCES = 8
+MAX_TRACE_ITEM_NAMES = 8
+TRACEABLE_GUARDIAN_TOOLS = {
+    "analyze_current_build",
+    "find_build_alternatives",
+    "get_equipped_loadout",
+    "search_inventory",
+}
+SAFE_GUARDIAN_TRACE_ARGUMENTS = {
+    "character_class",
+    "item_type",
+    "subtype",
+    "bucket",
+    "slot",
+    "damage_type",
+    "rarity",
+    "locations",
+    "equipped",
+    "equipped_only",
+    "exotic",
+    "preserve_exotics",
+    "limit",
+}
 WEB_SEARCH_TOOL = {"type": "web_search"}
 RESPONSE_INCLUDE = ["web_search_call.action.sources", "reasoning.encrypted_content"]
 UNSUPPORTED_POWER_PATTERN = re.compile(
@@ -353,6 +381,8 @@ class RecommendationService:
         )
         build_validation_context = BuildResponseValidationContext(
             is_build_request=build_request_context.is_build_request,
+            requires_current_build_analysis=(build_request_context.requires_current_build_analysis),
+            requires_owned_inventory=build_request_context.requires_owned_inventory,
             preserve_equipped_exotics=build_request_context.preserve_equipped_exotics,
             locked_item_names=build_request_context.locked_items,
             activity_mode=build_request_context.activity_mode,
@@ -370,8 +400,11 @@ class RecommendationService:
                 and (
                     preference_derivation.prior_context_present
                     or preference_derivation.current_turn_updates
+                    or build_request_context.is_followup
                 )
             ),
+            build_request=build_request_context.is_build_request,
+            focused_build=build_request_context.focused_recommendation,
         )
         if stream_status is not None:
             stream_status.response_mode = mode_context.mode
@@ -409,6 +442,13 @@ class RecommendationService:
             "intent_category": intent_category,
             "build_analysis": {
                 "requested": build_request_context.is_build_request,
+                "followup": build_request_context.is_followup,
+                "followup_kind": build_request_context.followup_kind,
+                "focused_recommendation": build_request_context.focused_recommendation,
+                "requires_current_build_analysis": (
+                    build_request_context.requires_current_build_analysis
+                ),
+                "requires_owned_inventory": build_request_context.requires_owned_inventory,
                 "analysis_used": False,
                 "alternative_search_used": False,
                 "owned_candidates_returned": 0,
@@ -559,7 +599,7 @@ class RecommendationService:
                     build_validation_context.current_external_grounding = bool(
                         web_sources or trace["grounding"]["live_provider"]
                     )
-                    planning_fallback = False
+                    safe_fallback = False
                     violations = quality_validator.validate(
                         message,
                         mode_context,
@@ -603,9 +643,13 @@ class RecommendationService:
                             correction_sources, _ = self._extract_web_sources(correction_output)
                             self._merge_sources(web_sources, correction_sources)
                             trace["web_research"]["source_count"] = len(web_sources)
+                        elif build_validation_context.is_build_request:
+                            message = quality_validator.safe_build_answer(build_validation_context)
+                            safe_fallback = True
+                            trace["planning_correction"]["fallback"] = "build_evidence"
                         elif planning_context is not None:
                             message = quality_validator.planning.safe_answer(planning_context)
-                            planning_fallback = True
+                            safe_fallback = True
                     safe_message = self._enforce_power_safety(message)
                     safe_message = self._enforce_campaign_completion_safety(safe_message)
                     safe_message = self._enforce_campaign_comparison_safety(
@@ -621,7 +665,7 @@ class RecommendationService:
                     trace["web_research"]["source_count"] = len(
                         [source for source in sources if source in web_sources]
                     )
-                    if safe_message != message or planning_fallback:
+                    if safe_message != message or safe_fallback:
                         sources = []
                     message = self._hide_internal_identifiers(
                         safe_message,
@@ -682,7 +726,12 @@ class RecommendationService:
                         result,
                     )
                     trace["tools"].append(call.name)
-                    tool_trace = {"name": call.name, "category": category}
+                    tool_trace = self._safe_tool_trace(
+                        call.name,
+                        category,
+                        call.arguments,
+                        result,
+                    )
                     safe_provenance_fields = {
                         "source": "result_source",
                         "provider": "result_provider",
@@ -761,6 +810,152 @@ class RecommendationService:
                 self._store_trace(trace_id, trace)
 
     @staticmethod
+    def _safe_tool_trace(
+        tool_name: str,
+        category: str,
+        arguments_json: str,
+        result: dict[str, Any],
+    ) -> dict[str, Any]:
+        trace: dict[str, Any] = {"name": tool_name, "category": category}
+        if category != "guardian" or tool_name not in TRACEABLE_GUARDIAN_TOOLS:
+            return trace
+
+        request = RecommendationService._safe_guardian_trace_request(arguments_json)
+        if request:
+            trace["request"] = request
+
+        error = result.get("error")
+        if error is not None:
+            trace["success"] = False
+            error_type = error.get("code") if isinstance(error, dict) else None
+            trace["error_type"] = (
+                error_type
+                if isinstance(error_type, str) and re.fullmatch(r"[a-z][a-z0-9_]{0,63}", error_type)
+                else "tool_error"
+            )
+            return trace
+
+        trace["success"] = True
+        summary = RecommendationService._safe_guardian_result_summary(tool_name, result)
+        if summary:
+            trace["result_summary"] = summary
+        return trace
+
+    @staticmethod
+    def _safe_guardian_trace_request(arguments_json: str) -> dict[str, Any]:
+        try:
+            arguments = json.loads(arguments_json)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+        if not isinstance(arguments, dict):
+            return {}
+
+        safe: dict[str, Any] = {}
+        for key in SAFE_GUARDIAN_TRACE_ARGUMENTS:
+            if key not in arguments:
+                continue
+            value = arguments[key]
+            scalar_is_safe = bool(
+                value is None
+                or isinstance(value, bool)
+                or (isinstance(value, str) and len(value) <= 80)
+                or (key == "limit" and isinstance(value, int) and 1 <= value <= 100)
+            )
+            if scalar_is_safe:
+                safe[key] = value
+            elif key == "locations" and isinstance(value, list):
+                locations = [
+                    location
+                    for location in value[:4]
+                    if isinstance(location, str) and len(location) <= 20
+                ]
+                safe[key] = locations
+        return dict(sorted(safe.items()))
+
+    @staticmethod
+    def _safe_guardian_result_summary(
+        tool_name: str,
+        result: dict[str, Any],
+    ) -> dict[str, Any]:
+        summary: dict[str, Any] = {}
+        character_class = result.get("character_class")
+        character = result.get("character")
+        if not isinstance(character_class, str) and isinstance(character, dict):
+            character_class = character.get("class")
+        if isinstance(character_class, str) and len(character_class) <= 20:
+            summary["character_class"] = character_class
+
+        item_groups: list[dict[str, Any]] = []
+        for key in ("candidates", "items", "equipped_weapons", "weapons"):
+            values = result.get(key)
+            if isinstance(values, list):
+                item_groups.extend(value for value in values if isinstance(value, dict))
+        item_names = RecommendationService._bounded_trace_item_names(item_groups)
+        if item_names:
+            summary["item_names"] = item_names
+
+        returned = result.get("returned")
+        if not isinstance(returned, int) and tool_name == "search_inventory":
+            items = result.get("items")
+            returned = len(items) if isinstance(items, list) else None
+        if isinstance(returned, int) and returned >= 0:
+            summary["returned"] = returned
+
+        total_matching = result.get("total_matching")
+        if not isinstance(total_matching, int):
+            total_matching = result.get("total_matching_owned_copies")
+        if isinstance(total_matching, int) and total_matching >= 0:
+            summary["total_matching"] = total_matching
+        if isinstance(result.get("truncated"), bool):
+            summary["truncated"] = result["truncated"]
+
+        if tool_name == "analyze_current_build":
+            weapons = result.get("equipped_weapons")
+            if isinstance(weapons, list):
+                summary["equipped_weapon_names"] = RecommendationService._bounded_trace_item_names(
+                    [value for value in weapons if isinstance(value, dict)]
+                )
+            exotics = result.get("equipped_exotics")
+            if isinstance(exotics, dict):
+                exotic_items = [
+                    {"name": value}
+                    for key in ("weapon", "armor")
+                    for value in (exotics.get(key) or [])
+                    if isinstance(value, str)
+                ]
+                summary["equipped_exotic_names"] = RecommendationService._bounded_trace_item_names(
+                    exotic_items
+                )
+            observations = result.get("observations")
+            if isinstance(observations, dict) and isinstance(
+                observations.get("weapons_missing_roll_data"), list
+            ):
+                summary["roll_data_complete"] = not bool(observations["weapons_missing_roll_data"])
+        elif tool_name == "get_equipped_loadout":
+            exotics = [
+                value
+                for key in ("weapons", "armor")
+                for value in (result.get(key) or [])
+                if isinstance(value, dict) and value.get("tier") == "Exotic"
+            ]
+            exotic_names = RecommendationService._bounded_trace_item_names(exotics)
+            if exotic_names:
+                summary["equipped_exotic_names"] = exotic_names
+        return summary
+
+    @staticmethod
+    def _bounded_trace_item_names(items: list[dict[str, Any]]) -> list[str]:
+        names: list[str] = []
+        for item in items:
+            name = item.get("name")
+            if not isinstance(name, str) or not name or len(name) > 120 or name in names:
+                continue
+            names.append(name)
+            if len(names) == MAX_TRACE_ITEM_NAMES:
+                break
+        return names
+
+    @staticmethod
     def _update_build_validation_context(
         context: BuildResponseValidationContext,
         trace: dict[str, Any],
@@ -775,8 +970,12 @@ class RecommendationService:
             "search_inventory",
         }:
             return
+        if "error" in result:
+            return
         if tool_name in {"analyze_current_build", "get_build_details", "get_equipped_loadout"}:
             context.guardian_build_data_used = True
+        if tool_name == "analyze_current_build":
+            context.current_build_analysis_used = True
         if tool_name in {"find_build_alternatives", "search_inventory"}:
             context.inventory_ownership_checked = True
 
@@ -1005,7 +1204,8 @@ class RecommendationService:
                 f"Explicit character scope: {character_scope}. Keep account inspection and the "
                 f"recommendation scoped to the user's {character_scope}; do not offer another "
                 "class as the default or backup unless switching is necessary to answer the "
-                "request."
+                f"request. Pass character_class={character_scope} and character_id=null to "
+                "character-scoped Guardian tools; do not ask the user for an ID."
             )
         if planning_context is not None:
             routing.append(
@@ -1018,7 +1218,11 @@ class RecommendationService:
             routing.append(
                 "Application-derived build constraints follow as bounded JSON. Treat explicit "
                 "locked items, preserved Exotics, activity mode, fireteam, and change limit as "
-                "hard constraints. Do not mention this routing metadata:\n"
+                "hard constraints. If requires_current_build_analysis is true, call "
+                "analyze_current_build before judging or recommending changes to the current "
+                "setup. If requires_owned_inventory is true, use find_build_alternatives or an "
+                "appropriate Guardian inventory lookup before naming owned choices or exact "
+                "instance perks. Do not mention this routing metadata:\n"
                 f"{build_request_context.model_dump_json()}"
             )
         return f"{SYSTEM_INSTRUCTIONS}\n\n" + "\n".join(routing) if routing else SYSTEM_INSTRUCTIONS
@@ -1777,4 +1981,12 @@ class RecommendationService:
             ValueError,
         ) as exc:
             logger.warning("Guardian tool call failed tool=%s error=%s", name, exc)
+            if isinstance(exc, CharacterResolutionError):
+                return {
+                    "error": {
+                        "code": exc.code,
+                        "message": str(exc),
+                        "authentication_required": False,
+                    }
+                }
             return {"error": str(exc)}

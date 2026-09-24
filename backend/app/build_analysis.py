@@ -9,6 +9,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.character_selection import CharacterClass, GuardianCharacterResolver
 from app.models import CharacterSummary, ChatTurn, GuardianContext, ItemSummary, SocketedPlugSummary
 from app.session_preferences import SessionPreferenceContext
 
@@ -19,6 +20,7 @@ MAX_BUILD_ITEMS = 12
 MAX_SOCKETED_PLUGS = 16
 
 InventoryLocation = Literal["equipped", "character", "vault", "profile"]
+BuildFollowupKind = Literal["owned_inventory", "current_build", "explanation"]
 
 
 def _nullable_string(description: str) -> dict[str, Any]:
@@ -48,7 +50,17 @@ BUILD_TOOL_DEFINITIONS = [
             "coverage observations, data gaps, and external knowledge needs. Produces no score."
         ),
         {
-            "character_id": {"type": "string", "description": "Required character ID."},
+            "character_id": _nullable_string(
+                "Opaque character ID, or null when character_class is provided."
+            ),
+            "character_class": {
+                "type": ["string", "null"],
+                "enum": ["Titan", "Hunter", "Warlock", None],
+                "description": (
+                    "Character class selector, or null when character_id is provided. "
+                    "Provide exactly one selector."
+                ),
+            },
             "goal": _nullable_string("Build goal such as solo PvE or boss DPS, or null."),
             "activity": _nullable_string("Named activity or encounter, or null."),
             "locked_items": {
@@ -70,7 +82,17 @@ BUILD_TOOL_DEFINITIONS = [
             "Filters actual normalized instance rolls and enforces preserved Exotic constraints."
         ),
         {
-            "character_id": {"type": "string", "description": "Required character ID."},
+            "character_id": _nullable_string(
+                "Opaque character ID, or null when character_class is provided."
+            ),
+            "character_class": {
+                "type": ["string", "null"],
+                "enum": ["Titan", "Hunter", "Warlock", None],
+                "description": (
+                    "Character class selector, or null when character_id is provided. "
+                    "Provide exactly one selector."
+                ),
+            },
             "slot": _nullable_string("Equipment bucket/slot filter, or null."),
             "item_type": _nullable_string("Weapon or Armor, or null."),
             "subtype": _nullable_string("Weapon or armor subtype, or null."),
@@ -125,7 +147,8 @@ class BuildRequest(BaseModel):
 
 
 class AnalyzeCurrentBuildRequest(BuildRequest):
-    character_id: str = Field(min_length=1, max_length=128)
+    character_id: str | None = Field(default=None, min_length=1, max_length=128)
+    character_class: CharacterClass | None = None
     goal: str | None = Field(default=None, max_length=160)
     activity: str | None = Field(default=None, max_length=160)
     locked_items: list[str] | None = Field(default=None, max_length=MAX_LOCKED_ITEMS)
@@ -140,7 +163,8 @@ class AnalyzeCurrentBuildRequest(BuildRequest):
 
 
 class FindBuildAlternativesRequest(BuildRequest):
-    character_id: str = Field(min_length=1, max_length=128)
+    character_id: str | None = Field(default=None, min_length=1, max_length=128)
+    character_class: CharacterClass | None = None
     slot: str | None = Field(default=None, max_length=80)
     item_type: str | None = Field(default=None, max_length=80)
     subtype: str | None = Field(default=None, max_length=80)
@@ -166,6 +190,11 @@ class BuildRequestContext(BaseModel):
     """Small application-derived constraint view included in build turns."""
 
     is_build_request: bool
+    is_followup: bool = False
+    followup_kind: BuildFollowupKind | None = None
+    focused_recommendation: bool = False
+    requires_current_build_analysis: bool = False
+    requires_owned_inventory: bool = False
     goal: str | None = None
     activity: str | None = None
     locked_items: list[str] = Field(default_factory=list, max_length=MAX_LOCKED_ITEMS)
@@ -176,16 +205,94 @@ class BuildRequestContext(BaseModel):
     normal_change_limit: int | None = Field(default=3, ge=1, le=12)
 
 
-_BUILD_REQUEST = re.compile(
+_EXPLICIT_BUILD_REQUEST = re.compile(
     r"\b(?:build|loadout|boss dps|add clear|survivability|solo pve|"
     r"what should i replace|do i own a better|prep(?:are)? me for|"
     r"what should i run for|don'?t change my exotic|use what i own|"
     r"compare my\b.{0,80}\brolls?)\b",
     re.IGNORECASE,
 )
+_PERSONALIZED_GEAR_REQUEST = re.compile(
+    r"\bwhat should i (?:use|run|equip)\b|"
+    r"\bwhat (?:gun|weapon|hand cannon|shotgun|rifle|armor(?: piece)?) should i "
+    r"(?:use|run|equip)\b|"
+    r"\bwhat\b.{0,50}\b(?:that )?i own\b.{0,30}\bshould i (?:use|run|equip)\b|"
+    r"\bcheck my (?:gear|weapons?|loadout|vault|inventory|rolls?|perks?)\b|"
+    r"\bcheck my (?:titan|hunter|warlock|guardian)\b.{0,60}\b"
+    r"(?:suggest|recommend|improve|change|use|equip)\w*\b|"
+    r"\bfind me\b.{0,70}\b(?:that i own|i own|in my vault|from my inventory)\b|"
+    r"\brecommend\b.{0,70}\b(?:that i own|i own|in my vault|from my inventory)\b|"
+    r"\b(?:anything|something) better in my (?:vault|inventory)\b|"
+    r"\b(?:better|different|another)\b.{0,45}\b(?:in|from) my (?:vault|inventory)\b|"
+    r"\bwhat else do i (?:have|own)\b|"
+    r"\bwhat (?:perks?|rolls?) (?:are|do i have) on my\b|"
+    r"\b(?:weapon|gear|loadout) recommendations? for (?:pvp|pve|crucible)\b|"
+    r"\bpersonalized (?:gear|weapon|loadout|build) recommendations?\b",
+    re.IGNORECASE,
+)
+_OWNED_BUILD_FOLLOWUP = re.compile(
+    r"^\s*(?:check )?(?:the )?perks? too[.!?]?\s*$|"
+    r"\banything better in my (?:vault|inventory)\b|"
+    r"^\s*anything else[.!?]?\s*$|"
+    r"^\s*show me another(?: one)?[.!?]?\s*$|"
+    r"\bwhat else do i (?:have|own)\b|"
+    r"\b(?:nah|no),? i don'?t (?:want|wanna) (?:to )?use\b|"
+    r"^\s*nah,?\s+not that one[.!?]?\s*$|"
+    r"\bwhich (?:exact )?(?:copy|roll)\b.{0,70}\b(?:better|best|use|range)\b|"
+    r"\bwhat perks?\b.{0,50}\b(?:make|made) (?:it|that|this) better\b|"
+    r"\bwhat (?:are )?the perks? on (?:that|this|the other) one\b|"
+    r"\b(?:what about|is) the other (?:one|roll)\b|"
+    r"\bwhich (?:one|of those)\b.{0,50}\b(?:better|best|use)\b|"
+    r"\bcompare (?:those|the) two\b",
+    re.IGNORECASE,
+)
+_CURRENT_BUILD_FOLLOWUP = re.compile(
+    r"\b(?:make|keep) it (?:easier|simple|stronger|more survivable|for pvp|for pve)\b|"
+    r"^\s*(?:for )?(?:pvp|pve|crucible|iron banner)(?: instead)?[.!?]?\s*$",
+    re.IGNORECASE,
+)
+_BUILD_EXPLANATION_FOLLOWUP = re.compile(
+    r"^\s*why(?:\s+(?:that|this|it|that one|this one))?[.!?]?\s*$|"
+    r"^\s*why (?:is|was) that (?:one )?(?:better|best)[.!?]?\s*$",
+    re.IGNORECASE,
+)
+_CURRENT_BUILD_REQUEST = re.compile(
+    r"\b(?:review|check|improve|fix|judge|rate|how (?:is|does))\b.{0,45}"
+    r"\b(?:my )?(?:build|loadout|gear|weapons?|setup|titan|hunter|warlock|guardian)\b|"
+    r"\bwhat should i (?:use|run|equip)\b|"
+    r"\bwhat (?:gun|weapon|hand cannon|shotgun|rifle|armor(?: piece)?) should i "
+    r"(?:use|run|equip)\b|"
+    r"\bwhat\b.{0,50}\b(?:that )?i own\b.{0,30}\bshould i (?:use|run|equip)\b|"
+    r"\b(?:anything|something) better in my (?:vault|inventory)\b|"
+    r"\bi want to use a different\b",
+    re.IGNORECASE,
+)
+_OWNED_INVENTORY_REQUEST = re.compile(
+    r"\b(?:vault|inventory|that i own|i own|use what i own)\b|"
+    r"\bwhat else do i (?:have|own)\b|"
+    r"\bcheck (?:my )?(?:rolls?|perks?)\b|"
+    r"\bwhat (?:perks?|rolls?) (?:are|do i have) on my\b|"
+    r"\bfind me\b.{0,70}\b(?:weapon|armor|hand cannon|shotgun|rifle)\b|"
+    r"\brecommend\b.{0,70}\b(?:that i own|i own|in my vault|from my inventory)\b|"
+    r"\bi want to use a different\b|"
+    r"\bdo i own a better\b",
+    re.IGNORECASE,
+)
+_FOCUSED_GEAR_REQUEST = re.compile(
+    r"\bwhat should i (?:use|run|equip)\b|"
+    r"\bwhat (?:gun|weapon|hand cannon|shotgun|rifle|armor(?: piece)?) should i "
+    r"(?:use|run|equip)\b|"
+    r"\bwhat\b.{0,50}\b(?:that )?i own\b.{0,30}\bshould i (?:use|run|equip)\b|"
+    r"\b(?:vault|inventory|rolls?|perks?|what else do i (?:have|own))\b|"
+    r"\bfind me\b.{0,70}\b(?:weapon|armor|hand cannon|shotgun|rifle)\b|"
+    r"\brecommend\b.{0,70}\b(?:that i own|i own|in my vault|from my inventory)\b|"
+    r"\bi want to use a different\b",
+    re.IGNORECASE,
+)
 _DETAILED_REBUILD = re.compile(
-    r"\b(?:complete|full|detailed|in[- ]depth)\b.{0,30}\b(?:rebuild|build|loadout)\b|"
-    r"\b(?:rebuild|build|loadout)\b.{0,30}\b(?:complete|full|detailed|in[- ]depth)\b",
+    r"\b(?:complete|full|whole|detailed|in[- ]depth)\b.{0,30}\b(?:rebuild|build|loadout)\b|"
+    r"\b(?:rebuild|build|loadout)\b.{0,30}\b"
+    r"(?:complete|full|whole|detailed|in detail|in[- ]depth)\b",
     re.IGNORECASE,
 )
 _NAMED_LOCK = re.compile(
@@ -196,6 +303,10 @@ _NAMED_LOCK = re.compile(
 _ACTIVITY = re.compile(
     r"\b(?:prep(?:are)? me for|what should i run for|make this (?:good|better) for)\s+"
     r"(?P<activity>[^?.!]{2,100})",
+    re.IGNORECASE,
+)
+_ENTERING_ACTIVITY = re.compile(
+    r"\b(?:jumping|going|heading) into\s+(?P<activity>[^?.!]{2,100})",
     re.IGNORECASE,
 )
 _PRESERVE_EXOTIC = re.compile(
@@ -210,9 +321,46 @@ _RELEASE_EXOTIC = re.compile(
 )
 _RELEASE_NAMED = re.compile(
     r"\b(?:you can|feel free to) (?:change|replace|remove)\s+"
-    r"(?P<name>[A-Z][A-Za-z0-9' -]{1,60}?)(?=[,.!?]|\s+now\b|$)",
+    r"(?P<name>[A-Z][A-Za-z0-9' -]{1,60}?)(?=[,.!?]|\s+now\b|$)|"
+    r"\b(?:i don'?t want|i don'?t wanna|i do not want) (?:to )?use\s+"
+    r"(?P<rejected>[A-Z][A-Za-z0-9' -]{1,60}?)(?=[,.!?]|\s+(?:now|anymore|what else)\b|$)",
     re.IGNORECASE,
 )
+
+
+def is_explicit_build_request(message: str) -> bool:
+    """Identify an explicit personalized build, gear, or owned-item request."""
+
+    return bool(
+        _EXPLICIT_BUILD_REQUEST.search(message) or _PERSONALIZED_GEAR_REQUEST.search(message)
+    )
+
+
+def _recent_build_request(history: Sequence[ChatTurn]) -> bool:
+    user_turns = [turn.content for turn in history if turn.role == "user"]
+    return any(is_explicit_build_request(value) for value in user_turns[-6:])
+
+
+def build_followup_kind(
+    message: str,
+    history: Sequence[ChatTurn],
+) -> BuildFollowupKind | None:
+    """Classify a bounded user-authored follow-up to recent personalized build work."""
+
+    if not _recent_build_request(history):
+        return None
+    if _OWNED_BUILD_FOLLOWUP.search(message):
+        return "owned_inventory"
+    if _CURRENT_BUILD_FOLLOWUP.search(message):
+        return "current_build"
+    if _BUILD_EXPLANATION_FOLLOWUP.search(message):
+        return "explanation"
+    return None
+
+
+def _requested_activity(message: str) -> str | None:
+    match = _ACTIVITY.search(message) or _ENTERING_ACTIVITY.search(message)
+    return match.group("activity").strip() if match else None
 
 
 def derive_build_request_context(
@@ -227,25 +375,44 @@ def derive_build_request_context(
     for value in conversation:
         for match in _NAMED_LOCK.finditer(value):
             name = match.group("name").strip()
-            if name.casefold() not in {"exotic", "my exotic"}:
+            normalized_name = _normalized(name)
+            non_item_prefix = normalized_name.split(maxsplit=1)[0] in {
+                "doing",
+                "playing",
+                "running",
+                "working",
+                "it",
+            }
+            if normalized_name not in {"exotic", "my exotic"} and not non_item_prefix:
                 active_locks[_normalized(name)] = name
         for match in _RELEASE_NAMED.finditer(value):
-            active_locks.pop(_normalized(match.group("name")), None)
+            released = match.group("name") or match.group("rejected")
+            active_locks.pop(_normalized(released), None)
         if _PRESERVE_EXOTIC.search(value):
             preserve_exotics = True
         if _RELEASE_EXOTIC.search(value):
             preserve_exotics = False
-    is_build = bool(
-        _BUILD_REQUEST.search(message)
-        or preferences.primary_goal == "build_improvement"
-        or active_locks
-        or preserve_exotics
+    explicit_build = is_explicit_build_request(message)
+    followup_kind = build_followup_kind(message, history)
+    is_followup = followup_kind is not None
+    is_build = bool(explicit_build or is_followup or active_locks or preserve_exotics)
+    requires_owned_inventory = bool(
+        is_build
+        and (_OWNED_INVENTORY_REQUEST.search(message) or followup_kind == "owned_inventory")
+    )
+    requires_current_build_analysis = bool(
+        is_build
+        and (
+            _CURRENT_BUILD_REQUEST.search(message)
+            or _EXPLICIT_BUILD_REQUEST.search(message)
+            or followup_kind == "current_build"
+        )
     )
     goal: str | None = None
     goal_markers = (
         ("boss_dps", ("boss dps", "single-target", "single target")),
         ("solo_pve", ("solo pve", "solo pve", "solo")),
-        ("pvp", ("pvp", "crucible")),
+        ("pvp", ("pvp", "crucible", "iron banner")),
         ("add_clear", ("add clear", "ad clear")),
         ("survivability", ("survivability", "survive", "tank")),
         ("group_support", ("group support", "team support", "support build")),
@@ -258,8 +425,12 @@ def derive_build_request_context(
     if goal is None and preferences.primary_goal == "build_improvement":
         goal = "build_improvement"
 
-    activity_match = _ACTIVITY.search(message)
-    activity = activity_match.group("activity").strip() if activity_match else None
+    activity = _requested_activity(message)
+    if activity is None and is_followup:
+        for prior_message in reversed(conversation[:-1]):
+            activity = _requested_activity(prior_message)
+            if activity is not None:
+                break
     if _normalized(activity) in {
         "solo pve",
         "boss dps",
@@ -269,13 +440,29 @@ def derive_build_request_context(
     }:
         activity = None
     locks = list(active_locks.values())
+    activity_mode = preferences.activity_mode
+    if activity_mode == "unspecified" and any(
+        marker in normalized for marker in ("pvp", "crucible", "iron banner")
+    ):
+        activity_mode = "pvp"
+    elif activity_mode == "unspecified" and "pve" in normalized:
+        activity_mode = "pve"
     return BuildRequestContext(
         is_build_request=is_build,
+        is_followup=is_followup,
+        followup_kind=followup_kind,
+        focused_recommendation=bool(
+            is_build
+            and _FOCUSED_GEAR_REQUEST.search(message)
+            and not _DETAILED_REBUILD.search(message)
+        ),
+        requires_current_build_analysis=requires_current_build_analysis,
+        requires_owned_inventory=requires_owned_inventory,
         goal=goal,
         activity=activity,
         locked_items=list(dict.fromkeys(locks))[:MAX_LOCKED_ITEMS],
         preserve_equipped_exotics=preserve_exotics,
-        activity_mode=preferences.activity_mode,
+        activity_mode=activity_mode,
         fireteam=preferences.fireteam,
         intensity=preferences.intensity,
         normal_change_limit=None if _DETAILED_REBUILD.search(message) else 3,
@@ -393,24 +580,19 @@ def _equipped_exotics(character: CharacterSummary) -> list[ItemSummary]:
     ]
 
 
-class BuildAnalysisError(ValueError):
-    pass
-
-
 class BuildAnalysisService:
     """Build facts and owned alternatives without a universal quality score."""
 
     def __init__(self, context: GuardianContext) -> None:
         self.context = context
-
-    def _character(self, character_id: str) -> CharacterSummary:
-        for character in self.context.characters:
-            if character.character_id == character_id:
-                return character
-        raise BuildAnalysisError("The requested character was not found in Guardian data.")
+        self.characters = GuardianCharacterResolver(context)
 
     def analyze_current_build(self, request: AnalyzeCurrentBuildRequest) -> dict[str, Any]:
-        character = self._character(request.character_id)
+        character = self.characters.resolve_one(
+            character_id=request.character_id,
+            character_class=request.character_class,
+        )
+        character_id = character.character_id
         items = [item for item in character.equipped_gear if item.item_type in {"Weapon", "Armor"}][
             :MAX_BUILD_ITEMS
         ]
@@ -426,8 +608,7 @@ class BuildAnalysisService:
             *[
                 item
                 for item in self.context.inventory.items
-                if item.location in {"vault", "profile"}
-                or item.character_id == request.character_id
+                if item.location in {"vault", "profile"} or item.character_id == character_id
             ],
         ]
         locked_items = []
@@ -569,7 +750,11 @@ class BuildAnalysisService:
         }
 
     def find_build_alternatives(self, request: FindBuildAlternativesRequest) -> dict[str, Any]:
-        character = self._character(request.character_id)
+        character = self.characters.resolve_one(
+            character_id=request.character_id,
+            character_class=request.character_class,
+        )
+        character_id = character.character_id
         equipped_exotics = _equipped_exotics(character)
         locked = {_normalized(value) for value in request.locked_items or []}
         if request.preserve_exotics:
@@ -580,7 +765,7 @@ class BuildAnalysisService:
         scoped = [
             item
             for item in all_items
-            if item.location in {"vault", "profile"} or item.character_id == request.character_id
+            if item.location in {"vault", "profile"} or item.character_id == character_id
         ]
         locked_equipped = [
             item

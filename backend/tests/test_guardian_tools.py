@@ -291,6 +291,50 @@ def test_build_details_extracts_subclass_exotics_stats_and_mods() -> None:
     }
 
 
+def test_character_scoped_tools_resolve_public_class_without_an_opaque_id() -> None:
+    tools = GuardianToolService(guardian_context())
+
+    loadout = tools.execute(
+        "get_equipped_loadout",
+        {"character_id": None, "character_class": "Titan"},
+    )
+    details = tools.execute(
+        "get_build_details",
+        {"character_id": None, "character_class": "Titan"},
+    )
+
+    assert loadout["character"]["class"] == "Titan"
+    assert details["character"]["class"] == "Titan"
+
+
+def test_character_scoped_tool_schema_supports_exactly_one_public_selector() -> None:
+    definitions = {value["name"]: value for value in GuardianToolService.definitions()}
+    properties = definitions["get_equipped_loadout"]["parameters"]["properties"]
+
+    assert properties["character_id"]["type"] == ["string", "null"]
+    assert properties["character_class"]["enum"] == ["Titan", "Hunter", "Warlock", None]
+    with pytest.raises(ValueError, match="character_id or character_class"):
+        GuardianToolService(guardian_context()).execute(
+            "get_equipped_loadout",
+            {"character_id": None, "character_class": None},
+        )
+    with pytest.raises(ValueError, match="not both"):
+        GuardianToolService(guardian_context()).execute(
+            "get_equipped_loadout",
+            {"character_id": "char-1", "character_class": "Titan"},
+        )
+
+    ambiguous = guardian_context()
+    ambiguous.characters.append(
+        ambiguous.characters[0].model_copy(update={"character_id": "char-2"})
+    )
+    with pytest.raises(ValueError, match="ambiguous"):
+        GuardianToolService(ambiguous).execute(
+            "get_equipped_loadout",
+            {"character_id": None, "character_class": "Titan"},
+        )
+
+
 def test_missing_character_and_empty_results() -> None:
     tools = GuardianToolService(guardian_context())
     with pytest.raises(CharacterNotFoundError):
