@@ -179,12 +179,34 @@ class RecordSummary(BaseModel):
     manifest_resolved: bool = False
 
 
+class TitleRecordProgressSummary(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    completed: bool | None = None
+    objectives: list[ObjectiveSummary] = Field(default_factory=list, max_length=4)
+
+
+class TitleProgressSummary(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    completed: bool | None = None
+    completed_records: int = Field(default=0, ge=0)
+    total_records: int = Field(default=0, ge=0)
+    remaining_records: int = Field(default=0, ge=0)
+    completion_percent: float | None = Field(default=None, ge=0, le=100)
+    remaining_objective_progress_percent: float | None = Field(default=None, ge=0, le=100)
+    remaining: list[TitleRecordProgressSummary] = Field(default_factory=list, max_length=32)
+    remaining_truncated: bool = False
+    data_complete: bool = False
+
+
 class RecordProgressSummary(BaseModel):
     total_visible: int = Field(default=0, ge=0)
     completed: int = Field(default=0, ge=0)
     near_completion: list[ObjectiveSummary] = Field(default_factory=list)
     records: list[RecordSummary] = Field(default_factory=list, max_length=64)
     records_truncated: bool = False
+    titles: list[TitleProgressSummary] = Field(default_factory=list, max_length=96)
+    titles_truncated: bool = False
+    title_data_available: bool = False
 
 
 class CraftingProgressSummary(BaseModel):

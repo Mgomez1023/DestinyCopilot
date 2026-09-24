@@ -466,3 +466,72 @@ def test_record_identity_retention_is_bounded_and_prioritizes_terminal_rules() -
     terminal = next(value for value in result.records if value.record_hash == 3854636015)
     assert terminal.completed is False
     assert all(value.record_hash != 999 for value in result.records)
+
+
+def test_normalizes_bounded_title_progress_from_seal_presentation_nodes() -> None:
+    definitions = {
+        "DestinyPresentationNodeDefinition": {
+            1: {
+                "displayProperties": {"name": "Seals"},
+                "children": {"presentationNodes": [{"presentationNodeHash": 2}]},
+            },
+            2: {
+                "displayProperties": {"name": "Dredgen Seal"},
+                "completionRecordHash": 100,
+                "children": {
+                    "presentationNodes": [],
+                    "records": [{"recordHash": 101}, {"recordHash": 102}],
+                },
+            },
+        },
+        "DestinyRecordDefinition": {
+            100: _definition(
+                "Complete Dredgen",
+                titleInfo={"titlesByGender": {"Male": "Dredgen", "Female": "Dredgen"}},
+            ),
+            101: _definition("First requirement"),
+            102: _definition("Second requirement"),
+        },
+        "DestinyObjectiveDefinition": {500: _definition("Win matches")},
+    }
+    profile = {
+        "profileRecords": {
+            "data": {
+                "recordSealsRootNodeHash": 1,
+                "records": {
+                    "100": {"state": 4},
+                    "101": {"state": 0},
+                    "102": {
+                        "state": 4,
+                        "objectives": [
+                            {
+                                "objectiveHash": 500,
+                                "progress": 8,
+                                "completionValue": 10,
+                                "complete": False,
+                                "visible": True,
+                            }
+                        ],
+                    },
+                },
+            }
+        },
+        "characterRecords": {"data": {}},
+    }
+    membership = {"membershipId": "123", "membershipType": 3, "displayName": "Guardian"}
+
+    context = asyncio.run(
+        GuardianNormalizer(cast(Any, FakeResolver(definitions))).normalize({}, membership, profile)
+    )
+
+    assert context.records.title_data_available is True
+    assert len(context.records.titles) == 1
+    title = context.records.titles[0]
+    assert title.name == "Dredgen"
+    assert title.completed is False
+    assert title.completed_records == 1
+    assert title.total_records == 2
+    assert title.remaining_records == 1
+    assert title.remaining[0].name == "Second requirement"
+    assert title.remaining[0].objectives[0].progress_percent == 80
+    assert title.data_complete is True

@@ -46,8 +46,9 @@ def test_debug_guardian_tool_catalog_is_available_in_development() -> None:
         response = client.get("/api/debug/guardian-tools")
     assert response.status_code == 200
     tools = response.json()["tools"]
-    assert len(tools) == 11
-    assert "get_content_progression" in {value["name"] for value in tools}
+    assert len(tools) == 12
+    names = {value["name"] for value in tools}
+    assert {"get_content_progression", "get_title_progress"} <= names
 
 
 def test_debug_destiny_knowledge_catalog_is_available_in_development() -> None:

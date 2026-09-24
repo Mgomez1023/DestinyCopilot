@@ -132,6 +132,7 @@ def status_for_tool(tool_name: str, category: str) -> tuple[StreamStatusStage, s
         "get_equipped_loadout": "Checking your loadout…",
         "get_active_quests": "Reviewing your quests…",
         "get_progression": "Checking your progress…",
+        "get_title_progress": "Checking your Title progress…",
         "get_content_progression": "Checking campaign progress…",
     }
     return "guardian", guardian_labels.get(tool_name, STATUS_LABELS["guardian"])

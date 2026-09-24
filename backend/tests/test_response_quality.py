@@ -2,6 +2,7 @@ import pytest
 
 from app.response_quality import (
     BuildResponseValidationContext,
+    ReadOnlyActionValidationContext,
     ResponseQualityValidator,
     classify_response_mode,
     is_account_fact_only,
@@ -400,3 +401,37 @@ def test_preserved_exotic_blocks_a_second_exotic_of_the_same_kind() -> None:
     )
 
     assert "incompatible_exotic_recommendation" in {value.code for value in violations}
+
+
+def test_resolved_read_only_lookup_rejects_permission_loop() -> None:
+    message = "yes those are what I mean"
+    mode = response_mode_context(message, session_planning=False, continuation=True)
+    context = ReadOnlyActionValidationContext(intent_resolved=True, lookup_required=True)
+
+    violations = ResponseQualityValidator().validate(
+        "Would you like me to scan your Title progress now?",
+        mode,
+        message,
+        None,
+        None,
+        context,
+    )
+
+    assert "unnecessary_read_only_permission" in {value.code for value in violations}
+
+
+def test_unresolved_title_clarification_is_not_blocked_as_permission_loop() -> None:
+    message = "What is the easiest title for me?"
+    mode = response_mode_context(message, session_planning=False, continuation=False)
+    context = ReadOnlyActionValidationContext(intent_resolved=False, lookup_required=False)
+
+    violations = ResponseQualityValidator().validate(
+        "Do you mean a Destiny Triumph Title or something else?",
+        mode,
+        message,
+        None,
+        None,
+        context,
+    )
+
+    assert "unnecessary_read_only_permission" not in {value.code for value in violations}

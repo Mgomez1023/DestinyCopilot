@@ -54,6 +54,11 @@ class BuildResponseValidationContext(BaseModel):
     normal_change_limit: int | None = 3
 
 
+class ReadOnlyActionValidationContext(BaseModel):
+    intent_resolved: bool = False
+    lookup_required: bool = False
+
+
 _DETAILED = re.compile(
     r"\b(?:detailed|in[- ]depth|comprehensive|thorough|step[- ]by[- ]step)\b",
     re.IGNORECASE,
@@ -252,6 +257,12 @@ class ResponseQualityValidator:
     )
     _DEBUG_REQUEST = re.compile(r"\b(?:debug|api|tool|provider|trace)\b", re.IGNORECASE)
     _TIME_SEGMENT = re.compile(r"\b\d{1,3}\s*[- ]?\s*(?:minutes?|mins?|hours?|hrs?)\b", re.I)
+    _READ_ONLY_PERMISSION_QUESTION = re.compile(
+        r"\b(?:do you want me to|would you like me to|should i|shall i|can i|"
+        r"is it (?:ok|okay)|okay if i|ok if i)\b[^?]{0,180}\b"
+        r"(?:check|scan|fetch|retrieve|look up|inspect|review|analy[sz]e|compare)\b",
+        re.IGNORECASE,
+    )
 
     def __init__(self) -> None:
         self.planning = PlanningAnswerValidator()
@@ -263,6 +274,7 @@ class ResponseQualityValidator:
         user_message: str,
         planning_context: SessionPlanningContext | None,
         build_context: BuildResponseValidationContext | None = None,
+        read_only_context: ReadOnlyActionValidationContext | None = None,
     ) -> list[PlanningViolation]:
         violations = (
             self.planning.validate(answer, planning_context) if planning_context is not None else []
@@ -377,6 +389,21 @@ class ResponseQualityValidator:
         if build_context is not None and build_context.is_build_request:
             violations.extend(
                 self._validate_build_answer(answer, mode, user_message, build_context)
+            )
+        if (
+            read_only_context is not None
+            and read_only_context.intent_resolved
+            and read_only_context.lookup_required
+            and self._READ_ONLY_PERMISSION_QUESTION.search(answer)
+        ):
+            violations.append(
+                PlanningViolation(
+                    code="unnecessary_read_only_permission",
+                    correction=(
+                        "The user already requested this read-only lookup. Do not ask permission "
+                        "or confirm a result format; use the retrieved facts and answer directly."
+                    ),
+                )
             )
         return list({value.code: value for value in violations}.values())
 

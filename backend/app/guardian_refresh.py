@@ -97,6 +97,7 @@ TOOL_SLICE_DEPENDENCIES: dict[str, set[GuardianSlice]] = {
         GuardianSlice.QUESTS_PROGRESS,
         GuardianSlice.COLLECTIONS,
     },
+    "get_title_progress": {GuardianSlice.PROFILE, GuardianSlice.QUESTS_PROGRESS},
     "search_inventory": {
         GuardianSlice.INVENTORY,
         GuardianSlice.EQUIPMENT,

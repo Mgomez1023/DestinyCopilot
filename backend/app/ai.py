@@ -30,6 +30,7 @@ from app.live_knowledge import (
 from app.models import ChatRequest, ChatResponse, ChatSource, GuardianContext
 from app.response_quality import (
     BuildResponseValidationContext,
+    ReadOnlyActionValidationContext,
     ResponseModeContext,
     ResponseQualityValidator,
     is_account_fact_only,
@@ -44,6 +45,7 @@ from app.session_preferences import (
     SessionPreferenceDerivation,
     derive_session_preferences,
 )
+from app.title_progress import TitleRequestContext, derive_title_request_context
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +57,13 @@ Live tools retrieve explicitly current rotations, vendors, activities, and reset
 Web research retrieves current public information and broader sourced Destiny knowledge.
 Decide which categories each question needs. You do not receive the player's full account state.
 Retrieve only the facts needed for the question.
+
+Read-only retrieval is the default action. When the user explicitly asks a question that requires
+Guardian, Manifest, Guide, Live, or Web information, call the relevant read-only tool immediately;
+the request itself is authorization. Do not ask whether you should check, scan, fetch, retrieve, or
+proceed, and do not ask for confirmation merely because another read-only call is needed. Ask one
+targeted clarification only when materially different interpretations remain unresolved by the
+current and recent conversation. All tools remain read-only; never claim or attempt a Bungie write.
 
 Guardian ownership, progress, character, inventory, and account claims MUST come from Guardian tool
 results. Web search results are public information and must never be treated as evidence about the
@@ -219,6 +228,11 @@ Tool routing guidance:
 - Item ownership questions need Guardian inventory evidence. Never establish ownership from
   Manifest, Guide, Live, Web, or model memory.
 - Questions about recent play need get_recent_activities.
+- Personal Destiny Title/Seal or Triumph-completion questions need get_title_progress. For
+  "closest" requests, use its observable ranking and describe the result as closest to completion
+  based on current Triumph progress. Do not call it easiest by time or effort; actual effort may
+  differ. Once the conversation establishes that "title" means a Triumph/Record Title or Seal,
+  retrieve progress immediately without another permission or output-format question.
 - General item, activity, quest, destination, perk, or source questions need Manifest knowledge.
 - Questions asking how to acquire, complete, walk through, farm, locate, or execute mechanics need
   guide knowledge, usually after resolving the canonical entity with Manifest knowledge.
@@ -253,6 +267,7 @@ TRACEABLE_GUARDIAN_TOOLS = {
     "analyze_current_build",
     "find_build_alternatives",
     "get_equipped_loadout",
+    "get_title_progress",
     "search_inventory",
 }
 SAFE_GUARDIAN_TRACE_ARGUMENTS = {
@@ -379,6 +394,7 @@ class RecommendationService:
         build_request_context = derive_build_request_context(
             request.message, preference_context, request.history
         )
+        title_request_context = derive_title_request_context(request.message, request.history)
         build_validation_context = BuildResponseValidationContext(
             is_build_request=build_request_context.is_build_request,
             requires_current_build_analysis=(build_request_context.requires_current_build_analysis),
@@ -388,6 +404,10 @@ class RecommendationService:
             activity_mode=build_request_context.activity_mode,
             fireteam=build_request_context.fireteam,
             normal_change_limit=build_request_context.normal_change_limit,
+        )
+        read_only_validation_context = ReadOnlyActionValidationContext(
+            intent_resolved=title_request_context.intent_resolved,
+            lookup_required=title_request_context.retrieval_required,
         )
         session_planning = bool(
             self._is_session_planning(request.message) or preference_derivation.is_planning_followup
@@ -453,6 +473,11 @@ class RecommendationService:
                 "alternative_search_used": False,
                 "owned_candidates_returned": 0,
                 "locked_item_count": len(build_request_context.locked_items),
+            },
+            "title_progress": {
+                "requested": title_request_context.retrieval_required,
+                "followup": title_request_context.is_followup,
+                "retrieval_used": False,
             },
             "number_of_guardian_tools_used": 0,
             "knowledge_categories_used": [],
@@ -531,6 +556,7 @@ class RecommendationService:
             planning_context,
             mode_context,
             build_request_context,
+            title_request_context,
         )
 
         try:
@@ -543,7 +569,11 @@ class RecommendationService:
                     input=input_items,
                     tools=tool_definitions,
                     include=RESPONSE_INCLUDE,
-                    tool_choice="auto",
+                    tool_choice=(
+                        {"type": "function", "name": "get_title_progress"}
+                        if round_number == 1 and title_request_context.retrieval_required
+                        else "auto"
+                    ),
                     parallel_tool_calls=True,
                     reasoning={"effort": self.settings.openai_reasoning_effort},
                     max_output_tokens=self.settings.openai_max_output_tokens,
@@ -606,6 +636,7 @@ class RecommendationService:
                         request.message,
                         planning_context,
                         build_validation_context,
+                        read_only_validation_context,
                     )
                     if violations:
                         trace["planning_correction"] = {
@@ -633,6 +664,7 @@ class RecommendationService:
                                 request.message,
                                 planning_context,
                                 build_validation_context,
+                                read_only_validation_context,
                             )
                             if corrected_message
                             else violations
@@ -709,6 +741,7 @@ class RecommendationService:
                                 planning_context,
                                 mode_context,
                                 build_request_context,
+                                title_request_context,
                             )
                             trace["planning_context"]["candidate_count"] = len(
                                 planning_context.candidates
@@ -725,6 +758,8 @@ class RecommendationService:
                         call.name,
                         result,
                     )
+                    if call.name == "get_title_progress" and "error" not in result:
+                        trace["title_progress"]["retrieval_used"] = True
                     trace["tools"].append(call.name)
                     tool_trace = self._safe_tool_trace(
                         call.name,
@@ -1189,6 +1224,7 @@ class RecommendationService:
         planning_context: SessionPlanningContext | None,
         mode_context: ResponseModeContext,
         build_request_context: BuildRequestContext,
+        title_request_context: TitleRequestContext,
     ) -> str:
         routing: list[str] = [response_mode_instruction(mode_context)]
         if session_planning:
@@ -1224,6 +1260,21 @@ class RecommendationService:
                 "appropriate Guardian inventory lookup before naming owned choices or exact "
                 "instance perks. Do not mention this routing metadata:\n"
                 f"{build_request_context.model_dump_json()}"
+            )
+        if title_request_context.retrieval_required:
+            routing.append(
+                "Resolved read-only Title/Seal request: call get_title_progress now without "
+                "asking permission or confirming a format. "
+                f"Request at most {title_request_context.requested_limit} title result(s). "
+                "For a closest/easiest request, report observable completion proximity and say "
+                "that actual time or effort may differ. Do not estimate effort or expose raw "
+                "Record identifiers."
+            )
+        elif title_request_context.title_intent_present:
+            routing.append(
+                "The word 'title' may still have materially different meanings. One targeted "
+                "clarification about whether the user means Destiny Triumph/Record Titles or "
+                "Seals is allowed; do not ask permission to retrieve data."
             )
         return f"{SYSTEM_INSTRUCTIONS}\n\n" + "\n".join(routing) if routing else SYSTEM_INSTRUCTIONS
 

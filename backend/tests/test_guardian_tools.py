@@ -8,13 +8,14 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.ai import RecommendationService
+from app.ai import SYSTEM_INSTRUCTIONS, RecommendationService
 from app.chat_stream import StreamStatusReporter, response_events
 from app.config import Settings
 from app.guardian_tools import (
     CharacterNotFoundError,
     GuardianToolService,
     InventorySearchRequest,
+    TitleProgressRequest,
 )
 from app.models import (
     AvailableActivitySummary,
@@ -31,7 +32,10 @@ from app.models import (
     ProgressionSummary,
     QuestSummary,
     RecentActivitySummary,
+    RecordProgressSummary,
     SocketedPlugSummary,
+    TitleProgressSummary,
+    TitleRecordProgressSummary,
 )
 from app.routes import chat as chat_routes
 from app.session_planning import build_session_planning_context
@@ -341,6 +345,85 @@ def test_missing_character_and_empty_results() -> None:
         tools.get_build_details("missing")
     result = tools.search_inventory(InventorySearchRequest(query="does-not-exist"))
     assert result == {"items": [], "total_matching": 0, "limit": 25, "truncated": False}
+
+
+def test_title_progress_is_bounded_ranked_and_omits_raw_identifiers() -> None:
+    definition = next(
+        value
+        for value in GuardianToolService.definitions()
+        if value["name"] == "get_title_progress"
+    )
+    assert definition["strict"] is True
+    assert definition["parameters"]["required"] == ["title_name", "limit"]
+    assert definition["parameters"]["additionalProperties"] is False
+
+    context = guardian_context()
+    context.records = RecordProgressSummary(
+        title_data_available=True,
+        titles=[
+            TitleProgressSummary(
+                name="Conqueror",
+                completed=False,
+                completed_records=8,
+                total_records=10,
+                remaining_records=2,
+                completion_percent=80,
+                remaining_objective_progress_percent=90,
+                data_complete=True,
+            ),
+            TitleProgressSummary(
+                name="Dredgen",
+                completed=False,
+                completed_records=9,
+                total_records=10,
+                remaining_records=1,
+                completion_percent=90,
+                remaining_objective_progress_percent=40,
+                remaining=[
+                    TitleRecordProgressSummary(
+                        name="Prestige",
+                        completed=False,
+                        objectives=[
+                            ObjectiveSummary(
+                                objective_hash=999,
+                                name="Win matches",
+                                progress=4,
+                                completion_value=10,
+                                progress_percent=40,
+                            )
+                        ],
+                    )
+                ],
+                data_complete=True,
+            ),
+        ],
+    )
+
+    result = GuardianToolService(context).get_title_progress(
+        TitleProgressRequest(title_name=None, limit=1)
+    )
+
+    assert result["returned"] == 1
+    assert result["titles"][0]["title"] == "Dredgen"
+    assert result["titles"][0]["remaining_count"] == 1
+    assert result["truncated"] is True
+    serialized = json.dumps(result)
+    assert "999" not in serialized
+    assert "objective_hash" not in serialized
+    assert "actual time and effort may differ" in result["interpretation"]
+
+
+def test_title_progress_missing_or_invalid_metadata_fails_safely() -> None:
+    missing = GuardianToolService(guardian_context()).get_title_progress(
+        TitleProgressRequest(title_name=None, limit=5)
+    )
+    assert missing["availability"] == "insufficient_data"
+    assert missing["titles"] == []
+
+    with pytest.raises(ValueError):
+        GuardianToolService(guardian_context()).execute(
+            "get_title_progress", {"title_name": None, "limit": 11}
+        )
 
 
 class FakeResponses:
@@ -2065,3 +2148,200 @@ def test_grounded_active_quest_recommendation_is_accepted_without_retry() -> Non
     assert response.message == answer
     assert len(scripted.requests) == 1
     assert service.latest_trace()["planning_correction"]["attempted"] is False
+
+
+def _guardian_with_title_progress() -> GuardianContext:
+    context = guardian_context()
+    context.records = RecordProgressSummary(
+        title_data_available=True,
+        titles=[
+            TitleProgressSummary(
+                name="Dredgen",
+                completed=False,
+                completed_records=9,
+                total_records=10,
+                remaining_records=1,
+                completion_percent=90,
+                remaining_objective_progress_percent=75,
+                data_complete=True,
+            )
+        ],
+    )
+    return context
+
+
+def _title_tool_call() -> Any:
+    return SimpleNamespace(
+        type="function_call",
+        name="get_title_progress",
+        arguments='{"title_name":null,"limit":1}',
+        call_id="titles-1",
+    )
+
+
+def test_ambiguous_title_request_allows_one_targeted_clarification() -> None:
+    answer = "Do you mean Destiny Triumph Titles and Seals?"
+    scripted = ScriptedWebResponses([[assistant_message(answer)]], [answer])
+    service = RecommendationService(Settings(openai_api_key="test-key"))
+    service.client = SimpleNamespace(responses=scripted)
+
+    response = asyncio.run(
+        service.chat(
+            ChatRequest(
+                message=(
+                    "Based on my account data, what would be the easiest title for me to go for?"
+                )
+            ),
+            _guardian_with_title_progress(),
+        )
+    )
+
+    assert response.message == answer
+    assert scripted.requests[0]["tool_choice"] == "auto"
+    assert service.latest_trace()["planning_correction"]["attempted"] is False
+
+
+@pytest.mark.parametrize(
+    ("message", "history"),
+    [
+        (
+            "yes those are what I mean",
+            [
+                ChatTurn(
+                    role="user",
+                    content=(
+                        "Based on my account data, what would be the easiest title for me to go "
+                        "for?"
+                    ),
+                ),
+                ChatTurn(
+                    role="assistant",
+                    content="Do you mean Destiny Triumph/Record Titles and Seals?",
+                ),
+            ],
+        ),
+        ("single title im closest to", []),
+        (
+            "do the recommended",
+            [
+                ChatTurn(role="user", content="Which Triumph title is easiest for my account?"),
+                ChatTurn(
+                    role="assistant",
+                    content=(
+                        "I can scan your Title progress and recommend the closest one. Proceed?"
+                    ),
+                ),
+            ],
+        ),
+        (
+            "YES",
+            [
+                ChatTurn(role="user", content="Which seal am I nearest to completing?"),
+                ChatTurn(
+                    role="assistant",
+                    content="Would you like me to check your Title progress?",
+                ),
+            ],
+        ),
+    ],
+)
+def test_resolved_title_requests_immediately_retrieve_and_answer(
+    message: str, history: list[ChatTurn]
+) -> None:
+    answer = (
+        "Dredgen is the single title closest to completion from your current Triumph progress; "
+        "actual time and effort may differ."
+    )
+    scripted = ScriptedWebResponses(
+        [[_title_tool_call()], [assistant_message(answer)]], ["", answer]
+    )
+    service = RecommendationService(Settings(openai_api_key="test-key"))
+    service.client = SimpleNamespace(responses=scripted)
+
+    response = asyncio.run(
+        service.chat(
+            ChatRequest(message=message, history=history),
+            _guardian_with_title_progress(),
+        )
+    )
+
+    assert response.message == answer
+    assert scripted.requests[0]["tool_choice"] == {
+        "type": "function",
+        "name": "get_title_progress",
+    }
+    assert scripted.requests[1]["tool_choice"] == "auto"
+    output = next(
+        value
+        for value in scripted.requests[1]["input"]
+        if isinstance(value, dict) and value.get("type") == "function_call_output"
+    )
+    assert "Dredgen" in output["output"]
+    assert "objective_hash" not in output["output"]
+    trace = service.latest_trace()
+    assert trace["title_progress"]["retrieval_used"] is True
+    assert trace["tools"] == ["get_title_progress"]
+
+
+def test_public_title_question_does_not_force_account_retrieval() -> None:
+    answer = "Dredgen is a Destiny 2 title associated with Gambit."
+    scripted = ScriptedWebResponses([[assistant_message(answer)]], [answer])
+    service = RecommendationService(Settings(openai_api_key="test-key"))
+    service.client = SimpleNamespace(responses=scripted)
+
+    response = asyncio.run(
+        service.chat(
+            ChatRequest(message="What is the Dredgen title?"),
+            _guardian_with_title_progress(),
+        )
+    )
+
+    assert response.message == answer
+    assert scripted.requests[0]["tool_choice"] == "auto"
+    assert "word 'title' may still" not in scripted.requests[0]["instructions"]
+    assert service.latest_trace()["title_progress"]["requested"] is False
+
+
+def test_resolved_title_lookup_permission_response_is_corrected_without_another_tool_call() -> None:
+    permission = "Would you like me to scan your Title progress now?"
+    corrected = (
+        "Dredgen is closest to completion from your current Triumph progress; actual effort may "
+        "differ."
+    )
+    history = [
+        ChatTurn(role="user", content="What is the easiest title for my account?"),
+        ChatTurn(role="assistant", content="Do you mean Triumph/Record Titles and Seals?"),
+    ]
+    scripted = ScriptedWebResponses(
+        [
+            [_title_tool_call()],
+            [assistant_message(permission)],
+            [assistant_message(corrected)],
+        ],
+        ["", permission, corrected],
+    )
+    service = RecommendationService(Settings(openai_api_key="test-key"))
+    service.client = SimpleNamespace(responses=scripted)
+
+    response = asyncio.run(
+        service.chat(
+            ChatRequest(message="YES", history=history),
+            _guardian_with_title_progress(),
+        )
+    )
+
+    assert response.message == corrected
+    assert len(scripted.requests) == 3
+    assert scripted.requests[2]["tool_choice"] == "none"
+    trace = service.latest_trace()
+    assert "unnecessary_read_only_permission" in trace["planning_correction"]["violation_codes"]
+
+
+def test_system_instructions_default_to_read_only_action_without_weakening_writes() -> None:
+    assert "the request itself is authorization" in SYSTEM_INSTRUCTIONS
+    assert "Do not ask whether you should check, scan, fetch, retrieve, or" in SYSTEM_INSTRUCTIONS
+    assert (
+        "Personal Destiny Title/Seal or Triumph-completion questions need get_title_progress"
+        in (SYSTEM_INSTRUCTIONS)
+    )
+    assert "All tools remain read-only" in SYSTEM_INSTRUCTIONS

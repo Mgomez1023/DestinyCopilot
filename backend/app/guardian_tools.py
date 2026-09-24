@@ -57,6 +57,11 @@ class InventorySearchRequest(OptionalCharacterRequest):
     limit: int = Field(default=25, ge=1, le=100)
 
 
+class TitleProgressRequest(ToolRequest):
+    title_name: str | None = Field(default=None, min_length=1, max_length=100)
+    limit: int = Field(default=5, ge=1, le=10)
+
+
 class ToolInvocationResponse(BaseModel):
     tool_name: str
     result: dict[str, Any]
@@ -153,6 +158,25 @@ GUARDIAN_TOOL_DEFINITIONS: list[dict[str, Any]] = [
         _character_selector(optional=True),
     ),
     _strict_tool(
+        "get_title_progress",
+        (
+            "Get bounded account-wide Destiny Title/Seal Triumph progress, ranked closest first "
+            "by fewest remaining required records and then observed objective progress. Use for "
+            "personal title completion questions. This does not estimate time or effort."
+        ),
+        {
+            "title_name": _nullable_string(
+                "Optional case-insensitive Title/Seal name filter, or null for closest titles."
+            ),
+            "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 10,
+                "description": "Maximum Title/Seal summaries to return.",
+            },
+        },
+    ),
+    _strict_tool(
         "search_inventory",
         "Search normalized owned and equipped items using name and structured filters.",
         {
@@ -189,6 +213,7 @@ REQUEST_MODELS: dict[str, type[ToolRequest]] = {
     "get_available_activities": OptionalCharacterRequest,
     "get_recent_activities": RecentActivitiesRequest,
     "get_progression": OptionalCharacterRequest,
+    "get_title_progress": TitleProgressRequest,
     "search_inventory": InventorySearchRequest,
     "get_build_details": CharacterRequest,
 }
@@ -248,6 +273,9 @@ class GuardianToolService:
             return self.get_progression(  # type: ignore[attr-defined]
                 request.character_id, request.character_class
             )
+        if name == "get_title_progress":
+            title_request = TitleProgressRequest.model_validate(request.model_dump())
+            return self.get_title_progress(title_request)
         if name == "search_inventory":
             search = InventorySearchRequest.model_validate(request.model_dump())
             return self.search_inventory(search)
@@ -570,8 +598,131 @@ class GuardianToolService:
             ],
             "characters": characters,
             "collectibles": self.context.collectibles.model_dump(mode="json"),
-            "records": self.context.records.model_dump(mode="json", exclude={"records"}),
+            "records": self.context.records.model_dump(mode="json", exclude={"records", "titles"}),
             "crafting": self.context.crafting.model_dump(mode="json"),
+        }
+
+    def get_title_progress(self, request: TitleProgressRequest) -> dict[str, Any]:
+        records = self.context.records
+        if not records.title_data_available or not records.titles:
+            return {
+                "availability": "insufficient_data",
+                "titles": [],
+                "returned": 0,
+                "limit": request.limit,
+                "ranking_basis": (
+                    "fewest remaining required records, then greatest observed remaining "
+                    "objective progress"
+                ),
+                "limitations": [
+                    "Usable Title/Seal presentation data was not available in the normalized "
+                    "Guardian Records snapshot. No completion ranking can be established."
+                ],
+            }
+
+        title_filter = request.title_name.casefold() if request.title_name else None
+        matches = [
+            value
+            for value in records.titles
+            if title_filter is None or title_filter in value.name.casefold()
+        ]
+        incomplete = [value for value in matches if value.completed is not True]
+        complete = [value for value in matches if value.completed is True]
+
+        def rank(value: Any) -> tuple[Any, ...]:
+            return (
+                value.remaining_records,
+                -(value.remaining_objective_progress_percent or 0.0),
+                -(value.completion_percent or 0.0),
+                not value.data_complete,
+                value.name.casefold(),
+            )
+
+        ranked = sorted(incomplete, key=rank) + sorted(complete, key=rank)
+        selected = ranked[: request.limit]
+        public_titles: list[dict[str, Any]] = []
+        for title in selected:
+            remaining = []
+            for record in title.remaining[:8]:
+                remaining.append(
+                    {
+                        "name": record.name,
+                        "completion_state": (
+                            "complete"
+                            if record.completed is True
+                            else "incomplete"
+                            if record.completed is False
+                            else "unknown"
+                        ),
+                        "objectives": [
+                            {
+                                "name": objective.name,
+                                "progress": objective.progress,
+                                "completion_value": objective.completion_value,
+                                "progress_percent": objective.progress_percent,
+                                "complete": objective.complete,
+                            }
+                            for objective in record.objectives
+                        ],
+                    }
+                )
+            public_titles.append(
+                {
+                    "title": title.name,
+                    "completion_state": (
+                        "complete"
+                        if title.completed is True
+                        else "incomplete"
+                        if title.completed is False
+                        else "unknown"
+                    ),
+                    "completed_records": title.completed_records,
+                    "total_records": title.total_records,
+                    "remaining_count": title.remaining_records,
+                    "completion_percent": title.completion_percent,
+                    "remaining_objective_progress_percent": (
+                        title.remaining_objective_progress_percent
+                    ),
+                    "remaining_objectives": remaining,
+                    "remaining_objectives_truncated": bool(
+                        title.remaining_truncated or len(title.remaining) > len(remaining)
+                    ),
+                    "data_complete": title.data_complete,
+                }
+            )
+
+        limitations: list[str] = [
+            "Ranking measures observed completion proximity, not expected time or difficulty."
+        ]
+        if records.titles_truncated:
+            limitations.append(
+                "The normalized Title/Seal catalog was bounded, so titles outside it were not "
+                "ranked."
+            )
+        if any(not value.data_complete for value in selected):
+            limitations.append(
+                "Some returned titles have missing or bounded Record state; preserve that "
+                "uncertainty."
+            )
+        availability = "available" if public_titles else "no_match"
+        if not public_titles and request.title_name:
+            limitations.append("No normalized Title/Seal matched the requested name.")
+        return {
+            "availability": availability,
+            "titles": public_titles,
+            "returned": len(public_titles),
+            "total_matching": len(ranked),
+            "limit": request.limit,
+            "truncated": len(ranked) > request.limit or records.titles_truncated,
+            "ranking_basis": (
+                "fewest remaining required records, then greatest observed remaining "
+                "objective progress"
+            ),
+            "interpretation": (
+                "Closest to completion based on current Triumph progress; actual time and effort "
+                "may differ."
+            ),
+            "limitations": limitations,
         }
 
     def search_inventory(self, request: InventorySearchRequest) -> dict[str, Any]:

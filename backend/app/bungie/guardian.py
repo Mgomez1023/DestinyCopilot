@@ -30,6 +30,8 @@ from app.models import (
     RecordProgressSummary,
     RecordSummary,
     SocketedPlugSummary,
+    TitleProgressSummary,
+    TitleRecordProgressSummary,
 )
 
 logger = logging.getLogger(__name__)
@@ -67,6 +69,9 @@ RECENT_ACTIVITY_LIMIT_PER_CHARACTER = 25
 NEAR_RECORD_LIMIT = 12
 RETAINED_RECORD_LIMIT = 64
 RECORD_OBJECTIVE_LIMIT = 4
+TITLE_NODE_LIMIT = 256
+TITLE_GROUP_LIMIT = 96
+TITLE_RECORD_LIMIT = 32
 ACTIVITY_DIFFICULTY_NAMES = {
     0: "Trivial",
     1: "Easy",
@@ -396,6 +401,8 @@ class GuardianNormalizer:
     def __init__(self, resolver: DefinitionResolver) -> None:
         self.resolver = resolver
         self.definitions: dict[str, dict[int, dict[str, Any]]] = {}
+        self._title_nodes_truncated = False
+        self._title_groups_truncated = False
 
     async def normalize(
         self,
@@ -459,6 +466,11 @@ class GuardianNormalizer:
         profile: dict[str, Any],
         histories: dict[str, dict[str, Any] | None],
     ) -> None:
+        (
+            title_nodes,
+            title_record_hashes,
+            self._title_nodes_truncated,
+        ) = await self._resolve_title_nodes(profile)
         inventory_items = list(self._raw_inventory_items(profile, include_equipped=True))
         item_hashes = {
             int(item.get("itemHash", 0)) for _, _, item in inventory_items if item.get("itemHash")
@@ -490,6 +502,11 @@ class GuardianNormalizer:
         objective_sources["nearRecords"] = [value[2] for value in near_records]
         retained_records, _ = _retained_record_candidates(profile, RETAINED_RECORD_LIMIT)
         objective_sources["retainedRecords"] = [value[1] for value in retained_records]
+        objective_sources["titleRecords"] = [
+            raw
+            for record_hash, raw, _, _ in _iter_scoped_records(profile)
+            if record_hash in title_record_hashes
+        ]
         objective_hashes = _collect_hashes(objective_sources, "objectiveHash")
         activity_sources = {
             "progressions": profile.get("characterProgressions"),
@@ -512,6 +529,7 @@ class GuardianNormalizer:
         season_hashes: set[int] = set()
         record_hashes = {value[1] for value in near_records}
         record_hashes.update(value[0] for value in retained_records)
+        record_hashes.update(title_record_hashes)
 
         for raw in _component_data(profile, "characters", {}).values():
             if raw.get("classHash"):
@@ -555,7 +573,7 @@ class GuardianNormalizer:
             "DestinySeasonDefinition": season_hashes,
             "DestinyRecordDefinition": record_hashes,
         }
-        self.definitions = {}
+        self.definitions = {"DestinyPresentationNodeDefinition": title_nodes}
         for entity_type, hashes in calls.items():
             self.definitions[entity_type] = await self._safe_resolve_many(entity_type, hashes)
             self.resolver.release_table(entity_type)
@@ -579,6 +597,46 @@ class GuardianNormalizer:
             "DestinyActivityTypeDefinition", referenced_activity_types
         )
         self.resolver.release_table("DestinyActivityTypeDefinition")
+
+    async def _resolve_title_nodes(
+        self, profile: dict[str, Any]
+    ) -> tuple[dict[int, dict[str, Any]], set[int], bool]:
+        records_component = _component_data(profile, "profileRecords", {})
+        root_hash = records_component.get("recordSealsRootNodeHash")
+        if not root_hash:
+            return {}, set(), False
+
+        resolved: dict[int, dict[str, Any]] = {}
+        pending = {int(root_hash)}
+        attempted: set[int] = set()
+        while pending and len(attempted) < TITLE_NODE_LIMIT:
+            capacity = TITLE_NODE_LIMIT - len(attempted)
+            batch = set(sorted(pending)[:capacity])
+            pending.difference_update(batch)
+            attempted.update(batch)
+            definitions = await self._safe_resolve_many("DestinyPresentationNodeDefinition", batch)
+            resolved.update(definitions)
+            for definition in definitions.values():
+                children = (definition.get("children") or {}).get("presentationNodes") or []
+                for child in children:
+                    child_hash = child.get("presentationNodeHash")
+                    if child_hash:
+                        parsed = int(child_hash)
+                        if parsed not in attempted:
+                            pending.add(parsed)
+
+        self.resolver.release_table("DestinyPresentationNodeDefinition")
+        record_hashes: set[int] = set()
+        for definition in resolved.values():
+            completion_hash = definition.get("completionRecordHash")
+            child_records = (definition.get("children") or {}).get("records") or []
+            if not completion_hash or not child_records:
+                continue
+            record_hashes.add(int(completion_hash))
+            record_hashes.update(
+                int(value["recordHash"]) for value in child_records if value.get("recordHash")
+            )
+        return resolved, record_hashes, bool(pending)
 
     async def _safe_resolve_many(
         self, entity_type: str, entity_hashes: set[int]
@@ -1282,7 +1340,141 @@ class GuardianNormalizer:
             near_completion=near_completion,
             records=record_summaries,
             records_truncated=retained_total > len(record_summaries),
+            titles=self._normalize_titles(profile),
+            titles_truncated=(self._title_nodes_truncated or self._title_groups_truncated),
+            title_data_available=bool(
+                _component_data(profile, "profileRecords", {}).get("recordSealsRootNodeHash")
+                and self.definitions.get("DestinyPresentationNodeDefinition")
+            ),
         )
+
+    def _normalize_titles(self, profile: dict[str, Any]) -> list[TitleProgressSummary]:
+        raw_records: dict[int, list[dict[str, Any]]] = {}
+        for record_hash, raw, _, _ in _iter_scoped_records(profile):
+            raw_records.setdefault(record_hash, []).append(raw)
+
+        titles: list[TitleProgressSummary] = []
+        nodes = self.definitions.get("DestinyPresentationNodeDefinition", {})
+        for definition in nodes.values():
+            completion_hash = definition.get("completionRecordHash")
+            child_entries = (definition.get("children") or {}).get("records") or []
+            if not completion_hash or not child_entries:
+                continue
+
+            completion_definition = self._definition("DestinyRecordDefinition", completion_hash)
+            title_name = self._title_name(definition, completion_definition)
+            if not title_name:
+                continue
+
+            record_hashes: list[int] = []
+            for entry in child_entries:
+                record_hash = entry.get("recordHash")
+                if not record_hash:
+                    continue
+                parsed_hash = int(record_hash)
+                record_definition = self._definition("DestinyRecordDefinition", parsed_hash)
+                if record_definition.get("forTitleGilding"):
+                    continue
+                if parsed_hash not in record_hashes:
+                    record_hashes.append(parsed_hash)
+
+            remaining: list[TitleRecordProgressSummary] = []
+            remaining_detail_count = 0
+            completed_records = 0
+            missing_state = False
+            objective_progress: list[float] = []
+            for record_hash in record_hashes:
+                states = [
+                    value
+                    for value in raw_records.get(record_hash, [])
+                    if not int(value.get("state", 0)) & 16
+                ]
+                record_completed = (
+                    any(not int(value.get("state", 0)) & 4 for value in states) if states else None
+                )
+                if record_completed:
+                    completed_records += 1
+                    continue
+                if record_completed is None:
+                    missing_state = True
+                raw = states[0] if states else {}
+                raw_objectives = [
+                    value
+                    for value in (
+                        (raw.get("objectives", []) or [])
+                        + (raw.get("intervalObjectives", []) or [])
+                    )
+                    if value.get("visible", True)
+                ][:RECORD_OBJECTIVE_LIMIT]
+                objectives = [self._normalize_objective(value) for value in raw_objectives]
+                objective_progress.extend(
+                    value.progress_percent
+                    for value in objectives
+                    if value.progress_percent is not None and not value.complete
+                )
+                record_definition = self._definition("DestinyRecordDefinition", record_hash)
+                record_name = _display(record_definition)[0] if record_definition else "Unknown"
+                remaining_detail_count += 1
+                if len(remaining) < TITLE_RECORD_LIMIT:
+                    remaining.append(
+                        TitleRecordProgressSummary(
+                            name=record_name,
+                            completed=record_completed,
+                            objectives=objectives,
+                        )
+                    )
+
+            completion_states = [
+                value
+                for value in raw_records.get(int(completion_hash), [])
+                if not int(value.get("state", 0)) & 16
+            ]
+            title_completed = (
+                any(not int(value.get("state", 0)) & 4 for value in completion_states)
+                if completion_states
+                else None
+            )
+            total_records = len(record_hashes)
+            titles.append(
+                TitleProgressSummary(
+                    name=title_name,
+                    completed=title_completed,
+                    completed_records=completed_records,
+                    total_records=total_records,
+                    remaining_records=max(0, total_records - completed_records),
+                    completion_percent=(
+                        round(completed_records / total_records * 100, 1) if total_records else None
+                    ),
+                    remaining_objective_progress_percent=(
+                        round(sum(objective_progress) / len(objective_progress), 1)
+                        if objective_progress
+                        else None
+                    ),
+                    remaining=remaining,
+                    remaining_truncated=remaining_detail_count > len(remaining),
+                    data_complete=bool(total_records and not missing_state),
+                )
+            )
+
+        titles.sort(key=lambda value: value.name.casefold())
+        self._title_groups_truncated = len(titles) > TITLE_GROUP_LIMIT
+        return titles[:TITLE_GROUP_LIMIT]
+
+    @staticmethod
+    def _title_name(
+        node_definition: dict[str, Any], completion_definition: dict[str, Any]
+    ) -> str | None:
+        title_info = completion_definition.get("titleInfo") or {}
+        gendered = title_info.get("titlesByGender") or {}
+        if isinstance(gendered, dict):
+            for value in gendered.values():
+                if isinstance(value, str) and value.strip():
+                    return value.strip()[:200]
+        node_name = _display(node_definition)[0]
+        if node_name != "Unknown":
+            return node_name[:200]
+        completion_name = _display(completion_definition)[0]
+        return completion_name[:200] if completion_name != "Unknown" else None
 
     def _normalize_crafting(self, profile: dict[str, Any]) -> CraftingProgressSummary:
         craftables: dict[str, list[dict[str, Any]]] = {}
