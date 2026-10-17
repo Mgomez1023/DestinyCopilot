@@ -1,8 +1,10 @@
+import dataclasses
 import json
 import logging
 import re
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit
 from uuid import uuid4
@@ -23,6 +25,8 @@ from app.chat_stream import (
 )
 from app.config import Settings
 from app.content_progression import mentioned_content_names, supported_content_aliases
+from app.core_knowledge import DestinyKnowledgeEngine, normalize_text
+from app.core_knowledge_provider import CORE_PROVIDER_CATEGORY
 from app.destiny_knowledge import DestinyKnowledgeService, KnowledgeToolError
 from app.guardian_tools import GuardianToolError, GuardianToolService
 from app.live_knowledge import (
@@ -55,8 +59,9 @@ from app.title_progress import TitleRequestContext, derive_title_request_context
 logger = logging.getLogger(__name__)
 
 SYSTEM_INSTRUCTIONS = """You are Guardian Copilot, a concise and practical Destiny 2 companion.
-You have five read-only information categories. Guardian tools retrieve facts about this
-authenticated player. Manifest tools retrieve canonical Destiny definitions and metadata. Guide
+You have six read-only information categories. Guardian tools retrieve facts about this
+authenticated player. Manifest tools retrieve canonical Destiny definitions and metadata. Core
+concept tools look up curated, Bungie-sourced Destiny concepts and rules by exact name. Guide
 tools retrieve source-backed walkthroughs, acquisition instructions, and encounter mechanics.
 Live tools retrieve explicitly current rotations, vendors, activities, and reset-bounded state.
 Web research retrieves current public information and broader sourced Destiny knowledge.
@@ -82,6 +87,12 @@ research, campaign or DLC explanations, guides missing from the curated corpus, 
 information, and questions where the existing providers explicitly lack coverage. Prefer official
 Bungie sources when available. Never use web research to bypass a provider boundary or its stated
 limitations.
+
+Core concept results and any application-provided "Grounded Destiny facts" block are established,
+Bungie-sourced evidence. A field listed as unknown is unknown; do not fill it from memory. An
+ambiguous term lists every candidate; do not silently choose one. Locations, activity format,
+class and slot rules, and rewards must come from Guardian data, tool results, or grounded facts.
+live_sensitive topics still require Live tools or sourced current information.
 
 Quest steps, exotic acquisition methods, drop sources, encounter mechanics, prerequisites, and
 practical walkthroughs must come from retrieved guide or web research results, never model memory.
@@ -366,6 +377,24 @@ COMPLETION_DENIAL_MARKERS = (
 )
 
 
+CORE_FACTS_HEADER = (
+    "Grounded Destiny facts for this turn (application-provided, Bungie-sourced evidence as "
+    "JSON; each fact is [predicate, value, source kinds]):"
+)
+_LOCATION_WORDS = re.compile(r"\b(?:on|in|at|located|found)\b")
+
+
+@dataclass(slots=True)
+class CoreGrounding:
+    """The per-turn core knowledge attachment, built once before the first model round."""
+
+    block: str | None = None
+    trace: dict[str, Any] = dataclasses.field(
+        default_factory=lambda: {"available": False, "used": False}
+    )
+    weapon_archetypes: tuple[str, ...] = ()
+
+
 class RecommendationService:
     def __init__(
         self,
@@ -452,6 +481,7 @@ class RecommendationService:
             if session_planning
             else None
         )
+        core_grounding = self._core_grounding(request.message, planning_context)
         quality_validator = ResponseQualityValidator()
         trace: dict[str, Any] = {
             "trace_id": trace_id,
@@ -487,12 +517,14 @@ class RecommendationService:
                 "retrieval_used": False,
             },
             "number_of_guardian_tools_used": 0,
+            "core_knowledge": core_grounding.trace,
             "knowledge_categories_used": [],
             "web_research_occurred": False,
             "tools": [],
             "grounding": {
                 "guardian_account": False,
                 "manifest": False,
+                "core_knowledge": core_grounding.block is not None,
                 "guide_provider": False,
                 "live_provider": False,
                 "web_research": False,
@@ -563,14 +595,17 @@ class RecommendationService:
         total_tool_calls = 0
         web_sources: list[ChatSource] = []
         knowledge_sources: list[ChatSource] = []
-        turn_instructions = self._turn_instructions(
-            session_planning,
-            intent_category,
-            character_scope,
-            planning_context,
-            mode_context,
-            build_request_context,
-            title_request_context,
+        turn_instructions = self._with_core_facts(
+            self._turn_instructions(
+                session_planning,
+                intent_category,
+                character_scope,
+                planning_context,
+                mode_context,
+                build_request_context,
+                title_request_context,
+            ),
+            core_grounding,
         )
 
         forced_evidence_attempted: set[str] = set()
@@ -776,6 +811,7 @@ class RecommendationService:
                         context,
                         allow_identifiers=bool(DEBUG_IDENTIFIER_PATTERN.search(request.message)),
                     )
+                    self._record_destination_conflicts(core_grounding, message)
                     trace["answer"] = "generated"
                     self._store_trace(trace_id, trace)
                     return ChatResponse(
@@ -808,14 +844,19 @@ class RecommendationService:
                                 character_scope,
                                 preference_context,
                             )
-                            turn_instructions = self._turn_instructions(
-                                session_planning,
-                                intent_category,
-                                character_scope,
-                                planning_context,
-                                mode_context,
-                                build_request_context,
-                                title_request_context,
+                            # The core block was built once for this turn and is re-attached,
+                            # not rebuilt, when refreshed planning context changes routing.
+                            turn_instructions = self._with_core_facts(
+                                self._turn_instructions(
+                                    session_planning,
+                                    intent_category,
+                                    character_scope,
+                                    planning_context,
+                                    mode_context,
+                                    build_request_context,
+                                    title_request_context,
+                                ),
+                                core_grounding,
                             )
                             trace["planning_context"]["candidate_count"] = len(
                                 planning_context.candidates
@@ -836,7 +877,11 @@ class RecommendationService:
                         # Observability only: never alters answers, validation, or tool choice.
                         trace["build_analysis"]["forced_alternatives_relevance"].append(
                             self._forced_alternatives_relevance(
-                                request.message, guardian_tools.context, call.arguments, result
+                                request.message,
+                                guardian_tools.context,
+                                call.arguments,
+                                result,
+                                core_grounding.weapon_archetypes,
                             )
                         )
                     if call.name == "get_title_progress" and "error" not in result:
@@ -872,6 +917,13 @@ class RecommendationService:
                     trace["tool_trace"].append(tool_trace)
                     if category == "manifest":
                         trace["grounding"]["manifest"] = True
+                        self._record_manifest_conflict(core_grounding, call.name, result)
+                    elif category == CORE_PROVIDER_CATEGORY:
+                        # Core results are curated evidence, never Guardian account evidence.
+                        trace["grounding"]["core_knowledge"] = True
+                        core_grounding.trace["used"] = True
+                        core_grounding.trace["tool_used"] = True
+                        tool_trace.update(self._safe_core_tool_summary(result))
                     elif category == "guide":
                         trace["grounding"]["guide_provider"] = True
                     elif category == LIVE_PROVIDER_CATEGORY:
@@ -1242,6 +1294,189 @@ class RecommendationService:
             for provider in providers
         )
 
+    def _core_engine(self) -> DestinyKnowledgeEngine | None:
+        providers = getattr(self.knowledge, "providers", None) or []
+        provider = next(
+            (
+                value
+                for value in providers
+                if getattr(value, "knowledge_category", None) == CORE_PROVIDER_CATEGORY
+            ),
+            None,
+        )
+        engine = getattr(provider, "engine", None)
+        return engine if isinstance(engine, DestinyKnowledgeEngine) else None
+
+    def _core_grounding(
+        self, message: str, planning_context: SessionPlanningContext | None
+    ) -> CoreGrounding:
+        """Build the turn's grounded-facts block once, from local deterministic inputs only.
+
+        Inputs are the user's message and planning candidate names, in candidate order. The
+        engine is in memory: no network, disk, fuzzy search, or model call happens here.
+        """
+
+        engine = self._core_engine()
+        if engine is None:
+            return CoreGrounding()
+        candidates = (
+            tuple(value.name for value in planning_context.candidates) if planning_context else ()
+        )
+        trace: dict[str, Any] = {
+            "available": True,
+            "used": False,
+            "corpus_version": engine.corpus_version,
+            "candidate_names_considered": len(candidates),
+            "bundle_attached": False,
+            "matched_entity_ids": [],
+            "resolutions": [],
+            "ambiguity_groups": [],
+            "bundle_chars": 0,
+            "bundle_token_estimate": 0,
+            "instruction_chars_added": 0,
+            "omitted": {},
+            "truncated": False,
+            "tool_used": False,
+            "manifest_conflicts": [],
+            "destination_conflicts": [],
+        }
+        try:
+            bundle = engine.bundle(message, candidates)
+            mentioned = [
+                engine.entity_brief(value.resolution.entity_id)
+                for value in engine.mentions(message)
+                if value.resolution.entity_id is not None
+            ]
+            archetypes = tuple(
+                dict.fromkeys(
+                    value["name"] for value in mentioned if value["kind"] == "weapon_archetype"
+                )
+            )
+        except Exception:
+            # Grounding is additive; a failure must never break the chat turn.
+            logger.exception("Core knowledge bundle could not be built")
+            trace["error"] = True
+            return CoreGrounding(trace=trace)
+        if bundle is None:
+            return CoreGrounding(trace=trace, weapon_archetypes=archetypes)
+        block = f"{CORE_FACTS_HEADER}\n{bundle.text}"
+        trace.update(
+            used=True,
+            bundle_attached=True,
+            matched_entity_ids=[value.id for value in bundle.matches if value.via != "ambiguity"],
+            resolutions=[
+                {"id": value.id, "via": value.via, "origin": value.origin}
+                for value in bundle.matches
+            ],
+            ambiguity_groups=[value.id for value in bundle.matches if value.via == "ambiguity"],
+            bundle_chars=bundle.char_count,
+            bundle_token_estimate=-(-bundle.char_count // 4),
+            instruction_chars_added=len(block) + 2,
+            omitted=dict(bundle.payload.get("omitted", {})),
+            truncated=bundle.truncated,
+        )
+        return CoreGrounding(block=block, trace=trace, weapon_archetypes=archetypes)
+
+    @staticmethod
+    def _with_core_facts(instructions: str, grounding: CoreGrounding) -> str:
+        # Appended last, so the static system prefix and routing stay a cacheable prefix.
+        return f"{instructions}\n\n{grounding.block}" if grounding.block else instructions
+
+    @staticmethod
+    def _safe_core_tool_summary(result: dict[str, Any]) -> dict[str, Any]:
+        summary: dict[str, Any] = {"resolution": result.get("status")}
+        if isinstance(result.get("matched_via"), str):
+            summary["matched_via"] = result["matched_via"]
+        entity = result.get("entity")
+        if isinstance(entity, dict) and isinstance(entity.get("kind"), str):
+            summary["entity_kind"] = entity["kind"]
+        if result.get("status") == "ambiguous":
+            summary["candidate_count"] = len(result.get("candidates") or [])
+        return summary
+
+    def _record_manifest_conflict(
+        self, grounding: CoreGrounding, tool_name: str, result: dict[str, Any]
+    ) -> None:
+        """Trace-only: an exact Manifest activity whose destination contradicts curation."""
+
+        engine = self._core_engine()
+        if engine is None or tool_name != "get_activity_details":
+            return
+        try:
+            resolution = result.get("resolution") or {}
+            activity = result.get("activity") or {}
+            destination = (activity.get("destination") or {}).get("name")
+            if not resolution.get("exact") or not destination:
+                return
+            resolved = engine.resolve(str(resolution.get("matched_name") or ""))
+            grounded = engine.located_on(resolved.entity_id) if resolved.entity_id else None
+            if grounded and normalize_text(grounded) != normalize_text(str(destination)):
+                grounding.trace["manifest_conflicts"].append(
+                    {
+                        "entity_id": resolved.entity_id,
+                        "grounded_located_on": grounded,
+                        "manifest_destination": str(destination)[:80],
+                    }
+                )
+        except Exception:
+            logger.warning("Core/Manifest conflict check failed")
+
+    def _destination_names(self) -> frozenset[str]:
+        names: set[str] = set()
+        for provider in getattr(self.knowledge, "providers", None) or []:
+            accessor = getattr(provider, "destination_names", None)
+            if callable(accessor):
+                names.update(accessor())
+        return frozenset(names)
+
+    def _record_destination_conflicts(self, grounding: CoreGrounding, answer: str) -> None:
+        """Trace-only: a final answer that places a grounded entity somewhere else.
+
+        Emitted only when one sentence names the entity and a different known destination
+        with locational wording, and omits the grounded destination. Never alters answers.
+        """
+
+        engine = self._core_engine()
+        ids = grounding.trace.get("matched_entity_ids") or []
+        if engine is None or not ids:
+            return
+        try:
+            located = {
+                entity_id: normalize_text(value)
+                for entity_id in ids
+                if (value := engine.located_on(entity_id))
+            }
+            if not located:
+                return
+            vocabulary = {
+                normalize_text(value): value
+                for value in (*self._destination_names(), *located.values())
+                if normalize_text(value)
+            }
+            for sentence in re.split(r"[.!?\n]+", answer):
+                padded = f" {normalize_text(sentence)} "
+                if not _LOCATION_WORDS.search(padded):
+                    continue
+                for entity_id, grounded in located.items():
+                    name = normalize_text(engine.entity_brief(entity_id)["name"])
+                    if f" {name} " not in padded or f" {grounded} " in padded:
+                        continue
+                    others = sorted(
+                        original
+                        for key, original in vocabulary.items()
+                        if key != grounded and key not in name and f" {key} " in padded
+                    )
+                    if others:
+                        grounding.trace["destination_conflicts"].append(
+                            {
+                                "entity_id": entity_id,
+                                "grounded_located_on": engine.located_on(entity_id),
+                                "answer_destinations": others[:3],
+                            }
+                        )
+        except Exception:
+            logger.warning("Core destination conflict check failed")
+
     @staticmethod
     def _is_session_planning(message: str) -> bool:
         return any(pattern.search(message) for pattern in SESSION_PLANNING_PATTERNS)
@@ -1304,10 +1539,13 @@ class RecommendationService:
         context: GuardianContext,
         arguments_json: str,
         result: dict[str, Any],
+        alias_terms: tuple[str, ...] = (),
     ) -> str:
         try:
             arguments = json.loads(arguments_json)
-            return forced_alternatives_relevance(message, context, arguments, result)
+            return forced_alternatives_relevance(
+                message, context, arguments, result, alias_terms=alias_terms
+            )
         except Exception:
             # A trace signal must never be able to break a chat turn.
             logger.warning("Forced alternatives relevance could not be computed")

@@ -42,6 +42,8 @@ class Settings(BaseSettings):
     # user request does not pay for it. Requires a Bungie API key to fetch the Manifest.
     manifest_index_warmup: bool = True
     guide_corpus_file: Path = Path("backend/app/data/destiny_guides.json")
+    core_knowledge_file: Path = Path("backend/app/data/core_knowledge.json")
+    core_knowledge_enabled: bool = True
     guide_cache_dir: Path = Path(".cache/guides")
     guide_cache_stable_ttl_seconds: int = Field(default=60 * 60 * 24 * 30, ge=0)
     guide_cache_semi_stable_ttl_seconds: int = Field(default=60 * 60 * 24, ge=0)

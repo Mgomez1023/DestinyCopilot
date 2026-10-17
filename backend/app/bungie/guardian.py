@@ -9,6 +9,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from app.bungie.client import BUNGIE_ROOT_URL, BungieAPIError, BungieClient
+from app.bungie.item_values import item_type_name, reward_hashes, reward_summary
 from app.bungie.manifest import DefinitionResolver
 from app.content_progression import terminal_record_hashes
 from app.models import (
@@ -597,6 +598,22 @@ class GuardianNormalizer:
             self.definitions[entity_type] = await self._safe_resolve_many(entity_type, hashes)
             self.resolver.release_table(entity_type)
 
+        # Quest and bounty rewards are declared as item hashes in value.itemValue; their
+        # names need one more batched item lookup for hashes not already resolved.
+        item_definitions = self.definitions.setdefault("DestinyInventoryItemDefinition", {})
+        missing_rewards = {
+            reward_hash
+            for definition in item_definitions.values()
+            if int(definition.get("itemType", 0) or 0) in QUEST_ITEM_TYPES
+            for reward_hash in reward_hashes(definition)
+            if reward_hash not in item_definitions
+        }
+        if missing_rewards:
+            item_definitions.update(
+                await self._safe_resolve_many("DestinyInventoryItemDefinition", missing_rewards)
+            )
+            self.resolver.release_table("DestinyInventoryItemDefinition")
+
         activity_definitions = self.definitions.get("DestinyActivityDefinition", {})
         referenced_destinations = {
             int(value["destinationHash"])
@@ -1066,6 +1083,12 @@ class GuardianNormalizer:
                 for value in status.get("stepObjectives", [])
                 if value.get("visible", True)
             ]
+            # Rewards are read from the current step when it declares any, else the quest.
+            reward_source = (
+                step_definition
+                if step_definition and reward_hashes(step_definition)
+                else quest_definition
+            )
             quests.append(
                 QuestSummary(
                     quest_hash=quest_hash,
@@ -1080,6 +1103,9 @@ class GuardianNormalizer:
                     completed=bool(status.get("completed")),
                     redeemed=bool(status.get("redeemed")),
                     objectives=objectives,
+                    item_type_name=item_type_name(quest_definition)
+                    or item_type_name(step_definition or {}),
+                    **self._quest_rewards(reward_source),
                 )
             )
             if status.get("itemInstanceId"):
@@ -1112,9 +1138,17 @@ class GuardianNormalizer:
                     tracked=bool(int(item.get("state", 0)) & 2),
                     completed=bool(objectives) and all(value.complete for value in objectives),
                     objectives=objectives,
+                    item_type_name=item_type_name(definition),
+                    **self._quest_rewards(definition),
                 )
             )
         return sorted(quests, key=lambda value: (value.completed, value.name))[:80]
+
+    def _quest_rewards(self, definition: dict[str, Any]) -> dict[str, Any]:
+        names, total, unresolved = reward_summary(
+            definition, self.definitions.get("DestinyInventoryItemDefinition", {})
+        )
+        return {"reward_names": names, "reward_total": total, "rewards_unresolved": unresolved}
 
     def _normalize_milestones(
         self, character_id: str, profile: dict[str, Any]

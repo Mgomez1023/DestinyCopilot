@@ -2185,7 +2185,7 @@ def test_planning_record_candidate_carries_context_path_without_inferring_destin
     record = next(
         value for value in planning.candidates if value.name == "Altars of Sorrow: Nightmares"
     )
-    assert planning.version == 5
+    assert planning.version == 6
     assert record.context_path == ["Triumphs", "The Moon", "Activities", "Altars of Sorrow"]
     assert record.description == "Defeat Nightmares at the Altars of Sorrow."
     # The category path is evidence for the model, not a resolved destination.
@@ -2260,7 +2260,7 @@ def test_planning_turn_instructions_include_record_context_path() -> None:
     asyncio.run(service.chat(ChatRequest(message="What should I do next?"), context))
 
     instructions = fake.responses.requests[0]["instructions"]
-    assert '"version":5' in instructions
+    assert '"version":6' in instructions
     assert '"context_path":["Triumphs","The Moon","Activities","Altars of Sorrow"]' in instructions
     assert '"description":"Defeat Nightmares at the Altars of Sorrow."' in instructions
 

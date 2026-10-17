@@ -12,6 +12,8 @@ from app.bungie.guardian import GuardianService
 from app.bungie.manifest import DefinitionResolver
 from app.bungie.oauth import BungieOAuth, create_oauth_session_store
 from app.config import Settings, get_settings
+from app.core_knowledge import CoreKnowledgeError, DestinyKnowledgeEngine
+from app.core_knowledge_provider import CoreKnowledgeProvider
 from app.dependencies import Services
 from app.destiny_knowledge import BungieManifestProvider, DestinyKnowledgeService
 from app.guardian_refresh import GuardianRefreshService
@@ -26,6 +28,26 @@ from app.routes import (
     knowledge_debug,
     trace_debug,
 )
+
+logger = logging.getLogger(__name__)
+
+
+def core_knowledge_provider(settings: Settings) -> CoreKnowledgeProvider | None:
+    """Load the curated corpus once at startup; a bad corpus disables only this provider."""
+
+    if not settings.core_knowledge_enabled:
+        return None
+    try:
+        engine = DestinyKnowledgeEngine.from_file(
+            settings.resolve_local_path(settings.core_knowledge_file)
+        )
+    except CoreKnowledgeError as exc:
+        logger.error("Core knowledge disabled: %s", exc)
+        return None
+    logger.info(
+        "Core knowledge ready corpus=%s entities=%d", engine.corpus_version, engine.entity_count
+    )
+    return CoreKnowledgeProvider(engine)
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -45,7 +67,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         live_knowledge = LiveDestinyProvider(
             bungie_client, resolver, settings, canonical=manifest_knowledge
         )
-        knowledge = DestinyKnowledgeService([manifest_knowledge, guide_knowledge, live_knowledge])
+        core_knowledge = core_knowledge_provider(settings)
+        knowledge = DestinyKnowledgeService(
+            [
+                manifest_knowledge,
+                guide_knowledge,
+                live_knowledge,
+                *([core_knowledge] if core_knowledge is not None else []),
+            ]
+        )
         guardian_service = GuardianService(bungie_client, resolver)
         oauth_store = create_oauth_session_store(settings)
         application.state.services = Services(

@@ -27,7 +27,7 @@ from app.models import (
 )
 
 logger = logging.getLogger(__name__)
-CACHE_SCHEMA_VERSION = 3
+CACHE_SCHEMA_VERSION = 4
 
 
 class GuardianSlice(StrEnum):

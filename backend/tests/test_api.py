@@ -74,6 +74,7 @@ def test_debug_destiny_knowledge_catalog_is_available_in_development() -> None:
         "get_weekly_rotation",
         "get_vendor_status",
         "get_current_activity_status",
+        "get_destiny_concept",
         "search_live_destiny",
     }
 

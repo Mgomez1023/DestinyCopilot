@@ -424,6 +424,10 @@ class GuardianToolService:
                         "completed": quest.completed,
                         "redeemed": quest.redeemed,
                         "objectives": [value.model_dump(mode="json") for value in quest.objectives],
+                        "item_type_name": quest.item_type_name,
+                        "reward_names": list(quest.reward_names),
+                        "reward_total": quest.reward_total,
+                        "rewards_unresolved": quest.rewards_unresolved,
                     }
                 )
         quests.sort(
@@ -436,11 +440,18 @@ class GuardianToolService:
             reverse=True,
         )
         limit = 50
-        return {
+        result: dict[str, Any] = {
             "quests": quests[:limit],
             "count": len(quests),
             "truncated": len(quests) > limit,
         }
+        if any(value["reward_total"] for value in quests[:limit]):
+            result["limitations"] = [
+                "reward_names are labels declared in the Manifest quest or bounty definition "
+                "(at most 4); they do not describe quantities, odds, or current reward value. "
+                "rewards_unresolved counts declared rewards whose names were unavailable."
+            ]
+        return result
 
     def get_content_progression(
         self,

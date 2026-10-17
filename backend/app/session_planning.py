@@ -68,6 +68,9 @@ class PlanningCandidate(BaseModel):
     place: str | None = None
     description: str | None = Field(default=None, max_length=MAX_CANDIDATE_DESCRIPTION)
     context_path: list[str] = Field(default_factory=list, max_length=MAX_CONTEXT_PATH)
+    item_type_name: str | None = Field(default=None, max_length=80)
+    # Manifest-declared reward names only; not a drop guarantee or a value judgement.
+    reward_names: list[str] = Field(default_factory=list, max_length=4)
     objectives: list[PlanningObjective] = Field(default_factory=list, max_length=3)
     recently_repeated: bool = False
     recent_occurrences: int = Field(default=0, ge=0)
@@ -76,7 +79,7 @@ class PlanningCandidate(BaseModel):
 
 
 class SessionPlanningContext(BaseModel):
-    version: Literal[5] = 5
+    version: Literal[6] = 6
     preferences: SessionPreferenceContext
     requested_character_scope: str | None
     requested_scope_explicit: bool
@@ -289,11 +292,19 @@ def build_session_planning_context(
         existing.overlap_signals = list(dict.fromkeys(existing.source_kinds))[:3]
         if candidate.objectives and not existing.objectives:
             existing.objectives = candidate.objectives
-        for field_name in ("activity_type", "destination", "place", "description"):
+        for field_name in (
+            "activity_type",
+            "destination",
+            "place",
+            "description",
+            "item_type_name",
+        ):
             if getattr(existing, field_name) is None and getattr(candidate, field_name):
                 setattr(existing, field_name, getattr(candidate, field_name))
         if candidate.context_path and not existing.context_path:
             existing.context_path = candidate.context_path
+        if candidate.reward_names and not existing.reward_names:
+            existing.reward_names = candidate.reward_names
 
     for content in content_evidence:
         key = _normalize(content.content)
@@ -328,6 +339,8 @@ def build_session_planning_context(
                 completion_status="UNKNOWN" if is_named_content else "KNOWN_FALSE",
                 available_to_character="KNOWN_TRUE",
                 description=_bounded_description(quest.description),
+                item_type_name=quest.item_type_name,
+                reward_names=list(quest.reward_names),
                 objectives=_objectives(quest.objectives),
                 recently_repeated=recent_counts[key] > 1,
                 recent_occurrences=recent_counts[key],

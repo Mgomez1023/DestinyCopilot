@@ -1,0 +1,2035 @@
+{
+  "schema_version": 1,
+  "corpus_version": "core-2026-10-17.1",
+  "manifest_version": "local Manifest cache key cf7b604a840d",
+  "predicates": {
+    "game_mode": {
+      "value": "enum",
+      "values": [
+        "pve",
+        "pvp",
+        "pvevp"
+      ],
+      "owner": "curated",
+      "corroborate": "manifest_structure",
+      "description": "PvE, PvP, or PvE-competitive, from the Manifest activity mode category (activityModeCategory 1, 2, or 3)."
+    },
+    "fireteam_size": {
+      "value": "int",
+      "owner": "curated",
+      "corroborate": "manifest_text",
+      "description": "Fireteam size stated in Bungie's activity-type description (for Dungeons, 'up to three')."
+    },
+    "kind_of": {
+      "value": "entity",
+      "owner": "curated",
+      "description": "The broader activity kind this entity is a special form of."
+    },
+    "located_on": {
+      "value": "place",
+      "owner": "manifest_preferred",
+      "description": "Destination where the activity takes place."
+    },
+    "located_in": {
+      "value": "place",
+      "owner": "manifest_preferred",
+      "description": "Sub-area within the destination."
+    },
+    "usual_ammo_type": {
+      "value": "enum",
+      "values": [
+        "primary",
+        "special",
+        "heavy"
+      ],
+      "owner": "curated",
+      "freshness": "semi_stable",
+      "corroborate": "manifest_structure",
+      "description": "Ammo type used by at least 95% of this archetype's collectible weapons in the cited Manifest snapshot; individual weapons can differ."
+    },
+    "max_equipped_exotic_weapons": {
+      "value": "int",
+      "owner": "curated",
+      "description": "Exotic weapons that can be equipped at the same time."
+    },
+    "max_equipped_exotic_armor": {
+      "value": "int",
+      "owner": "curated",
+      "description": "Exotic armor pieces that can be equipped at the same time."
+    },
+    "exotic_weapon_and_armor_together": {
+      "value": "bool",
+      "owner": "curated",
+      "description": "Whether one Exotic weapon and one Exotic armor piece can be equipped together (they use different uniqueLabels)."
+    },
+    "each_piece_restricted_to_one_class": {
+      "value": "bool",
+      "owner": "curated",
+      "description": "Every item of this kind is restricted to one class and can only be equipped by that class."
+    },
+    "class_restriction": {
+      "value": "class",
+      "owner": "manifest",
+      "curatable": false,
+      "description": "Which class can equip an item. Always read from the Manifest, never curated."
+    },
+    "item_slot": {
+      "value": "slot",
+      "owner": "manifest",
+      "curatable": false,
+      "description": "Equipment slot of an item. Always read from the Manifest, never curated."
+    },
+    "item_tier": {
+      "value": "text",
+      "owner": "manifest",
+      "curatable": false,
+      "description": "Rarity tier of an item. Always read from the Manifest, never curated."
+    },
+    "damage_type": {
+      "value": "text",
+      "owner": "manifest",
+      "curatable": false,
+      "description": "Damage type of an item. Always read from the Manifest, never curated."
+    },
+    "item_type_label": {
+      "value": "text",
+      "owner": "manifest",
+      "curatable": false,
+      "description": "Specific Manifest item type label. Always read from the Manifest, never curated."
+    },
+    "quest_reward_names": {
+      "value": "text",
+      "owner": "manifest",
+      "curatable": false,
+      "description": "Reward names declared by a quest or bounty. Always read from the Manifest, never curated."
+    },
+    "ammo_type": {
+      "value": "enum",
+      "owner": "manifest",
+      "curatable": false,
+      "description": "Ammo type of one weapon. Always read from the Manifest, never curated.",
+      "values": [
+        "primary",
+        "special",
+        "heavy"
+      ]
+    },
+    "matchmaking": {
+      "value": "enum",
+      "owner": "manifest",
+      "curatable": false,
+      "description": "Whether one activity is matchmade. Always read from the Manifest, never curated.",
+      "values": [
+        "matchmade",
+        "not_matchmade"
+      ]
+    }
+  },
+  "sources": {
+    "manifest.activity_matchmaking": {
+      "kind": "manifest_structure",
+      "ref": "DestinyActivityDefinition.matchmaking.isMatchmade is recorded per activity, e.g. 'Haunted Altars of Sorrow: Matchmade' 1983194435=true vs ': Customize' 4231334639=false",
+      "verified_at": "2026-10-17"
+    },
+    "manifest.activity_mode_category": {
+      "kind": "manifest_structure",
+      "ref": "DestinyActivityModeDefinition.activityModeCategory; self-describing modes: 'PvE' 1164760493=1, 'Competitive PvP' 2486723318=2, 'Competitive Co-Op' 2449176354=3",
+      "verified_at": "2026-10-17",
+      "note": "Each game_mode fact is backed by a mode anchor that checks activityModeCategory."
+    },
+    "manifest.altars_of_sorrow_node": {
+      "kind": "manifest_structure",
+      "ref": "DestinyPresentationNodeDefinition:1325869705 'Altars of Sorrow' > Activities > The Moon > Triumphs",
+      "verified_at": "2026-10-17"
+    },
+    "manifest.altars_of_summoning_node": {
+      "kind": "manifest_structure",
+      "ref": "DestinyPresentationNodeDefinition:1721072046 'Altars of Summoning' > Ritual > Season of the Witch > Legacy Triumphs",
+      "verified_at": "2026-10-17"
+    },
+    "manifest.ammo.auto_rifle": {
+      "kind": "manifest_structure",
+      "ref": "DestinyInventoryItemDefinition.equippingBlock.ammoType over collectible, equippable weapons in item category 5 'Auto Rifle': primary 164, special 1",
+      "verified_at": "2026-10-17"
+    },
+    "manifest.ammo.glaive": {
+      "kind": "manifest_structure",
+      "ref": "DestinyInventoryItemDefinition.equippingBlock.ammoType over collectible, equippable weapons in item category 3871742104 'Glaives': special 27, heavy 1",
+      "verified_at": "2026-10-17"
+    },
+    "manifest.ammo.hand_cannon": {
+      "kind": "manifest_structure",
+      "ref": "DestinyInventoryItemDefinition.equippingBlock.ammoType over collectible, equippable weapons in item category 6 'Hand Cannon': primary 188, special 2",
+      "verified_at": "2026-10-17"
+    },
+    "manifest.ammo.machine_gun": {
+      "kind": "manifest_structure",
+      "ref": "DestinyInventoryItemDefinition.equippingBlock.ammoType over collectible, equippable weapons in item category 12 'Machine Gun': heavy 68",
+      "verified_at": "2026-10-17"
+    },
+    "manifest.ammo.pulse_rifle": {
+      "kind": "manifest_structure",
+      "ref": "DestinyInventoryItemDefinition.equippingBlock.ammoType over collectible, equippable weapons in item category 7 'Pulse Rifle': primary 165, special 4",
+      "verified_at": "2026-10-17"
+    },
+    "manifest.ammo.rocket_launcher": {
+      "kind": "manifest_structure",
+      "ref": "DestinyInventoryItemDefinition.equippingBlock.ammoType over collectible, equippable weapons in item category 13 'Rocket Launcher': heavy 91",
+      "verified_at": "2026-10-17"
+    },
+    "manifest.ammo.scout_rifle": {
+      "kind": "manifest_structure",
+      "ref": "DestinyInventoryItemDefinition.equippingBlock.ammoType over collectible, equippable weapons in item category 8 'Scout Rifle': primary 143",
+      "verified_at": "2026-10-17"
+    },
+    "manifest.ammo.shotgun": {
+      "kind": "manifest_structure",
+      "ref": "DestinyInventoryItemDefinition.equippingBlock.ammoType over collectible, equippable weapons in item category 11 'Shotgun': special 148, heavy 2",
+      "verified_at": "2026-10-17"
+    },
+    "manifest.ammo.sniper_rifle": {
+      "kind": "manifest_structure",
+      "ref": "DestinyInventoryItemDefinition.equippingBlock.ammoType over collectible, equippable weapons in item category 10 'Sniper Rifle': special 135, heavy 4",
+      "verified_at": "2026-10-17"
+    },
+    "manifest.ammo.submachine_gun": {
+      "kind": "manifest_structure",
+      "ref": "DestinyInventoryItemDefinition.equippingBlock.ammoType over collectible, equippable weapons in item category 3954685534 'Submachine Guns': primary 138",
+      "verified_at": "2026-10-17"
+    },
+    "manifest.ammo.sword": {
+      "kind": "manifest_structure",
+      "ref": "DestinyInventoryItemDefinition.equippingBlock.ammoType over collectible, equippable weapons in item category 54 'Sword': heavy 86, special 2",
+      "verified_at": "2026-10-17"
+    },
+    "manifest.class_definitions": {
+      "kind": "manifest_structure",
+      "ref": "DestinyClassDefinition: Titan 3655393761 (classType 0), Hunter 671679327 (1), Warlock 2271682572 (2)",
+      "verified_at": "2026-10-17"
+    },
+    "manifest.exotic_armor_class_type": {
+      "kind": "manifest_structure",
+      "ref": "DestinyInventoryItemDefinition.classType: all 348 equippable Exotic armor pieces (helmet, arms, chest, legs, class item) have classType 0, 1 or 2; none has 3 (any class)",
+      "verified_at": "2026-10-17"
+    },
+    "manifest.exotic_unique_labels": {
+      "kind": "manifest_structure",
+      "ref": "DestinyInventoryItemDefinition.equippingBlock.uniqueLabel: all 146 equippable Exotic weapons share 'exotic_weapon'; all 348 equippable Exotic armor pieces share 'exotic_armor'; no non-Exotic weapon or armor carries either label",
+      "verified_at": "2026-10-17"
+    },
+    "manifest.haunted_altars_variants": {
+      "kind": "manifest_structure",
+      "ref": "DestinyActivityDefinition 4140407301 'Haunted Altars of Sorrow'; variants 1983194435 and 4231334639 use activity type 3481239102 'Seasonal Arena'; no activity is named plain 'Altars of Sorrow'",
+      "verified_at": "2026-10-17"
+    },
+    "manifest.moon_sub_areas": {
+      "kind": "manifest_structure",
+      "ref": "DestinyDestinationDefinition:290444260 'The Moon' declares bubble 417490937 'Sorrow's Harbor'",
+      "verified_at": "2026-10-17"
+    },
+    "manifest.quest_structure": {
+      "kind": "manifest_structure",
+      "ref": "DestinyInventoryItemDefinition.setData.itemList lists a quest's steps; steps use item category 16 'Quest Step'",
+      "verified_at": "2026-10-17"
+    },
+    "manifest.text.altar_of_reflection_location": {
+      "kind": "manifest_text",
+      "ref": "DestinyInventoryItemDefinition:2609952321",
+      "quote": "Return to the Altar of Reflection in Witch's Echo, Throne World.",
+      "verified_at": "2026-10-17"
+    },
+    "manifest.text.altar_of_reflection_memory": {
+      "kind": "manifest_text",
+      "ref": "DestinyActivityDefinition:998325554",
+      "quote": "Witness the memory linked to the Enigma.",
+      "verified_at": "2026-10-17"
+    },
+    "manifest.text.altars_of_sorrow": {
+      "kind": "manifest_text",
+      "ref": "DestinyInventoryItemDefinition:2531049971",
+      "quote": "Throughout Sorrow's Harbor, the Hive perform Nightmarish rituals.",
+      "verified_at": "2026-10-17"
+    },
+    "manifest.text.altars_of_sorrow_waves": {
+      "kind": "manifest_text",
+      "ref": "DestinyRecordDefinition:1120376861",
+      "quote": "Complete waves of Altars of Sorrow.",
+      "verified_at": "2026-10-17"
+    },
+    "manifest.text.altars_of_summoning_record": {
+      "kind": "manifest_text",
+      "ref": "DestinyRecordDefinition:1532375312",
+      "quote": "Complete Altars of Summoning encounters without dying.",
+      "verified_at": "2026-10-17"
+    },
+    "manifest.text.bounties": {
+      "kind": "manifest_text",
+      "ref": "DestinyItemCategoryDefinition:1784235469",
+      "quote": "Bounties are brief missions that you can pick up from NPCs in the world.",
+      "verified_at": "2026-10-17"
+    },
+    "manifest.text.cabal_injection_rig": {
+      "kind": "manifest_text",
+      "ref": "DestinyRecordDefinition:2452164086",
+      "quote": "Destroy a vent during the Cabal Injection Rig public event. The public event can be found at the EDZ, Nessus, or Neptune.",
+      "verified_at": "2026-10-17"
+    },
+    "manifest.text.dungeon": {
+      "kind": "manifest_text",
+      "ref": "DestinyActivityTypeDefinition:608898761",
+      "quote": "Form a fireteam of up to three, and brave the strange and powerful realms of our enemies.",
+      "verified_at": "2026-10-17"
+    },
+    "manifest.text.exotic_armor_engram": {
+      "kind": "manifest_text",
+      "ref": "DestinyVendorDefinition:3989934776",
+      "quote": "This engram may contain Exotic armor for your current class.",
+      "verified_at": "2026-10-17"
+    },
+    "manifest.text.exotic_weapon_limit": {
+      "kind": "manifest_text",
+      "ref": "DestinyRecordDefinition:448445933",
+      "quote": "You can only equip one Exotic weapon at a time.",
+      "verified_at": "2026-10-17"
+    },
+    "manifest.text.explore": {
+      "kind": "manifest_text",
+      "ref": "DestinyActivityTypeDefinition:3497767639",
+      "quote": "Wander the frontier. Search the ruins of the Golden Age, claim vital supplies, and hunt down our enemies wherever they dare trespass.",
+      "verified_at": "2026-10-17"
+    },
+    "manifest.text.gambit": {
+      "kind": "manifest_text",
+      "ref": "DestinyActivityTypeDefinition:2490937569",
+      "quote": "Defeat the enemies of humanity, collect their Motes, and bank them to summon a Primeval. First team to destroy their Primeval wins.",
+      "verified_at": "2026-10-17"
+    },
+    "manifest.text.haunted_altars_of_sorrow": {
+      "kind": "manifest_text",
+      "ref": "DestinyActivityDefinition:4140407301",
+      "quote": "Haunted Altars of Sorrow",
+      "verified_at": "2026-10-17"
+    },
+    "manifest.text.iron_banner_control": {
+      "kind": "manifest_text",
+      "ref": "DestinyActivityModeDefinition:2843684868",
+      "quote": "Stats related to the Iron Banner Control PVP mode",
+      "verified_at": "2026-10-17"
+    },
+    "manifest.text.lost_sector": {
+      "kind": "manifest_text",
+      "ref": "DestinyActivityTypeDefinition:103143560",
+      "quote": "Form a fireteam of three and face our enemies with new challenges.",
+      "verified_at": "2026-10-17"
+    },
+    "manifest.text.lost_sector_checklist": {
+      "kind": "manifest_text",
+      "ref": "DestinyChecklistDefinition:3142056444",
+      "quote": "There are many hidden places in our worlds.",
+      "verified_at": "2026-10-17"
+    },
+    "manifest.text.mission_conjure": {
+      "kind": "manifest_text",
+      "ref": "DestinyActivityDefinition:3483444271",
+      "quote": "Repel Xivu Arath's invasion of the Altars of Summoning.",
+      "verified_at": "2026-10-17"
+    },
+    "manifest.text.nightfall": {
+      "kind": "manifest_text",
+      "ref": "DestinyActivityTypeDefinition:575572995",
+      "quote": "Join a fireteam of three and face the most feared minions of the Darkness.",
+      "verified_at": "2026-10-17"
+    },
+    "manifest.text.public_events_and_patrols": {
+      "kind": "manifest_text",
+      "ref": "DestinyObjectiveDefinition:2314788368",
+      "quote": "Public events and patrols",
+      "verified_at": "2026-10-17"
+    },
+    "manifest.text.quest": {
+      "kind": "manifest_text",
+      "ref": "DestinyItemCategoryDefinition:53",
+      "quote": "Quests that can be completed in Destiny.",
+      "verified_at": "2026-10-17"
+    },
+    "manifest.text.raid": {
+      "kind": "manifest_text",
+      "ref": "DestinyActivityTypeDefinition:2043403989",
+      "quote": "Form a fireteam of six and brave the strange and powerful realms of our enemies.",
+      "verified_at": "2026-10-17"
+    },
+    "manifest.text.repeatable_bounties": {
+      "kind": "manifest_text",
+      "ref": "DestinyItemCategoryDefinition:713159888",
+      "quote": "Repeatable bounties that you can purchase from various vendors.",
+      "verified_at": "2026-10-17"
+    },
+    "manifest.text.strike": {
+      "kind": "manifest_text",
+      "ref": "DestinyActivityTypeDefinition:4110605575",
+      "quote": "Join a fireteam of three and face the most feared minions of the Darkness.",
+      "verified_at": "2026-10-17"
+    },
+    "manifest.text.strikes_mode": {
+      "kind": "manifest_text",
+      "ref": "DestinyActivityModeDefinition:2394616003",
+      "quote": "Stats that roll both regular strikes and special strike modes (such as Nightfall and Heroic Strike) into one.",
+      "verified_at": "2026-10-17"
+    },
+    "manifest.text.trials_of_osiris": {
+      "kind": "manifest_text",
+      "ref": "DestinyActivityModeDefinition:1673724806",
+      "quote": "Compete in a fireteam-required event version of Elimination.",
+      "verified_at": "2026-10-17"
+    },
+    "manifest.text.triumphs": {
+      "kind": "manifest_text",
+      "ref": "DestinyPresentationNodeDefinition:1163735237",
+      "quote": "Records of the Guardian's achievements.",
+      "verified_at": "2026-10-17"
+    },
+    "manifest.text.vanguard_op": {
+      "kind": "manifest_text",
+      "ref": "DestinyActivityTypeDefinition:3652020199",
+      "quote": "Join a fireteam of three and face the most feared minions of the Darkness.",
+      "verified_at": "2026-10-17"
+    },
+    "manifest.throne_world_destination": {
+      "kind": "manifest_structure",
+      "ref": "Activities 3483444271 and 998325554 use destination 2244580325 'Savathûn's Throne World', which declares bubbles 'Altar of Reflection' and 'Witch's Echo'",
+      "verified_at": "2026-10-17"
+    },
+    "manifest.weapon_buckets": {
+      "kind": "manifest_structure",
+      "ref": "DestinyInventoryBucketDefinition equipment buckets: 'Kinetic Weapons' 1498876634, 'Energy Weapons' 2465295065, 'Power Weapons' 953998645",
+      "verified_at": "2026-10-17",
+      "note": "Bucket descriptions are outdated (they omit Stasis/Strand), so they are not quoted."
+    },
+    "manifest.weapon_item_categories": {
+      "kind": "manifest_structure",
+      "ref": "DestinyItemCategoryDefinition weapon-type categories, e.g. 6 'Hand Cannon' (grantDestinySubType 9); each archetype entry anchors its own category",
+      "verified_at": "2026-10-17"
+    },
+    "official.activity_mode_category": {
+      "kind": "official_bungie",
+      "ref": "https://bungie-net.github.io/multi/schema_Destiny-DestinyActivityModeCategory.html",
+      "verified_at": "2026-10-17",
+      "note": "DestinyActivityModeCategory: None=0, PvE=1, PvP=2, PvECompetitive=3."
+    },
+    "official.ammunition_type": {
+      "kind": "official_bungie",
+      "ref": "https://bungie-net.github.io/multi/schema_Destiny-DestinyAmmunitionType.html",
+      "verified_at": "2026-10-17",
+      "note": "DestinyAmmunitionType: None=0, Primary=1, Special=2, Heavy=3, Unknown=4."
+    },
+    "official.equipping_block_unique_label": {
+      "kind": "official_bungie",
+      "ref": "https://bungie-net.github.io/multi/schema_Destiny-Definitions-DestinyEquippingBlockDefinition.html",
+      "verified_at": "2026-10-17",
+      "quote": "If defined, this is the label used to check if the item has other items of matching types already equipped. For instance, when you aren't allowed to equip more than one Exotic Weapon, that's because all exotic weapons have identical uniqueLabels"
+    },
+    "official.inventory_item_class_type": {
+      "kind": "official_bungie",
+      "ref": "https://bungie-net.github.io/multi/schema_Destiny-Definitions-DestinyInventoryItemDefinition.html",
+      "verified_at": "2026-10-17",
+      "quote": "We run a similarly weak-sauce algorithm to try and determine whether an item is restricted to a specific class.",
+      "note": "classType is set to the class when the item is detected as class-restricted."
+    }
+  },
+  "entities": [
+    {
+      "id": "mode.crucible",
+      "name": "Crucible",
+      "kind": "game_mode",
+      "aliases": [
+        "The Crucible"
+      ],
+      "summary": "Destiny 2's player-versus-player activity mode.",
+      "summary_src": [
+        "manifest.activity_mode_category",
+        "official.activity_mode_category"
+      ],
+      "facts": [
+        {
+          "p": "game_mode",
+          "o": "pvp",
+          "src": [
+            "manifest.activity_mode_category",
+            "official.activity_mode_category"
+          ]
+        }
+      ],
+      "live_sensitive": [
+        "current_playlists"
+      ],
+      "manifest_anchors": [
+        {
+          "type": "DestinyActivityModeDefinition",
+          "hash": 1164760504,
+          "name": "Crucible",
+          "expect_fields": {
+            "activityModeCategory": 2
+          }
+        }
+      ],
+      "last_verified": "2026-10-17"
+    },
+    {
+      "id": "mode.gambit",
+      "name": "Gambit",
+      "kind": "game_mode",
+      "summary": "A mode where teams defeat combatants, collect and bank Motes to summon a Primeval, and race to destroy their Primeval first.",
+      "summary_src": [
+        "manifest.text.gambit"
+      ],
+      "facts": [
+        {
+          "p": "game_mode",
+          "o": "pvevp",
+          "src": [
+            "manifest.activity_mode_category",
+            "official.activity_mode_category"
+          ]
+        }
+      ],
+      "live_sensitive": [
+        "current_availability"
+      ],
+      "manifest_anchors": [
+        {
+          "type": "DestinyActivityModeDefinition",
+          "hash": 1848252830,
+          "name": "Gambit",
+          "expect_fields": {
+            "activityModeCategory": 3
+          }
+        },
+        {
+          "type": "DestinyActivityTypeDefinition",
+          "hash": 2490937569,
+          "name": "Gambit"
+        }
+      ],
+      "last_verified": "2026-10-17"
+    },
+    {
+      "id": "mode.trials_of_osiris",
+      "name": "Trials of Osiris",
+      "kind": "game_mode",
+      "aliases": [
+        "trials"
+      ],
+      "summary": "A fireteam-required PvP event version of Elimination.",
+      "summary_src": [
+        "manifest.text.trials_of_osiris"
+      ],
+      "facts": [
+        {
+          "p": "game_mode",
+          "o": "pvp",
+          "src": [
+            "manifest.activity_mode_category",
+            "official.activity_mode_category"
+          ]
+        }
+      ],
+      "live_sensitive": [
+        "event_schedule",
+        "weekly_map",
+        "rewards"
+      ],
+      "manifest_anchors": [
+        {
+          "type": "DestinyActivityModeDefinition",
+          "hash": 1673724806,
+          "name": "Trials of Osiris",
+          "expect_fields": {
+            "activityModeCategory": 2
+          }
+        }
+      ],
+      "last_verified": "2026-10-17"
+    },
+    {
+      "id": "mode.iron_banner",
+      "name": "Iron Banner",
+      "kind": "game_mode",
+      "summary": "A PvP event mode with its own variants, such as Iron Banner Control.",
+      "summary_src": [
+        "manifest.text.iron_banner_control",
+        "manifest.activity_mode_category"
+      ],
+      "facts": [
+        {
+          "p": "game_mode",
+          "o": "pvp",
+          "src": [
+            "manifest.activity_mode_category",
+            "official.activity_mode_category"
+          ]
+        }
+      ],
+      "live_sensitive": [
+        "event_schedule",
+        "rewards"
+      ],
+      "manifest_anchors": [
+        {
+          "type": "DestinyActivityModeDefinition",
+          "hash": 1826469369,
+          "name": "Iron Banner",
+          "expect_fields": {
+            "activityModeCategory": 2
+          }
+        }
+      ],
+      "last_verified": "2026-10-17"
+    },
+    {
+      "id": "activity_type.strike",
+      "name": "Strike",
+      "kind": "activity_type",
+      "plural": true,
+      "summary": "A PvE activity for a fireteam of three against powerful enemies.",
+      "summary_src": [
+        "manifest.text.strike"
+      ],
+      "facts": [
+        {
+          "p": "game_mode",
+          "o": "pve",
+          "src": [
+            "manifest.activity_mode_category",
+            "official.activity_mode_category"
+          ]
+        },
+        {
+          "p": "fireteam_size",
+          "o": 3,
+          "src": [
+            "manifest.text.strike"
+          ]
+        }
+      ],
+      "manifest_anchors": [
+        {
+          "type": "DestinyActivityTypeDefinition",
+          "hash": 4110605575,
+          "name": "Strike"
+        },
+        {
+          "type": "DestinyActivityModeDefinition",
+          "hash": 4110605575,
+          "name": "Strike",
+          "expect_fields": {
+            "activityModeCategory": 1
+          }
+        }
+      ],
+      "last_verified": "2026-10-17"
+    },
+    {
+      "id": "activity_type.vanguard_ops",
+      "name": "Vanguard Ops",
+      "kind": "activity_type",
+      "aliases": [
+        "Vanguard Op"
+      ],
+      "summary": "A Vanguard activity type for a fireteam of three against powerful enemies.",
+      "summary_src": [
+        "manifest.text.vanguard_op"
+      ],
+      "facts": [
+        {
+          "p": "fireteam_size",
+          "o": 3,
+          "src": [
+            "manifest.text.vanguard_op"
+          ]
+        }
+      ],
+      "unknown": [
+        "game_mode"
+      ],
+      "live_sensitive": [
+        "current_playlist"
+      ],
+      "manifest_anchors": [
+        {
+          "type": "DestinyActivityTypeDefinition",
+          "hash": 3652020199,
+          "name": "Vanguard Op"
+        }
+      ],
+      "last_verified": "2026-10-17"
+    },
+    {
+      "id": "activity_type.nightfall",
+      "name": "Nightfall",
+      "kind": "activity_type",
+      "plural": true,
+      "summary": "A special strike mode, grouped by Bungie with regular strikes.",
+      "summary_src": [
+        "manifest.text.strikes_mode"
+      ],
+      "facts": [
+        {
+          "p": "kind_of",
+          "o": "Strike",
+          "o_ref": "activity_type.strike",
+          "src": [
+            "manifest.text.strikes_mode"
+          ]
+        },
+        {
+          "p": "game_mode",
+          "o": "pve",
+          "src": [
+            "manifest.activity_mode_category",
+            "official.activity_mode_category"
+          ]
+        },
+        {
+          "p": "fireteam_size",
+          "o": 3,
+          "src": [
+            "manifest.text.nightfall"
+          ]
+        }
+      ],
+      "live_sensitive": [
+        "weekly_nightfall",
+        "rewards",
+        "difficulty_modifiers"
+      ],
+      "manifest_anchors": [
+        {
+          "type": "DestinyActivityTypeDefinition",
+          "hash": 575572995,
+          "name": "Nightfall"
+        },
+        {
+          "type": "DestinyActivityModeDefinition",
+          "hash": 3789021730,
+          "name": "Nightfall Strikes",
+          "expect_fields": {
+            "activityModeCategory": 1
+          }
+        }
+      ],
+      "last_verified": "2026-10-17"
+    },
+    {
+      "id": "activity_type.raid",
+      "name": "Raid",
+      "kind": "activity_type",
+      "plural": true,
+      "summary": "A PvE activity type for a fireteam of six that braves the strange and powerful realms of Destiny's enemies.",
+      "summary_src": [
+        "manifest.text.raid"
+      ],
+      "facts": [
+        {
+          "p": "game_mode",
+          "o": "pve",
+          "src": [
+            "manifest.activity_mode_category",
+            "official.activity_mode_category"
+          ]
+        },
+        {
+          "p": "fireteam_size",
+          "o": 6,
+          "src": [
+            "manifest.text.raid"
+          ]
+        }
+      ],
+      "live_sensitive": [
+        "featured_raid",
+        "rewards"
+      ],
+      "manifest_anchors": [
+        {
+          "type": "DestinyActivityTypeDefinition",
+          "hash": 2043403989,
+          "name": "Raid"
+        },
+        {
+          "type": "DestinyActivityModeDefinition",
+          "hash": 2043403989,
+          "name": "Raid",
+          "expect_fields": {
+            "activityModeCategory": 1
+          }
+        }
+      ],
+      "last_verified": "2026-10-17"
+    },
+    {
+      "id": "activity_type.dungeon",
+      "name": "Dungeon",
+      "kind": "activity_type",
+      "plural": true,
+      "summary": "A PvE activity type for a fireteam of up to three that braves the strange and powerful realms of Destiny's enemies.",
+      "summary_src": [
+        "manifest.text.dungeon"
+      ],
+      "facts": [
+        {
+          "p": "game_mode",
+          "o": "pve",
+          "src": [
+            "manifest.activity_mode_category",
+            "official.activity_mode_category"
+          ]
+        },
+        {
+          "p": "fireteam_size",
+          "o": 3,
+          "src": [
+            "manifest.text.dungeon"
+          ]
+        }
+      ],
+      "live_sensitive": [
+        "featured_dungeon",
+        "rewards"
+      ],
+      "manifest_anchors": [
+        {
+          "type": "DestinyActivityTypeDefinition",
+          "hash": 608898761,
+          "name": "Dungeon"
+        },
+        {
+          "type": "DestinyActivityModeDefinition",
+          "hash": 608898761,
+          "name": "Dungeon",
+          "expect_fields": {
+            "activityModeCategory": 1
+          }
+        }
+      ],
+      "last_verified": "2026-10-17"
+    },
+    {
+      "id": "activity_type.lost_sector",
+      "name": "Lost Sector",
+      "kind": "activity_type",
+      "plural": true,
+      "summary": "A PvE activity type in hidden places across Destiny's worlds, described for a fireteam of three.",
+      "summary_src": [
+        "manifest.text.lost_sector",
+        "manifest.text.lost_sector_checklist"
+      ],
+      "facts": [
+        {
+          "p": "game_mode",
+          "o": "pve",
+          "src": [
+            "manifest.activity_mode_category",
+            "official.activity_mode_category"
+          ]
+        },
+        {
+          "p": "fireteam_size",
+          "o": 3,
+          "src": [
+            "manifest.text.lost_sector"
+          ]
+        }
+      ],
+      "live_sensitive": [
+        "featured_lost_sector",
+        "rewards"
+      ],
+      "manifest_anchors": [
+        {
+          "type": "DestinyActivityTypeDefinition",
+          "hash": 103143560,
+          "name": "Lost Sector"
+        },
+        {
+          "type": "DestinyActivityModeDefinition",
+          "hash": 103143560,
+          "name": "Lost Sector",
+          "expect_fields": {
+            "activityModeCategory": 1
+          }
+        }
+      ],
+      "last_verified": "2026-10-17"
+    },
+    {
+      "id": "activity_type.public_event",
+      "name": "Public Event",
+      "kind": "activity_type",
+      "plural": true,
+      "summary": "An open-world event on a destination, such as the Cabal Injection Rig public event found at the EDZ, Nessus, or Neptune.",
+      "summary_src": [
+        "manifest.text.cabal_injection_rig",
+        "manifest.text.public_events_and_patrols"
+      ],
+      "unknown": [
+        "game_mode",
+        "fireteam_size"
+      ],
+      "last_verified": "2026-10-17"
+    },
+    {
+      "id": "activity_type.patrol",
+      "name": "Patrol",
+      "kind": "activity_type",
+      "plural": true,
+      "aliases": [
+        "Explore mode"
+      ],
+      "summary": "Open-world exploration of a destination; the Manifest names this activity type Explore.",
+      "summary_src": [
+        "manifest.text.explore",
+        "manifest.text.public_events_and_patrols"
+      ],
+      "facts": [
+        {
+          "p": "game_mode",
+          "o": "pve",
+          "src": [
+            "manifest.activity_mode_category",
+            "official.activity_mode_category"
+          ]
+        }
+      ],
+      "manifest_anchors": [
+        {
+          "type": "DestinyActivityTypeDefinition",
+          "hash": 3497767639,
+          "name": "Explore"
+        },
+        {
+          "type": "DestinyActivityModeDefinition",
+          "hash": 3497767639,
+          "name": "Explore",
+          "expect_fields": {
+            "activityModeCategory": 1
+          }
+        }
+      ],
+      "last_verified": "2026-10-17"
+    },
+    {
+      "id": "class.titan",
+      "name": "Titan",
+      "kind": "class",
+      "plural": true,
+      "summary": "One of the three Guardian classes.",
+      "summary_src": [
+        "manifest.class_definitions"
+      ],
+      "manifest_anchors": [
+        {
+          "type": "DestinyClassDefinition",
+          "hash": 3655393761,
+          "name": "Titan",
+          "expect_fields": {
+            "classType": 0
+          }
+        }
+      ],
+      "last_verified": "2026-10-17"
+    },
+    {
+      "id": "class.hunter",
+      "name": "Hunter",
+      "kind": "class",
+      "plural": true,
+      "summary": "One of the three Guardian classes.",
+      "summary_src": [
+        "manifest.class_definitions"
+      ],
+      "manifest_anchors": [
+        {
+          "type": "DestinyClassDefinition",
+          "hash": 671679327,
+          "name": "Hunter",
+          "expect_fields": {
+            "classType": 1
+          }
+        }
+      ],
+      "last_verified": "2026-10-17"
+    },
+    {
+      "id": "class.warlock",
+      "name": "Warlock",
+      "kind": "class",
+      "plural": true,
+      "summary": "One of the three Guardian classes.",
+      "summary_src": [
+        "manifest.class_definitions"
+      ],
+      "manifest_anchors": [
+        {
+          "type": "DestinyClassDefinition",
+          "hash": 2271682572,
+          "name": "Warlock",
+          "expect_fields": {
+            "classType": 2
+          }
+        }
+      ],
+      "last_verified": "2026-10-17"
+    },
+    {
+      "id": "concept.exotic_weapon",
+      "name": "Exotic weapon",
+      "kind": "concept",
+      "plural": true,
+      "summary": "The Exotic tier of weapons; only one Exotic weapon can be equipped at a time.",
+      "summary_src": [
+        "manifest.text.exotic_weapon_limit"
+      ],
+      "facts": [
+        {
+          "p": "max_equipped_exotic_weapons",
+          "o": 1,
+          "src": [
+            "manifest.text.exotic_weapon_limit",
+            "manifest.exotic_unique_labels",
+            "official.equipping_block_unique_label"
+          ]
+        },
+        {
+          "p": "exotic_weapon_and_armor_together",
+          "o": true,
+          "src": [
+            "manifest.exotic_unique_labels",
+            "official.equipping_block_unique_label"
+          ]
+        }
+      ],
+      "manifest_anchors": [
+        {
+          "type": "DestinyInventoryItemDefinition",
+          "hash": 3089417789,
+          "name": "Riskrunner",
+          "expect_fields": {
+            "equippingBlock.uniqueLabel": "exotic_weapon",
+            "inventory.tierTypeName": "Exotic"
+          }
+        },
+        {
+          "type": "DestinyInventoryItemDefinition",
+          "hash": 1363886209,
+          "name": "Gjallarhorn",
+          "expect_fields": {
+            "equippingBlock.uniqueLabel": "exotic_weapon"
+          }
+        }
+      ],
+      "last_verified": "2026-10-17"
+    },
+    {
+      "id": "armor_concept.exotic_armor",
+      "name": "Exotic armor",
+      "kind": "armor_concept",
+      "plural": true,
+      "aliases": [
+        "exotic armor piece",
+        "exotic armour"
+      ],
+      "summary": "The Exotic tier of armor; every piece is restricted to one class, and only one Exotic armor piece can be equipped at a time.",
+      "summary_src": [
+        "manifest.exotic_unique_labels",
+        "manifest.exotic_armor_class_type",
+        "manifest.text.exotic_armor_engram"
+      ],
+      "facts": [
+        {
+          "p": "max_equipped_exotic_armor",
+          "o": 1,
+          "src": [
+            "manifest.exotic_unique_labels",
+            "official.equipping_block_unique_label"
+          ]
+        },
+        {
+          "p": "each_piece_restricted_to_one_class",
+          "o": true,
+          "src": [
+            "manifest.exotic_armor_class_type",
+            "official.inventory_item_class_type",
+            "manifest.text.exotic_armor_engram"
+          ]
+        },
+        {
+          "p": "exotic_weapon_and_armor_together",
+          "o": true,
+          "src": [
+            "manifest.exotic_unique_labels",
+            "official.equipping_block_unique_label"
+          ]
+        }
+      ],
+      "manifest_anchors": [
+        {
+          "type": "DestinyInventoryItemDefinition",
+          "hash": 3960926756,
+          "name": "Celestial Nighthawk",
+          "expect_fields": {
+            "equippingBlock.uniqueLabel": "exotic_armor",
+            "classType": 1
+          }
+        },
+        {
+          "type": "DestinyInventoryItemDefinition",
+          "hash": 502173648,
+          "name": "Heart of Inmost Light",
+          "expect_fields": {
+            "equippingBlock.uniqueLabel": "exotic_armor",
+            "classType": 0
+          }
+        }
+      ],
+      "last_verified": "2026-10-17"
+    },
+    {
+      "id": "rule.exotic_equip_limits",
+      "name": "Exotic equip limits",
+      "kind": "rule",
+      "aliases": [
+        "exotic",
+        "exotics",
+        "exotic gear",
+        "exotic items"
+      ],
+      "summary": "Limits on equipping Exotic weapons and Exotic armor at the same time.",
+      "summary_src": [
+        "manifest.text.exotic_weapon_limit",
+        "manifest.exotic_unique_labels"
+      ],
+      "facts": [
+        {
+          "p": "max_equipped_exotic_weapons",
+          "o": 1,
+          "src": [
+            "manifest.text.exotic_weapon_limit",
+            "manifest.exotic_unique_labels",
+            "official.equipping_block_unique_label"
+          ]
+        },
+        {
+          "p": "max_equipped_exotic_armor",
+          "o": 1,
+          "src": [
+            "manifest.exotic_unique_labels",
+            "official.equipping_block_unique_label"
+          ]
+        },
+        {
+          "p": "exotic_weapon_and_armor_together",
+          "o": true,
+          "src": [
+            "manifest.exotic_unique_labels",
+            "official.equipping_block_unique_label"
+          ]
+        }
+      ],
+      "last_verified": "2026-10-17"
+    },
+    {
+      "id": "concept.kinetic_weapon_slot",
+      "name": "Kinetic weapon slot",
+      "kind": "concept",
+      "plural": true,
+      "aliases": [
+        "kinetic slot",
+        "Kinetic Weapons"
+      ],
+      "summary": "One of the three equipped weapon slots (Manifest inventory bucket 'Kinetic Weapons').",
+      "summary_src": [
+        "manifest.weapon_buckets"
+      ],
+      "manifest_anchors": [
+        {
+          "type": "DestinyInventoryBucketDefinition",
+          "hash": 1498876634,
+          "name": "Kinetic Weapons"
+        }
+      ],
+      "last_verified": "2026-10-17"
+    },
+    {
+      "id": "concept.energy_weapon_slot",
+      "name": "Energy weapon slot",
+      "kind": "concept",
+      "plural": true,
+      "aliases": [
+        "energy slot",
+        "Energy Weapons"
+      ],
+      "summary": "One of the three equipped weapon slots (Manifest inventory bucket 'Energy Weapons').",
+      "summary_src": [
+        "manifest.weapon_buckets"
+      ],
+      "manifest_anchors": [
+        {
+          "type": "DestinyInventoryBucketDefinition",
+          "hash": 2465295065,
+          "name": "Energy Weapons"
+        }
+      ],
+      "last_verified": "2026-10-17"
+    },
+    {
+      "id": "concept.power_weapon_slot",
+      "name": "Power weapon slot",
+      "kind": "concept",
+      "plural": true,
+      "aliases": [
+        "power slot",
+        "Power Weapons"
+      ],
+      "summary": "One of the three equipped weapon slots (Manifest inventory bucket 'Power Weapons').",
+      "summary_src": [
+        "manifest.weapon_buckets"
+      ],
+      "manifest_anchors": [
+        {
+          "type": "DestinyInventoryBucketDefinition",
+          "hash": 953998645,
+          "name": "Power Weapons"
+        }
+      ],
+      "last_verified": "2026-10-17"
+    },
+    {
+      "id": "weapon_archetype.auto_rifle",
+      "name": "Auto Rifle",
+      "kind": "weapon_archetype",
+      "plural": true,
+      "summary": "A weapon archetype (Manifest item category 'Auto Rifle').",
+      "summary_src": [
+        "manifest.weapon_item_categories"
+      ],
+      "manifest_anchors": [
+        {
+          "type": "DestinyItemCategoryDefinition",
+          "hash": 5,
+          "name": "Auto Rifle"
+        }
+      ],
+      "last_verified": "2026-10-17",
+      "facts": [
+        {
+          "p": "usual_ammo_type",
+          "o": "primary",
+          "src": [
+            "manifest.ammo.auto_rifle",
+            "official.ammunition_type"
+          ]
+        }
+      ],
+      "freshness": "semi_stable",
+      "review_after": "2027-04-17"
+    },
+    {
+      "id": "weapon_archetype.bow",
+      "name": "Bow",
+      "kind": "weapon_archetype",
+      "plural": true,
+      "summary": "A weapon archetype (Manifest item category 'Bows').",
+      "summary_src": [
+        "manifest.weapon_item_categories"
+      ],
+      "manifest_anchors": [
+        {
+          "type": "DestinyItemCategoryDefinition",
+          "hash": 3317538576,
+          "name": "Bows"
+        }
+      ],
+      "last_verified": "2026-10-17",
+      "aliases": [
+        "Combat Bow"
+      ],
+      "unknown": [
+        "usual_ammo_type"
+      ]
+    },
+    {
+      "id": "weapon_archetype.fusion_rifle",
+      "name": "Fusion Rifle",
+      "kind": "weapon_archetype",
+      "plural": true,
+      "summary": "A weapon archetype (Manifest item category 'Fusion Rifle').",
+      "summary_src": [
+        "manifest.weapon_item_categories"
+      ],
+      "manifest_anchors": [
+        {
+          "type": "DestinyItemCategoryDefinition",
+          "hash": 9,
+          "name": "Fusion Rifle"
+        }
+      ],
+      "last_verified": "2026-10-17",
+      "unknown": [
+        "usual_ammo_type"
+      ]
+    },
+    {
+      "id": "weapon_archetype.glaive",
+      "name": "Glaive",
+      "kind": "weapon_archetype",
+      "plural": true,
+      "summary": "A weapon archetype (Manifest item category 'Glaives').",
+      "summary_src": [
+        "manifest.weapon_item_categories"
+      ],
+      "manifest_anchors": [
+        {
+          "type": "DestinyItemCategoryDefinition",
+          "hash": 3871742104,
+          "name": "Glaives"
+        }
+      ],
+      "last_verified": "2026-10-17",
+      "facts": [
+        {
+          "p": "usual_ammo_type",
+          "o": "special",
+          "src": [
+            "manifest.ammo.glaive",
+            "official.ammunition_type"
+          ]
+        }
+      ],
+      "freshness": "semi_stable",
+      "review_after": "2027-04-17"
+    },
+    {
+      "id": "weapon_archetype.grenade_launcher",
+      "name": "Grenade Launcher",
+      "kind": "weapon_archetype",
+      "plural": true,
+      "summary": "A weapon archetype (Manifest item category 'Grenade Launchers').",
+      "summary_src": [
+        "manifest.weapon_item_categories"
+      ],
+      "manifest_anchors": [
+        {
+          "type": "DestinyItemCategoryDefinition",
+          "hash": 153950757,
+          "name": "Grenade Launchers"
+        }
+      ],
+      "last_verified": "2026-10-17",
+      "unknown": [
+        "usual_ammo_type"
+      ]
+    },
+    {
+      "id": "weapon_archetype.hand_cannon",
+      "name": "Hand Cannon",
+      "kind": "weapon_archetype",
+      "plural": true,
+      "summary": "A weapon archetype (Manifest item category 'Hand Cannon').",
+      "summary_src": [
+        "manifest.weapon_item_categories"
+      ],
+      "manifest_anchors": [
+        {
+          "type": "DestinyItemCategoryDefinition",
+          "hash": 6,
+          "name": "Hand Cannon"
+        }
+      ],
+      "last_verified": "2026-10-17",
+      "aliases": [
+        {
+          "text": "handcannon",
+          "type": "misspelling"
+        }
+      ],
+      "facts": [
+        {
+          "p": "usual_ammo_type",
+          "o": "primary",
+          "src": [
+            "manifest.ammo.hand_cannon",
+            "official.ammunition_type"
+          ]
+        }
+      ],
+      "freshness": "semi_stable",
+      "review_after": "2027-04-17"
+    },
+    {
+      "id": "weapon_archetype.linear_fusion_rifle",
+      "name": "Linear Fusion Rifle",
+      "kind": "weapon_archetype",
+      "plural": true,
+      "summary": "A weapon archetype (Manifest item category 'Linear Fusion Rifles').",
+      "summary_src": [
+        "manifest.weapon_item_categories"
+      ],
+      "manifest_anchors": [
+        {
+          "type": "DestinyItemCategoryDefinition",
+          "hash": 1504945536,
+          "name": "Linear Fusion Rifles"
+        }
+      ],
+      "last_verified": "2026-10-17",
+      "aliases": [
+        "linear fusion"
+      ],
+      "unknown": [
+        "usual_ammo_type"
+      ]
+    },
+    {
+      "id": "weapon_archetype.machine_gun",
+      "name": "Machine Gun",
+      "kind": "weapon_archetype",
+      "plural": true,
+      "summary": "A weapon archetype (Manifest item category 'Machine Gun').",
+      "summary_src": [
+        "manifest.weapon_item_categories"
+      ],
+      "manifest_anchors": [
+        {
+          "type": "DestinyItemCategoryDefinition",
+          "hash": 12,
+          "name": "Machine Gun"
+        }
+      ],
+      "last_verified": "2026-10-17",
+      "facts": [
+        {
+          "p": "usual_ammo_type",
+          "o": "heavy",
+          "src": [
+            "manifest.ammo.machine_gun",
+            "official.ammunition_type"
+          ]
+        }
+      ],
+      "freshness": "semi_stable",
+      "review_after": "2027-04-17"
+    },
+    {
+      "id": "weapon_archetype.pulse_rifle",
+      "name": "Pulse Rifle",
+      "kind": "weapon_archetype",
+      "plural": true,
+      "summary": "A weapon archetype (Manifest item category 'Pulse Rifle').",
+      "summary_src": [
+        "manifest.weapon_item_categories"
+      ],
+      "manifest_anchors": [
+        {
+          "type": "DestinyItemCategoryDefinition",
+          "hash": 7,
+          "name": "Pulse Rifle"
+        }
+      ],
+      "last_verified": "2026-10-17",
+      "facts": [
+        {
+          "p": "usual_ammo_type",
+          "o": "primary",
+          "src": [
+            "manifest.ammo.pulse_rifle",
+            "official.ammunition_type"
+          ]
+        }
+      ],
+      "freshness": "semi_stable",
+      "review_after": "2027-04-17"
+    },
+    {
+      "id": "weapon_archetype.rocket_launcher",
+      "name": "Rocket Launcher",
+      "kind": "weapon_archetype",
+      "plural": true,
+      "summary": "A weapon archetype (Manifest item category 'Rocket Launcher').",
+      "summary_src": [
+        "manifest.weapon_item_categories"
+      ],
+      "manifest_anchors": [
+        {
+          "type": "DestinyItemCategoryDefinition",
+          "hash": 13,
+          "name": "Rocket Launcher"
+        }
+      ],
+      "last_verified": "2026-10-17",
+      "facts": [
+        {
+          "p": "usual_ammo_type",
+          "o": "heavy",
+          "src": [
+            "manifest.ammo.rocket_launcher",
+            "official.ammunition_type"
+          ]
+        }
+      ],
+      "freshness": "semi_stable",
+      "review_after": "2027-04-17"
+    },
+    {
+      "id": "weapon_archetype.scout_rifle",
+      "name": "Scout Rifle",
+      "kind": "weapon_archetype",
+      "plural": true,
+      "summary": "A weapon archetype (Manifest item category 'Scout Rifle').",
+      "summary_src": [
+        "manifest.weapon_item_categories"
+      ],
+      "manifest_anchors": [
+        {
+          "type": "DestinyItemCategoryDefinition",
+          "hash": 8,
+          "name": "Scout Rifle"
+        }
+      ],
+      "last_verified": "2026-10-17",
+      "facts": [
+        {
+          "p": "usual_ammo_type",
+          "o": "primary",
+          "src": [
+            "manifest.ammo.scout_rifle",
+            "official.ammunition_type"
+          ]
+        }
+      ],
+      "freshness": "semi_stable",
+      "review_after": "2027-04-17"
+    },
+    {
+      "id": "weapon_archetype.shotgun",
+      "name": "Shotgun",
+      "kind": "weapon_archetype",
+      "plural": true,
+      "summary": "A weapon archetype (Manifest item category 'Shotgun').",
+      "summary_src": [
+        "manifest.weapon_item_categories"
+      ],
+      "manifest_anchors": [
+        {
+          "type": "DestinyItemCategoryDefinition",
+          "hash": 11,
+          "name": "Shotgun"
+        }
+      ],
+      "last_verified": "2026-10-17",
+      "facts": [
+        {
+          "p": "usual_ammo_type",
+          "o": "special",
+          "src": [
+            "manifest.ammo.shotgun",
+            "official.ammunition_type"
+          ]
+        }
+      ],
+      "freshness": "semi_stable",
+      "review_after": "2027-04-17"
+    },
+    {
+      "id": "weapon_archetype.sidearm",
+      "name": "Sidearm",
+      "kind": "weapon_archetype",
+      "plural": true,
+      "summary": "A weapon archetype (Manifest item category 'Sidearm').",
+      "summary_src": [
+        "manifest.weapon_item_categories"
+      ],
+      "manifest_anchors": [
+        {
+          "type": "DestinyItemCategoryDefinition",
+          "hash": 14,
+          "name": "Sidearm"
+        }
+      ],
+      "last_verified": "2026-10-17",
+      "unknown": [
+        "usual_ammo_type"
+      ]
+    },
+    {
+      "id": "weapon_archetype.sniper_rifle",
+      "name": "Sniper Rifle",
+      "kind": "weapon_archetype",
+      "plural": true,
+      "summary": "A weapon archetype (Manifest item category 'Sniper Rifle').",
+      "summary_src": [
+        "manifest.weapon_item_categories"
+      ],
+      "manifest_anchors": [
+        {
+          "type": "DestinyItemCategoryDefinition",
+          "hash": 10,
+          "name": "Sniper Rifle"
+        }
+      ],
+      "last_verified": "2026-10-17",
+      "aliases": [
+        "sniper"
+      ],
+      "facts": [
+        {
+          "p": "usual_ammo_type",
+          "o": "special",
+          "src": [
+            "manifest.ammo.sniper_rifle",
+            "official.ammunition_type"
+          ]
+        }
+      ],
+      "freshness": "semi_stable",
+      "review_after": "2027-04-17"
+    },
+    {
+      "id": "weapon_archetype.submachine_gun",
+      "name": "Submachine Gun",
+      "kind": "weapon_archetype",
+      "plural": true,
+      "summary": "A weapon archetype (Manifest item category 'Submachine Guns').",
+      "summary_src": [
+        "manifest.weapon_item_categories"
+      ],
+      "manifest_anchors": [
+        {
+          "type": "DestinyItemCategoryDefinition",
+          "hash": 3954685534,
+          "name": "Submachine Guns"
+        }
+      ],
+      "last_verified": "2026-10-17",
+      "aliases": [
+        "sub machine gun"
+      ],
+      "facts": [
+        {
+          "p": "usual_ammo_type",
+          "o": "primary",
+          "src": [
+            "manifest.ammo.submachine_gun",
+            "official.ammunition_type"
+          ]
+        }
+      ],
+      "freshness": "semi_stable",
+      "review_after": "2027-04-17"
+    },
+    {
+      "id": "weapon_archetype.sword",
+      "name": "Sword",
+      "kind": "weapon_archetype",
+      "plural": true,
+      "summary": "A weapon archetype (Manifest item category 'Sword').",
+      "summary_src": [
+        "manifest.weapon_item_categories"
+      ],
+      "manifest_anchors": [
+        {
+          "type": "DestinyItemCategoryDefinition",
+          "hash": 54,
+          "name": "Sword"
+        }
+      ],
+      "last_verified": "2026-10-17",
+      "facts": [
+        {
+          "p": "usual_ammo_type",
+          "o": "heavy",
+          "src": [
+            "manifest.ammo.sword",
+            "official.ammunition_type"
+          ]
+        }
+      ],
+      "freshness": "semi_stable",
+      "review_after": "2027-04-17"
+    },
+    {
+      "id": "weapon_archetype.trace_rifle",
+      "name": "Trace Rifle",
+      "kind": "weapon_archetype",
+      "plural": true,
+      "summary": "A weapon archetype (Manifest item category 'Trace Rifles').",
+      "summary_src": [
+        "manifest.weapon_item_categories"
+      ],
+      "manifest_anchors": [
+        {
+          "type": "DestinyItemCategoryDefinition",
+          "hash": 2489664120,
+          "name": "Trace Rifles"
+        }
+      ],
+      "last_verified": "2026-10-17",
+      "unknown": [
+        "usual_ammo_type"
+      ]
+    },
+    {
+      "id": "progression.quest",
+      "name": "Quest",
+      "kind": "progression",
+      "plural": true,
+      "summary": "Objectives that can be completed in Destiny, made of one or more quest steps.",
+      "summary_src": [
+        "manifest.text.quest",
+        "manifest.quest_structure"
+      ],
+      "last_verified": "2026-10-17"
+    },
+    {
+      "id": "progression.bounty",
+      "name": "Bounty",
+      "kind": "progression",
+      "aliases": [
+        "bounties"
+      ],
+      "summary": "A brief mission picked up from an NPC in the world; repeatable bounties are purchased from vendors.",
+      "summary_src": [
+        "manifest.text.bounties",
+        "manifest.text.repeatable_bounties"
+      ],
+      "live_sensitive": [
+        "current_bounties",
+        "rewards"
+      ],
+      "last_verified": "2026-10-17"
+    },
+    {
+      "id": "progression.triumph",
+      "name": "Triumph",
+      "kind": "progression",
+      "plural": true,
+      "summary": "A record of a Guardian's achievements, listed under Triumphs.",
+      "summary_src": [
+        "manifest.text.triumphs"
+      ],
+      "manifest_anchors": [
+        {
+          "type": "DestinyPresentationNodeDefinition",
+          "hash": 1163735237,
+          "name": "Triumphs"
+        }
+      ],
+      "last_verified": "2026-10-17"
+    },
+    {
+      "id": "concept.vendor",
+      "name": "Vendor",
+      "kind": "concept",
+      "plural": true,
+      "summary": "A character who offers purchases, such as repeatable bounties.",
+      "summary_src": [
+        "manifest.text.repeatable_bounties"
+      ],
+      "live_sensitive": [
+        "current_inventory"
+      ],
+      "last_verified": "2026-10-17"
+    },
+    {
+      "id": "concept.matchmaking",
+      "name": "Matchmaking",
+      "kind": "concept",
+      "summary": "Whether an activity groups players automatically; the Manifest records it per activity, so it is not a property of a whole activity type.",
+      "summary_src": [
+        "manifest.activity_matchmaking"
+      ],
+      "manifest_anchors": [
+        {
+          "type": "DestinyActivityDefinition",
+          "hash": 1983194435,
+          "name": "Haunted Altars of Sorrow: Matchmade",
+          "expect_fields": {
+            "matchmaking.isMatchmade": true
+          }
+        },
+        {
+          "type": "DestinyActivityDefinition",
+          "hash": 4231334639,
+          "name": "Haunted Altars of Sorrow: Customize",
+          "expect_fields": {
+            "matchmaking.isMatchmade": false
+          }
+        }
+      ],
+      "last_verified": "2026-10-17"
+    },
+    {
+      "id": "concept.fireteam",
+      "name": "Fireteam",
+      "kind": "concept",
+      "plural": true,
+      "summary": "The group of players taking on an activity together; Bungie's activity descriptions state sizes such as three or six.",
+      "summary_src": [
+        "manifest.text.strike",
+        "manifest.text.raid"
+      ],
+      "last_verified": "2026-10-17"
+    },
+    {
+      "id": "activity.altars_of_sorrow",
+      "name": "Altars of Sorrow",
+      "kind": "activity",
+      "summary": "A wave-based activity in Sorrow's Harbor on the Moon, where the Hive perform Nightmarish rituals.",
+      "summary_src": [
+        "manifest.text.altars_of_sorrow",
+        "manifest.text.altars_of_sorrow_waves",
+        "manifest.altars_of_sorrow_node"
+      ],
+      "facts": [
+        {
+          "p": "located_on",
+          "o": "The Moon",
+          "src": [
+            "manifest.altars_of_sorrow_node",
+            "manifest.moon_sub_areas"
+          ],
+          "manifest_absent_reason": "No activity definition is named 'Altars of Sorrow'; the location comes from its Triumphs node and the Moon's sub-areas."
+        },
+        {
+          "p": "located_in",
+          "o": "Sorrow's Harbor",
+          "src": [
+            "manifest.text.altars_of_sorrow",
+            "manifest.moon_sub_areas"
+          ],
+          "manifest_absent_reason": "No activity definition is named 'Altars of Sorrow'; the sub-area comes from item text and the Moon's sub-areas."
+        }
+      ],
+      "unknown": [
+        "matchmaking",
+        "fireteam_size"
+      ],
+      "live_sensitive": [
+        "current_availability",
+        "rewards"
+      ],
+      "related": [
+        {
+          "rel": "variant_not_same_as",
+          "id": "activity.haunted_altars_of_sorrow"
+        }
+      ],
+      "manifest_anchors": [
+        {
+          "type": "DestinyPresentationNodeDefinition",
+          "hash": 1325869705,
+          "name": "Altars of Sorrow",
+          "expect_ancestor": "The Moon"
+        },
+        {
+          "type": "DestinyInventoryItemDefinition",
+          "hash": 2531049971,
+          "name": "Altars of Sorrow"
+        },
+        {
+          "type": "DestinyDestinationDefinition",
+          "hash": 290444260,
+          "name": "The Moon",
+          "expect_sub_area": "Sorrow's Harbor"
+        }
+      ],
+      "last_verified": "2026-10-17"
+    },
+    {
+      "id": "activity.haunted_altars_of_sorrow",
+      "name": "Haunted Altars of Sorrow",
+      "kind": "activity",
+      "status": "seasonal",
+      "summary": "A seasonal variant (Manifest activity type 'Seasonal Arena'); a distinct activity, not the same as Altars of Sorrow.",
+      "summary_src": [
+        "manifest.haunted_altars_variants",
+        "manifest.text.haunted_altars_of_sorrow"
+      ],
+      "live_sensitive": [
+        "current_availability"
+      ],
+      "related": [
+        {
+          "rel": "variant_not_same_as",
+          "id": "activity.altars_of_sorrow"
+        }
+      ],
+      "manifest_anchors": [
+        {
+          "type": "DestinyActivityDefinition",
+          "hash": 4140407301,
+          "name": "Haunted Altars of Sorrow"
+        },
+        {
+          "type": "DestinyActivityDefinition",
+          "hash": 1983194435,
+          "name": "Haunted Altars of Sorrow: Matchmade",
+          "expect_fields": {
+            "activityTypeHash": 3481239102,
+            "matchmaking.isMatchmade": true
+          }
+        },
+        {
+          "type": "DestinyActivityDefinition",
+          "hash": 4231334639,
+          "name": "Haunted Altars of Sorrow: Customize",
+          "expect_fields": {
+            "activityTypeHash": 3481239102
+          }
+        }
+      ],
+      "last_verified": "2026-10-17"
+    },
+    {
+      "id": "activity.altars_of_summoning",
+      "name": "Altars of Summoning",
+      "kind": "activity",
+      "status": "legacy",
+      "summary": "A legacy activity from Season of the Witch, tied to Savathûn's Throne World; a different activity from Altars of Sorrow.",
+      "summary_src": [
+        "manifest.altars_of_summoning_node",
+        "manifest.text.altars_of_summoning_record",
+        "manifest.text.mission_conjure"
+      ],
+      "facts": [
+        {
+          "p": "located_on",
+          "o": "Savathûn's Throne World",
+          "src": [
+            "manifest.text.mission_conjure",
+            "manifest.throne_world_destination"
+          ],
+          "confidence": "medium",
+          "manifest_absent_reason": "No activity definition is named 'Altars of Summoning'; the location comes from a Throne World mission about it."
+        }
+      ],
+      "unknown": [
+        "matchmaking",
+        "fireteam_size"
+      ],
+      "live_sensitive": [
+        "current_availability"
+      ],
+      "manifest_anchors": [
+        {
+          "type": "DestinyPresentationNodeDefinition",
+          "hash": 1721072046,
+          "name": "Altars of Summoning",
+          "expect_ancestor": "Season of the Witch"
+        },
+        {
+          "type": "DestinyPresentationNodeDefinition",
+          "hash": 1721072046,
+          "name": "Altars of Summoning",
+          "expect_ancestor": "Legacy Triumphs"
+        },
+        {
+          "type": "DestinyActivityDefinition",
+          "hash": 3483444271,
+          "name": "Mission: Conjure",
+          "expect_fields": {
+            "destinationHash": 2244580325
+          }
+        }
+      ],
+      "last_verified": "2026-10-17"
+    },
+    {
+      "id": "activity.altar_of_reflection",
+      "name": "Altar of Reflection",
+      "kind": "activity",
+      "summary": "A place in Savathûn's Throne World, in Witch's Echo, where Guardians witness memories; a different activity from Altars of Sorrow.",
+      "summary_src": [
+        "manifest.text.altar_of_reflection_location",
+        "manifest.text.altar_of_reflection_memory",
+        "manifest.throne_world_destination"
+      ],
+      "facts": [
+        {
+          "p": "located_on",
+          "o": "Savathûn's Throne World",
+          "src": [
+            "manifest.throne_world_destination",
+            "manifest.text.altar_of_reflection_location"
+          ],
+          "manifest_absent_reason": "The Manifest lists it as a Throne World sub-area, but no activity definition carries that relationship."
+        },
+        {
+          "p": "located_in",
+          "o": "Witch's Echo",
+          "src": [
+            "manifest.text.altar_of_reflection_location"
+          ],
+          "manifest_absent_reason": "Stated only in item text."
+        }
+      ],
+      "unknown": [
+        "matchmaking"
+      ],
+      "manifest_anchors": [
+        {
+          "type": "DestinyDestinationDefinition",
+          "hash": 2244580325,
+          "expect_sub_area": "Altar of Reflection"
+        },
+        {
+          "type": "DestinyDestinationDefinition",
+          "hash": 2244580325,
+          "expect_sub_area": "Witch's Echo"
+        },
+        {
+          "type": "DestinyActivityDefinition",
+          "hash": 998325554,
+          "name": "Altar of Reflection: Catalyst",
+          "expect_fields": {
+            "destinationHash": 2244580325
+          }
+        }
+      ],
+      "last_verified": "2026-10-17"
+    }
+  ],
+  "shorthands": {
+    "hc": {
+      "entity": "weapon_archetype.hand_cannon",
+      "note": "Common community shorthand."
+    },
+    "smg": {
+      "entity": "weapon_archetype.submachine_gun",
+      "note": "Common community shorthand."
+    },
+    "lfr": {
+      "entity": "weapon_archetype.linear_fusion_rifle",
+      "note": "Common community shorthand."
+    },
+    "gl": {
+      "entity": "weapon_archetype.grenade_launcher",
+      "note": "Common community shorthand."
+    }
+  },
+  "ambiguity_groups": [
+    {
+      "id": "ambiguity.altars",
+      "aliases": [
+        "altars",
+        "altar"
+      ],
+      "candidates": [
+        "activity.altars_of_sorrow",
+        "activity.haunted_altars_of_sorrow",
+        "activity.altars_of_summoning",
+        "activity.altar_of_reflection"
+      ],
+      "note": "Several distinct activities and places share the word 'altar'."
+    }
+  ]
+}

@@ -1,0 +1,197 @@
+{
+  "schema_version": 1,
+  "corpus_version": "fixture-2026-10-17",
+  "predicates": {
+    "game_mode": {
+      "value": "enum",
+      "values": ["pve", "pvp", "pvevp"],
+      "owner": "curated",
+      "description": "Whether the activity is player-versus-environment or player-versus-player."
+    },
+    "fireteam_size_max": {
+      "value": "int",
+      "owner": "curated",
+      "corroborate": "manifest_text",
+      "description": "Largest fireteam the activity is designed for."
+    },
+    "matchmaking": {
+      "value": "enum",
+      "values": ["matchmade", "none", "open_world"],
+      "owner": "curated",
+      "description": "How players are grouped for the activity."
+    },
+    "located_on": {
+      "value": "place",
+      "owner": "manifest_preferred",
+      "description": "Destination where the activity takes place."
+    },
+    "located_in": {
+      "value": "place",
+      "owner": "manifest_preferred",
+      "description": "Area within the destination."
+    },
+    "ammo_type": {
+      "value": "enum",
+      "values": ["primary", "special", "heavy"],
+      "owner": "curated",
+      "description": "Ammunition type the weapon archetype normally uses."
+    },
+    "class_restriction": {
+      "value": "class",
+      "owner": "manifest",
+      "curatable": false,
+      "description": "Which class can equip an item; always derived from the Manifest."
+    },
+    "max_equipped_exotic_weapons": {
+      "value": "int",
+      "owner": "curated",
+      "description": "Exotic weapons that may be equipped at once."
+    },
+    "max_equipped_exotic_armor": {
+      "value": "int",
+      "owner": "curated",
+      "description": "Exotic armor pieces that may be equipped at once."
+    },
+    "exotic_weapon_and_armor_together": {
+      "value": "bool",
+      "owner": "curated",
+      "description": "Whether one Exotic weapon and one Exotic armor piece may be equipped together."
+    }
+  },
+  "sources": {
+    "fixture.curated": {
+      "kind": "curated",
+      "note": "Test fixture only; not production knowledge.",
+      "verified_at": "2026-10-17"
+    },
+    "fixture.manifest_dungeon_text": {
+      "kind": "manifest_text",
+      "ref": "DestinyActivityTypeDefinition:608898761",
+      "quote": "Form a fireteam of up to three, and brave the strange and powerful realms of our enemies."
+    },
+    "fixture.manifest_altars_node": {
+      "kind": "manifest_structure",
+      "ref": "DestinyPresentationNodeDefinition:Altars of Sorrow > Activities > The Moon"
+    }
+  },
+  "entities": [
+    {
+      "id": "mode.crucible",
+      "name": "Crucible",
+      "kind": "game_mode",
+      "summary": "Fixture: Destiny 2's player-versus-player mode.",
+      "facts": [{"p": "game_mode", "o": "pvp", "src": "fixture.curated"}],
+      "live_sensitive": ["current_playlists"],
+      "last_verified": "2026-10-17"
+    },
+    {
+      "id": "activity_type.dungeon",
+      "name": "Dungeon",
+      "kind": "activity_type",
+      "plural": true,
+      "summary": "Fixture: endgame PvE activity for a small fireteam.",
+      "facts": [
+        {"p": "game_mode", "o": "pve", "src": "fixture.curated"},
+        {"p": "fireteam_size_max", "o": 3, "src": "fixture.manifest_dungeon_text"},
+        {"p": "matchmaking", "o": "none", "src": "fixture.curated"}
+      ],
+      "live_sensitive": ["featured_dungeon"],
+      "last_verified": "2026-10-17"
+    },
+    {
+      "id": "activity.altars_of_sorrow",
+      "name": "Altars of Sorrow",
+      "kind": "activity",
+      "summary": "Fixture: wave-based open-world activity on the Moon.",
+      "facts": [
+        {
+          "p": "located_on",
+          "o": "The Moon",
+          "src": ["fixture.manifest_altars_node", "fixture.curated"],
+          "manifest_absent_reason": "No base activity definition; location only in the presentation tree."
+        },
+        {
+          "p": "located_in",
+          "o": "Sorrow's Harbor",
+          "src": "fixture.curated",
+          "manifest_absent_reason": "No base activity definition."
+        },
+        {"p": "matchmaking", "o": "open_world", "src": "fixture.curated"}
+      ],
+      "unknown": ["current_rewards", "typical_duration"],
+      "live_sensitive": ["featured_status", "worth_doing_now"],
+      "related": [{"rel": "variant_not_same_as", "id": "activity.haunted_altars_of_sorrow"}],
+      "manifest_anchors": [
+        {
+          "type": "DestinyPresentationNodeDefinition",
+          "name": "Altars of Sorrow",
+          "expect_ancestor": "The Moon"
+        }
+      ],
+      "last_verified": "2026-10-17",
+      "review_after": "2027-04-17"
+    },
+    {
+      "id": "activity.haunted_altars_of_sorrow",
+      "name": "Haunted Altars of Sorrow",
+      "kind": "activity",
+      "status": "seasonal",
+      "summary": "Fixture: seasonal event variant that is distinct from Altars of Sorrow.",
+      "facts": [{"p": "matchmaking", "o": "matchmade", "src": "fixture.curated"}],
+      "last_verified": "2026-10-17"
+    },
+    {
+      "id": "activity.altars_of_summoning",
+      "name": "Altars of Summoning",
+      "kind": "activity",
+      "status": "legacy",
+      "summary": "Fixture: a separate activity that is not Altars of Sorrow.",
+      "last_verified": "2026-10-17"
+    },
+    {
+      "id": "activity.altar_of_reflection",
+      "name": "Altar of Reflection",
+      "kind": "activity",
+      "status": "legacy",
+      "summary": "Fixture: a separate activity that is not Altars of Sorrow.",
+      "last_verified": "2026-10-17"
+    },
+    {
+      "id": "weapon_archetype.hand_cannon",
+      "name": "Hand Cannon",
+      "kind": "weapon_archetype",
+      "plural": true,
+      "summary": "Fixture: a precision sidearm weapon archetype.",
+      "facts": [{"p": "ammo_type", "o": "primary", "src": "fixture.curated"}],
+      "last_verified": "2026-10-17"
+    },
+    {
+      "id": "rule.exotic_equip_limit",
+      "name": "Exotic equip limit",
+      "kind": "rule",
+      "aliases": ["exotic", "exotics", "exotic armor", "exotic weapon", "exotic weapons"],
+      "summary": "Fixture: limits on equipping Exotic gear at the same time.",
+      "facts": [
+        {"p": "max_equipped_exotic_weapons", "o": 1, "src": "fixture.curated"},
+        {"p": "max_equipped_exotic_armor", "o": 1, "src": "fixture.curated"},
+        {"p": "exotic_weapon_and_armor_together", "o": true, "src": "fixture.curated"}
+      ],
+      "last_verified": "2026-10-17"
+    }
+  ],
+  "shorthands": {
+    "hc": {"entity": "weapon_archetype.hand_cannon", "note": "Common community shorthand."}
+  },
+  "ambiguity_groups": [
+    {
+      "id": "ambiguity.altars",
+      "aliases": ["altars", "altar"],
+      "candidates": [
+        "activity.altars_of_sorrow",
+        "activity.altars_of_summoning",
+        "activity.altar_of_reflection"
+      ],
+      "note": "Curator note: several distinct activities share this word."
+    }
+  ]
+}

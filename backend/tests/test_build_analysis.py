@@ -1859,7 +1859,7 @@ HAND_CANNON_RESULT = {"candidates": [{"subtype": "Hand Cannon", "slot": "Energy 
         ),
         ("Anything better in my vault?", {"subtype": "Rocket Launcher"}, {}, "not_applicable"),
         ("Rocket launcher or hand cannon?", {"subtype": "Hand Cannon"}, {}, "not_applicable"),
-        # Shorthand is not interpreted until aliases exist in the knowledge layer.
+        # Shorthand is interpreted only through alias_terms from the core knowledge engine.
         ("Is my HC any good?", {"subtype": "Rocket Launcher"}, {}, "not_applicable"),
         (
             "What rocket launcher should I use?",

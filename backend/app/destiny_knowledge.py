@@ -12,13 +12,16 @@ from typing import Any, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.bungie.item_values import MAX_REWARD_NAMES, item_type_name, reward_hashes
 from app.bungie.manifest import DefinitionResolver
 from app.config import Settings
+from app.core_knowledge import normalize_text
 
 logger = logging.getLogger(__name__)
 
 BUNGIE_ROOT_URL = "https://www.bungie.net"
-KNOWLEDGE_INDEX_SCHEMA_VERSION = 4
+KNOWLEDGE_INDEX_SCHEMA_VERSION = 5
+MAX_CLOSE_ALTERNATIVES = 3
 
 INDEXED_DEFINITION_TYPES: tuple[str, ...] = (
     "DestinyInventoryItemDefinition",
@@ -262,6 +265,9 @@ class KnowledgeIndexEntry:
     related_item_hashes: list[int] = field(default_factory=list)
     completion_value: int | float | None = None
     search_text: str = ""
+    # Destination-only, from DestinyDestinationDefinition: named bubbles and the place hash.
+    sub_areas: list[dict[str, Any]] = field(default_factory=list)
+    place_hash: int | None = None
 
     def public(self, score: float | None = None) -> dict[str, Any]:
         result: dict[str, Any] = {
@@ -279,6 +285,31 @@ class KnowledgeIndexEntry:
         return result
 
 
+@dataclass(frozen=True, slots=True)
+class SubAreaRef:
+    sub_area_hash: int
+    sub_area_name: str
+    destination_index: int
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedIndex:
+    """Immutable lookup structures derived from the index entries."""
+
+    hash_lookup: dict[tuple[str, int], KnowledgeIndexEntry]
+    trigrams: dict[str, set[int]]
+    # (definition type, normalize_text(name)) -> entry indexes, for O(1) exact resolution.
+    exact_names: dict[tuple[str, str], tuple[int, ...]]
+    # normalize_text(sub-area name) -> every destination that declares that bubble.
+    sub_areas: dict[str, tuple[SubAreaRef, ...]]
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedEntry:
+    entry: KnowledgeIndexEntry
+    resolution: dict[str, Any]
+
+
 class ManifestKnowledgeProvider:
     source_name = "bungie_manifest"
     knowledge_category = "manifest"
@@ -290,6 +321,9 @@ class ManifestKnowledgeProvider:
         self._entries: list[KnowledgeIndexEntry] | None = None
         self._hash_lookup: dict[tuple[str, int], KnowledgeIndexEntry] = {}
         self._trigram_lookup: dict[str, set[int]] = {}
+        self._exact_names: dict[tuple[str, str], tuple[int, ...]] = {}
+        self._sub_areas: dict[str, tuple[SubAreaRef, ...]] = {}
+        self._destination_names: frozenset[str] | None = None
         self._index_lock = asyncio.Lock()
         self.warmup_state: dict[str, Any] = {"state": "not_started"}
         self._indexed_types: list[str] = []
@@ -485,6 +519,20 @@ class ManifestKnowledgeProvider:
             entity_hash = int(definition.get("hash"))
         except (TypeError, ValueError):
             return None
+        sub_areas: list[dict[str, Any]] = []
+        place_hash: int | None = None
+        if definition_type == "DestinyDestinationDefinition":
+            seen_bubbles: set[int] = set()
+            for bubble in definition.get("bubbles", []) or []:
+                bubble_name = str((bubble.get("displayProperties") or {}).get("name") or "")
+                try:
+                    bubble_hash = int(bubble.get("hash"))
+                except (TypeError, ValueError):
+                    continue
+                if bubble_name.strip() and bubble_hash not in seen_bubbles:
+                    seen_bubbles.add(bubble_hash)
+                    sub_areas.append({"hash": bubble_hash, "name": bubble_name.strip()})
+            place_hash = next(iter(_unique_hashes([definition.get("placeHash")])), None)
         description = description[:500]
         search_text = _normalized(" ".join([name, description, *extras]))
         return KnowledgeIndexEntry(
@@ -512,27 +560,42 @@ class ManifestKnowledgeProvider:
                 else None
             ),
             search_text=search_text,
+            sub_areas=sub_areas,
+            place_hash=place_hash,
         )
 
     @classmethod
-    def _prepare_index(
-        cls, entries: list[KnowledgeIndexEntry]
-    ) -> tuple[dict[tuple[str, int], KnowledgeIndexEntry], dict[str, set[int]]]:
+    def _prepare_index(cls, entries: list[KnowledgeIndexEntry]) -> PreparedIndex:
         """Build immutable lookup structures; safe to run in a worker thread."""
 
         hash_lookup = {(value.definition_type, value.entity_hash): value for value in entries}
         trigrams: dict[str, set[int]] = {}
+        exact_names: dict[tuple[str, str], list[int]] = {}
+        sub_areas: dict[str, list[SubAreaRef]] = {}
         for index, entry in enumerate(entries):
             for trigram in cls._trigrams(_normalized(entry.name)):
                 trigrams.setdefault(trigram, set()).add(index)
-        return hash_lookup, trigrams
+            exact_key = normalize_text(entry.name)
+            if exact_key:
+                exact_names.setdefault((entry.definition_type, exact_key), []).append(index)
+            for bubble in entry.sub_areas:
+                bubble_key = normalize_text(str(bubble.get("name") or ""))
+                if bubble_key:
+                    sub_areas.setdefault(bubble_key, []).append(
+                        SubAreaRef(int(bubble["hash"]), str(bubble["name"]), index)
+                    )
+        return PreparedIndex(
+            hash_lookup=hash_lookup,
+            trigrams=trigrams,
+            exact_names={key: tuple(value) for key, value in exact_names.items()},
+            sub_areas={key: tuple(value) for key, value in sub_areas.items()},
+        )
 
-    def _apply_index(
-        self,
-        entries: list[KnowledgeIndexEntry],
-        prepared: tuple[dict[tuple[str, int], KnowledgeIndexEntry], dict[str, set[int]]],
-    ) -> None:
-        self._hash_lookup, self._trigram_lookup = prepared
+    def _apply_index(self, entries: list[KnowledgeIndexEntry], prepared: PreparedIndex) -> None:
+        self._hash_lookup = prepared.hash_lookup
+        self._trigram_lookup = prepared.trigrams
+        self._exact_names = prepared.exact_names
+        self._sub_areas = prepared.sub_areas
         self._indexed_types = sorted({value.definition_type for value in entries})
         self._empty_types = sorted(
             set(INDEXED_DEFINITION_TYPES) - set(self._indexed_types) - set(self._unavailable_types)
@@ -636,9 +699,13 @@ class ManifestKnowledgeProvider:
         self, query: str, entity_types: list[str] | None = None, limit: int = 10
     ) -> dict[str, Any]:
         matches = await self._matching_entries(query, entity_types, limit)
+        query_key = normalize_text(query)
         return {
             "query": query,
-            "results": [entry.public(score) for entry, score in matches],
+            "results": [
+                {**entry.public(score), "exact_name_match": normalize_text(entry.name) == query_key}
+                for entry, score in matches
+            ],
             "count": len(matches),
             "source": self.source_name,
             "limitations": (
@@ -646,28 +713,96 @@ class ManifestKnowledgeProvider:
             ),
         }
 
+    @staticmethod
+    def _kind_bonus(entry: KnowledgeIndexEntry, definition_type: str, quest: bool) -> int:
+        bonus = 0
+        if definition_type == "DestinyInventoryItemDefinition":
+            if quest:
+                bonus += 80 if entry.item_type_code == 15 else 40 if entry.is_quest else -80
+            else:
+                bonus += 80 if entry.item_type_code in {2, 3} else 0
+                bonus += 30 if entry.has_collectible else 0
+                bonus -= 60 if entry.is_quest or entry.item_type_code == 25 else 0
+        return bonus
+
+    def exact_entries(self, value: str, definition_type: str) -> list[KnowledgeIndexEntry]:
+        """Entries whose name equals `value` under knowledge-engine normalization.
+
+        A dictionary lookup on the installed index; returns [] before the index is ready.
+        """
+
+        if self._entries is None:
+            return []
+        indexes = self._exact_names.get((definition_type, normalize_text(value)), ())
+        return [self._entries[index] for index in indexes]
+
     async def _resolve_entry(
         self, value: str, definition_type: str, *, quest: bool = False
-    ) -> KnowledgeIndexEntry | None:
+    ) -> ResolvedEntry | None:
+        """Resolve one entity, reporting whether the match is exact.
+
+        Order: hash, then exact name (no fuzzy scan), then closest fuzzy name. A closest
+        match is never reported as exact.
+        """
+
+        await self._ensure_index()
+        normalized_value = _normalized(value)
+        if normalized_value.isdigit():
+            entry = self._hash_lookup.get((definition_type, int(normalized_value)))
+            if entry is None:
+                return None
+            return ResolvedEntry(entry, self._resolution(value, entry, "hash"))
+
+        exact = self.exact_entries(value, definition_type)
+        if quest:
+            exact = [entry for entry in exact if entry.is_quest]
+        if exact:
+            entry = max(exact, key=lambda item: self._kind_bonus(item, definition_type, quest))
+            resolution = self._resolution(value, entry, "exact_name")
+            if len(exact) > 1:
+                resolution["same_name_count"] = len(exact)
+            return ResolvedEntry(entry, resolution)
+
         matches = await self._matching_entries(value, [definition_type], 25)
         if not matches:
             return None
-        normalized_value = _normalized(value)
 
         def preference(candidate: tuple[KnowledgeIndexEntry, float]) -> tuple[int, float]:
             entry, score = candidate
-            exact = int(_normalized(entry.name) == normalized_value)
-            bonus = 0
-            if definition_type == "DestinyInventoryItemDefinition":
-                if quest:
-                    bonus += 80 if entry.item_type_code == 15 else 40 if entry.is_quest else -80
-                else:
-                    bonus += 80 if entry.item_type_code in {2, 3} else 0
-                    bonus += 30 if entry.has_collectible else 0
-                    bonus -= 60 if entry.is_quest or entry.item_type_code == 25 else 0
-            return exact * 100 + bonus, score
+            same_name = int(_normalized(entry.name) == normalized_value)
+            return same_name * 100 + self._kind_bonus(entry, definition_type, quest), score
 
-        return max(matches, key=preference)[0]
+        ranked = sorted(matches, key=preference, reverse=True)
+        entry = ranked[0][0]
+        resolution = self._resolution(value, entry, "closest_name")
+        alternatives: list[str] = []
+        for other, _ in ranked[1:]:
+            if other.name != entry.name and other.name not in alternatives:
+                alternatives.append(other.name)
+            if len(alternatives) >= MAX_CLOSE_ALTERNATIVES:
+                break
+        resolution["other_close_matches"] = alternatives
+        return ResolvedEntry(entry, resolution)
+
+    @staticmethod
+    def _resolution(query: str, entry: KnowledgeIndexEntry, kind: str) -> dict[str, Any]:
+        return {
+            "query": query,
+            "matched_name": entry.name,
+            "matched_hash": entry.entity_hash,
+            "exact": kind != "closest_name",
+            "match_kind": kind,
+        }
+
+    @staticmethod
+    def _resolution_limitations(resolution: dict[str, Any], kind: str) -> list[str]:
+        if resolution["exact"]:
+            return []
+        return [
+            f"'{resolution['query']}' is not an exact Manifest {kind} name. This is the closest "
+            f"match ('{resolution['matched_name']}') and may be a different {kind}; do not "
+            f"treat it as '{resolution['query']}'."
+        ]
 
     async def _definition(self, entry: KnowledgeIndexEntry) -> dict[str, Any] | None:
         values = await self.resolver.resolve_many(entry.definition_type, {entry.entity_hash})
@@ -731,9 +866,10 @@ class ManifestKnowledgeProvider:
         }
 
     async def get_item_details(self, value: str) -> dict[str, Any]:
-        entry = await self._resolve_entry(value, "DestinyInventoryItemDefinition")
-        if entry is None:
+        resolved = await self._resolve_entry(value, "DestinyInventoryItemDefinition")
+        if resolved is None:
             return self._not_found(value, "item")
+        entry = resolved.entry
         definition = await self._definition(entry)
         if not definition:
             return self._not_found(value, "item")
@@ -808,16 +944,19 @@ class ManifestKnowledgeProvider:
                     "DestinyItemCategoryDefinition", category_hashes
                 ),
             },
+            "resolution": resolved.resolution,
             "limitations": [
+                *self._resolution_limitations(resolved.resolution, "item"),
                 "Manifest item stats and sockets are generic definition data; random rolls and "
-                "owned-instance state require Guardian inventory data."
+                "owned-instance state require Guardian inventory data.",
             ],
         }
 
     async def get_activity_details(self, value: str) -> dict[str, Any]:
-        entry = await self._resolve_entry(value, "DestinyActivityDefinition")
-        if entry is None:
+        resolved = await self._resolve_entry(value, "DestinyActivityDefinition")
+        if resolved is None:
             return self._not_found(value, "activity")
+        entry = resolved.entry
         definition = await self._definition(entry)
         if not definition:
             return self._not_found(value, "activity")
@@ -878,7 +1017,9 @@ class ManifestKnowledgeProvider:
                     "DestinyInventoryItemDefinition", reward_items
                 ),
             },
+            "resolution": resolved.resolution,
             "limitations": [
+                *self._resolution_limitations(resolved.resolution, "activity"),
                 "Manifest modifiers, challenges, and rewards are possible static metadata, not a "
                 "guarantee that they are currently active or that a specific item will drop.",
                 "Manifest activity Power is not exposed for player eligibility comparisons because "
@@ -887,9 +1028,10 @@ class ManifestKnowledgeProvider:
         }
 
     async def get_quest_details(self, value: str) -> dict[str, Any]:
-        entry = await self._resolve_entry(value, "DestinyInventoryItemDefinition", quest=True)
-        if entry is None or not entry.is_quest:
+        resolved = await self._resolve_entry(value, "DestinyInventoryItemDefinition", quest=True)
+        if resolved is None or not resolved.entry.is_quest:
             return self._not_found(value, "quest")
+        entry = resolved.entry
         definition = await self._definition(entry)
         if not definition:
             return self._not_found(value, "quest")
@@ -940,6 +1082,12 @@ class ManifestKnowledgeProvider:
         destination_hashes = _unique_hashes(
             [activity.get("destinationHash") for activity in activity_definitions.values()]
         )
+        declared_rewards = reward_hashes(definition)
+        named_rewards = [
+            value["name"]
+            for value in await self._briefs("DestinyInventoryItemDefinition", declared_rewards)
+            if value.get("name")
+        ]
         return {
             "found": True,
             "source": self.source_name,
@@ -958,18 +1106,27 @@ class ManifestKnowledgeProvider:
                     "DestinyDestinationDefinition", destination_hashes
                 ),
                 "display_source": definition.get("displaySource") or None,
+                "item_type_name": item_type_name(definition),
+                "reward_names": list(dict.fromkeys(named_rewards))[:MAX_REWARD_NAMES],
+                "reward_total": len(declared_rewards),
+                "rewards_unresolved": len(declared_rewards) - len(named_rewards),
             },
+            "resolution": resolved.resolution,
             "limitations": [
+                *self._resolution_limitations(resolved.resolution, "quest"),
                 "The Manifest can describe quest steps and objectives, but it does not reliably "
                 "provide a complete walkthrough, encounter strategy, or every acquisition "
-                "prerequisite."
+                "prerequisite.",
+                "reward_names are labels declared in this quest or bounty definition; they do "
+                "not describe quantities, odds, or current reward value.",
             ],
         }
 
     async def find_item_source(self, value: str) -> dict[str, Any]:
-        entry = await self._resolve_entry(value, "DestinyInventoryItemDefinition")
-        if entry is None:
+        resolved = await self._resolve_entry(value, "DestinyInventoryItemDefinition")
+        if resolved is None:
             return self._not_found(value, "item")
+        entry = resolved.entry
         definition = await self._definition(entry)
         if not definition:
             return self._not_found(value, "item")
@@ -1046,6 +1203,7 @@ class ManifestKnowledgeProvider:
             )
 
         limitations = [
+            *self._resolution_limitations(resolved.resolution, "item"),
             "Manifest source strings are acquisition hints, not step-by-step guides.",
             "Reward-source mappings are heuristic and activity reward lists may contain "
             "placeholders.",
@@ -1061,8 +1219,74 @@ class ManifestKnowledgeProvider:
             "item": {"hash": entry.entity_hash, "name": name},
             "source_known": bool(evidence),
             "evidence": evidence,
+            "resolution": resolved.resolution,
             "limitations": limitations,
         }
+
+    def destination_names(self) -> frozenset[str]:
+        """Named destinations from the installed index; empty before it is ready."""
+
+        if self._entries is None:
+            return frozenset()
+        if self._destination_names is None:
+            self._destination_names = frozenset(
+                entry.name
+                for entry in self._entries
+                if entry.definition_type == "DestinyDestinationDefinition"
+            )
+        return self._destination_names
+
+    async def resolve_sub_area(self, value: str) -> dict[str, Any]:
+        """Resolve a destination sub-area (bubble) to the destination(s) that declare it.
+
+        Derived only from DestinyDestinationDefinition.bubbles; exact normalized name match.
+        A name declared by differently named destinations is reported as ambiguous.
+        """
+
+        await self._ensure_index()
+        assert self._entries is not None
+        refs = self._sub_areas.get(normalize_text(value), ())
+        parents: dict[str, dict[str, Any]] = {}
+        sub_area_hashes: list[int] = []
+        for ref in refs:
+            destination = self._entries[ref.destination_index]
+            if ref.sub_area_hash not in sub_area_hashes:
+                sub_area_hashes.append(ref.sub_area_hash)
+            parent = parents.get(destination.name)
+            if parent is None:
+                place = (
+                    self._hash_lookup.get(("DestinyPlaceDefinition", destination.place_hash))
+                    if destination.place_hash
+                    else None
+                )
+                parent = parents[destination.name] = {
+                    "destination": destination.name,
+                    "destination_hashes": [],
+                    "place": place.name if place else None,
+                }
+            if destination.entity_hash not in parent["destination_hashes"]:
+                parent["destination_hashes"].append(destination.entity_hash)
+        result: dict[str, Any] = {
+            "query": value,
+            "found": bool(parents),
+            "ambiguous": len(parents) > 1,
+            "sub_area": refs[0].sub_area_name if refs else None,
+            "sub_area_hashes": sub_area_hashes,
+            "parents": list(parents.values()),
+            "source": self.source_name,
+            "derivation": "DestinyDestinationDefinition.bubbles",
+            "limitations": [],
+        }
+        if not parents:
+            result["limitations"].append(
+                "No destination in the Manifest declares a sub-area with this exact name."
+            )
+        elif result["ambiguous"]:
+            result["limitations"].append(
+                "Several destinations declare a sub-area with this name; it does not identify "
+                "one location on its own."
+            )
+        return result
 
     @staticmethod
     def _not_found(query: str, kind: str) -> dict[str, Any]:

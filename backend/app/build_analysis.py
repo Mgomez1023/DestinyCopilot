@@ -491,12 +491,17 @@ def forced_alternatives_relevance(
     context: GuardianContext,
     arguments: dict[str, Any],
     result: dict[str, Any],
+    *,
+    alias_terms: tuple[str, ...] = (),
 ) -> ForcedAlternativesRelevance:
     """Trace-only check that a forced alternatives lookup targeted the gear the user named.
 
     The vocabulary is the slot and subtype names already present in this Guardian's own
-    weapons and armor, so nothing is hard-coded. Anything ambiguous is not_applicable. The
-    result is observability only and never affects answers, validation, or tool choice.
+    weapons and armor, so nothing is hard-coded. `alias_terms` are canonical names the core
+    knowledge engine resolved from registered aliases or shorthand in the message (for
+    example "HC" -> "Hand Cannon"); they count only when they are in that vocabulary.
+    Anything ambiguous is not_applicable. The result is observability only and never
+    affects answers, validation, or tool choice.
     """
 
     if not isinstance(result, dict) or "error" in result or not isinstance(arguments, dict):
@@ -514,6 +519,7 @@ def forced_alternatives_relevance(
     }
     text = _normalized(message)
     named = {term for term in vocabulary if _gear_term_pattern(term).search(text)}
+    named |= {term for value in alias_terms if (term := _normalized(value)) in vocabulary}
     # "linear fusion rifle" also contains "fusion rifle"; keep only the most specific term.
     named = {term for term in named if not any(term != other and term in other for other in named)}
     if len(named) != 1:

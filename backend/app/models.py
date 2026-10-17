@@ -87,6 +87,12 @@ class QuestSummary(BaseModel):
     completed: bool = False
     redeemed: bool = False
     objectives: list[ObjectiveSummary] = Field(default_factory=list)
+    # The Manifest's own specific type label, such as "Duality Order"; null when absent.
+    item_type_name: str | None = Field(default=None, max_length=80)
+    # Reward names declared in the Manifest definition's value.itemValue, in Manifest order.
+    reward_names: list[str] = Field(default_factory=list, max_length=4)
+    reward_total: int = Field(default=0, ge=0)
+    rewards_unresolved: int = Field(default=0, ge=0)
 
 
 class MilestoneSummary(BaseModel):

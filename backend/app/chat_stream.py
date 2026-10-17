@@ -118,7 +118,8 @@ def initial_guardian_status(message: str) -> tuple[StreamStatusStage, str]:
 
 
 def status_for_tool(tool_name: str, category: str) -> tuple[StreamStatusStage, str]:
-    if category == "manifest":
+    # Curated core concepts are Destiny data too; they reuse the Manifest stage.
+    if category in {"manifest", "core"}:
         return "manifest", STATUS_LABELS["manifest"]
     if category == "guide":
         return "guide", STATUS_LABELS["guide"]

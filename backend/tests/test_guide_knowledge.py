@@ -320,6 +320,7 @@ def test_general_acquisition_orchestration_uses_manifest_and_guide() -> None:
     assert service.latest_trace()["grounding"] == {
         "guardian_account": False,
         "manifest": True,
+        "core_knowledge": False,
         "guide_provider": True,
         "live_provider": False,
         "web_research": False,
@@ -371,6 +372,7 @@ def test_personalized_orchestration_uses_all_grounding_categories() -> None:
     assert service.latest_trace()["grounding"] == {
         "guardian_account": True,
         "manifest": True,
+        "core_knowledge": False,
         "guide_provider": True,
         "live_provider": False,
         "web_research": False,

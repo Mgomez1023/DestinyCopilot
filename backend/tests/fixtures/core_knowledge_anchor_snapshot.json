@@ -1,0 +1,1070 @@
+{
+ "manifest_version": "local Manifest cache key cf7b604a840d",
+ "definitions": {
+  "DestinyActivityDefinition": {
+   "1983194435": {
+    "hash": 1983194435,
+    "displayProperties": {
+     "name": "Haunted Altars of Sorrow: Matchmade",
+     "description": "Feed the monster delicious treats while holding off waves of hungry hostiles. When it's full, it will engage in an incredible battle!"
+    },
+    "matchmaking": {
+     "isMatchmade": true,
+     "minParty": 1,
+     "maxParty": 6,
+     "maxPlayers": 6,
+     "requiresGuardianOath": false
+    },
+    "redacted": false,
+    "activityTypeHash": 3481239102
+   },
+   "3483444271": {
+    "hash": 3483444271,
+    "displayProperties": {
+     "name": "Mission: Conjure",
+     "description": "Repel Xivu Arath's invasion of the Altars of Summoning. Prevent her forces from claiming the Witch Queen's most valuable tithes."
+    },
+    "destinationHash": 2244580325,
+    "redacted": false
+   },
+   "4140407301": {
+    "hash": 4140407301,
+    "displayProperties": {
+     "name": "Haunted Altars of Sorrow",
+     "description": "Feed the monster delicious treats while holding off waves of hungry hostiles. When it's full, it will engage in an incredible battle!"
+    },
+    "redacted": false
+   },
+   "4231334639": {
+    "hash": 4231334639,
+    "displayProperties": {
+     "name": "Haunted Altars of Sorrow: Customize",
+     "description": "Feed the monster delicious treats while holding off waves of hungry hostiles. When it's full, it will engage in an incredible battle!"
+    },
+    "matchmaking": {
+     "isMatchmade": false,
+     "minParty": 1,
+     "maxParty": 6,
+     "maxPlayers": 6,
+     "requiresGuardianOath": false
+    },
+    "redacted": false,
+    "activityTypeHash": 3481239102
+   },
+   "998325554": {
+    "hash": 998325554,
+    "displayProperties": {
+     "name": "Altar of Reflection: Catalyst",
+     "description": "Witness the memory linked to the Enigma. The entry point is located deep within the Temple of the Wrathful."
+    },
+    "destinationHash": 2244580325,
+    "redacted": false
+   }
+  },
+  "DestinyActivityModeDefinition": {
+   "103143560": {
+    "hash": 103143560,
+    "displayProperties": {
+     "name": "Lost Sector",
+     "description": "Stats for Lost Sectors."
+    },
+    "activityModeCategory": 1,
+    "redacted": false
+   },
+   "1164760504": {
+    "hash": 1164760504,
+    "displayProperties": {
+     "name": "Crucible",
+     "description": "All of your Crucible stats rolled into one."
+    },
+    "activityModeCategory": 2,
+    "redacted": false
+   },
+   "1673724806": {
+    "hash": 1673724806,
+    "displayProperties": {
+     "name": "Trials of Osiris",
+     "description": "Compete in a fireteam-required event version of Elimination. Earn as many wins on a ticket as you can. Three losses and you're out."
+    },
+    "activityModeCategory": 2,
+    "redacted": false
+   },
+   "1826469369": {
+    "hash": 1826469369,
+    "displayProperties": {
+     "name": "Iron Banner",
+     "description": "Even the strongest iron spear can be worn to a filing."
+    },
+    "activityModeCategory": 2,
+    "redacted": false
+   },
+   "1848252830": {
+    "hash": 1848252830,
+    "displayProperties": {
+     "name": "Gambit",
+     "description": "Kill enemies, bank motes, and disrupt the opposing team."
+    },
+    "activityModeCategory": 3,
+    "redacted": false
+   },
+   "2043403989": {
+    "hash": 2043403989,
+    "displayProperties": {
+     "name": "Raid",
+     "description": "All of your Raid stats rolled into one."
+    },
+    "activityModeCategory": 1,
+    "redacted": false
+   },
+   "2394616003": {
+    "hash": 2394616003,
+    "displayProperties": {
+     "name": "Strikes",
+     "description": "Stats that roll both regular strikes and special strike modes (such as Nightfall and Heroic Strike) into one."
+    },
+    "redacted": false
+   },
+   "2843684868": {
+    "hash": 2843684868,
+    "displayProperties": {
+     "name": "Iron Banner Control",
+     "description": "Stats related to the Iron Banner Control PVP mode"
+    },
+    "redacted": false
+   },
+   "3497767639": {
+    "hash": 3497767639,
+    "displayProperties": {
+     "name": "Explore",
+     "description": "Stats for those times when you wander around the map looking for love.  I mean Patrols.  Or Adventures.  Or whatever the kids call it these days."
+    },
+    "activityModeCategory": 1,
+    "redacted": false
+   },
+   "3789021730": {
+    "hash": 3789021730,
+    "displayProperties": {
+     "name": "Nightfall Strikes",
+     "description": "Just how many times did we wipe in last week's Nightfall?  (Hint, no more than once)"
+    },
+    "activityModeCategory": 1,
+    "redacted": false
+   },
+   "4110605575": {
+    "hash": 4110605575,
+    "displayProperties": {
+     "name": "Strike",
+     "description": "Stats for strikes."
+    },
+    "activityModeCategory": 1,
+    "redacted": false
+   },
+   "608898761": {
+    "hash": 608898761,
+    "displayProperties": {
+     "name": "Dungeon",
+     "description": "Stats for Dungeons."
+    },
+    "activityModeCategory": 1,
+    "redacted": false
+   }
+  },
+  "DestinyActivityTypeDefinition": {
+   "103143560": {
+    "hash": 103143560,
+    "displayProperties": {
+     "name": "Lost Sector",
+     "description": "The Darkness grows stronger. Form a fireteam of three and face our enemies with new challenges."
+    },
+    "redacted": false
+   },
+   "2043403989": {
+    "hash": 2043403989,
+    "displayProperties": {
+     "name": "Raid",
+     "description": "Form a fireteam of six and brave the strange and powerful realms of our enemies."
+    },
+    "redacted": false
+   },
+   "2490937569": {
+    "hash": 2490937569,
+    "displayProperties": {
+     "name": "Gambit",
+     "description": "Defeat the enemies of humanity, collect their Motes, and bank them to summon a Primeval. First team to destroy their Primeval wins."
+    },
+    "redacted": false
+   },
+   "3497767639": {
+    "hash": 3497767639,
+    "displayProperties": {
+     "name": "Explore",
+     "description": "Wander the frontier. Search the ruins of the Golden Age, claim vital supplies, and hunt down our enemies wherever they dare trespass."
+    },
+    "redacted": false
+   },
+   "3652020199": {
+    "hash": 3652020199,
+    "displayProperties": {
+     "name": "Vanguard Op",
+     "description": "Join a fireteam of three and face the most feared minions of the Darkness."
+    },
+    "redacted": false
+   },
+   "4110605575": {
+    "hash": 4110605575,
+    "displayProperties": {
+     "name": "Strike",
+     "description": "Join a fireteam of three and face the most feared minions of the Darkness."
+    },
+    "redacted": false
+   },
+   "575572995": {
+    "hash": 575572995,
+    "displayProperties": {
+     "name": "Nightfall",
+     "description": "Join a fireteam of three and face the most feared minions of the Darkness."
+    },
+    "redacted": false
+   },
+   "608898761": {
+    "hash": 608898761,
+    "displayProperties": {
+     "name": "Dungeon",
+     "description": "Form a fireteam of up to three, and brave the strange and powerful realms of our enemies."
+    },
+    "redacted": false
+   }
+  },
+  "DestinyChecklistDefinition": {
+   "3142056444": {
+    "hash": 3142056444,
+    "displayProperties": {
+     "name": "Lost Sectors",
+     "description": "There are many hidden places in our worlds.  Have you found them all?"
+    },
+    "redacted": false
+   }
+  },
+  "DestinyClassDefinition": {
+   "2271682572": {
+    "hash": 2271682572,
+    "displayProperties": {
+     "name": "Warlock",
+     "description": ""
+    },
+    "classType": 2,
+    "redacted": false
+   },
+   "3655393761": {
+    "hash": 3655393761,
+    "displayProperties": {
+     "name": "Titan",
+     "description": ""
+    },
+    "classType": 0,
+    "redacted": false
+   },
+   "671679327": {
+    "hash": 671679327,
+    "displayProperties": {
+     "name": "Hunter",
+     "description": ""
+    },
+    "classType": 1,
+    "redacted": false
+   }
+  },
+  "DestinyDestinationDefinition": {
+   "2244580325": {
+    "hash": 2244580325,
+    "displayProperties": {
+     "name": "Savathûn's Throne World",
+     "description": "The inner workings of Savathûn's mind, brought to life within a mysterious throne world of her own making."
+    },
+    "bubbles": [
+     {
+      "hash": 364517505,
+      "displayProperties": {
+       "name": "Apothecary"
+      }
+     },
+     {
+      "hash": 865867155,
+      "displayProperties": {
+       "name": "Temple of the Navigator"
+      }
+     },
+     {
+      "hash": 3375528975,
+      "displayProperties": {
+       "name": "Miasma"
+      }
+     },
+     {
+      "hash": 2957496409,
+      "displayProperties": {
+       "name": "Metamorphosis"
+      }
+     },
+     {
+      "hash": 409878074,
+      "displayProperties": {
+       "name": "Florescent Canal"
+      }
+     },
+     {
+      "hash": 1852691886,
+      "displayProperties": {
+       "name": "Sepulcher"
+      }
+     },
+     {
+      "hash": 1988240518,
+      "displayProperties": {
+       "name": "Temple of the Wrathful"
+      }
+     },
+     {
+      "hash": 2871560606,
+      "displayProperties": {
+       "name": "Court of Thorns"
+      }
+     },
+     {
+      "hash": 2761606855,
+      "displayProperties": {
+       "name": "Temple of the Cunning"
+      }
+     },
+     {
+      "hash": 3602785820,
+      "displayProperties": {
+       "name": "Queen's Bailey"
+      }
+     },
+     {
+      "hash": 3056690829,
+      "displayProperties": {
+       "name": "Quagmire"
+      }
+     },
+     {
+      "hash": 2503595015,
+      "displayProperties": {
+       "name": "Extraction"
+      }
+     },
+     {
+      "hash": 742875862,
+      "displayProperties": {
+       "name": "Alluring Curtain"
+      }
+     },
+     {
+      "hash": 3114432735,
+      "displayProperties": {
+       "name": "Harvest"
+      }
+     },
+     {
+      "hash": 689805894,
+      "displayProperties": {
+       "name": "Sanctum of the Brood Queen"
+      }
+     },
+     {
+      "hash": 442576059,
+      "displayProperties": {
+       "name": "Witch's Echo"
+      }
+     },
+     {
+      "hash": 508917060,
+      "displayProperties": {
+       "name": "Altar of Reflection"
+      }
+     },
+     {
+      "hash": 13604068,
+      "displayProperties": {
+       "name": "Disciple's Bog"
+      }
+     },
+     {
+      "hash": 2377309655,
+      "displayProperties": {
+       "name": "Acquisition"
+      }
+     },
+     {
+      "hash": 207115916,
+      "displayProperties": {
+       "name": "Collection"
+      }
+     },
+     {
+      "hash": 1030072502,
+      "displayProperties": {
+       "name": "Exhibition"
+      }
+     },
+     {
+      "hash": 927680281,
+      "displayProperties": {
+       "name": "Dominion"
+      }
+     }
+    ],
+    "redacted": false
+   },
+   "290444260": {
+    "hash": 290444260,
+    "displayProperties": {
+     "name": "The Moon",
+     "description": ""
+    },
+    "bubbles": [
+     {
+      "hash": 3326367698,
+      "displayProperties": {
+       "name": "Archer's Line"
+      }
+     },
+     {
+      "hash": 3107092550,
+      "displayProperties": {
+       "name": "K1 Logistics"
+      }
+     },
+     {
+      "hash": 1835313730,
+      "displayProperties": {
+       "name": "Lunar Battlegrounds"
+      }
+     },
+     {
+      "hash": 513390123,
+      "displayProperties": {
+       "name": ""
+      }
+     },
+     {
+      "hash": 417490937,
+      "displayProperties": {
+       "name": "Sorrow's Harbor"
+      }
+     },
+     {
+      "hash": 848710979,
+      "displayProperties": {
+       "name": "K1 Revelation"
+      }
+     },
+     {
+      "hash": 1596760925,
+      "displayProperties": {
+       "name": "Catacombs"
+      }
+     },
+     {
+      "hash": 4195493657,
+      "displayProperties": {
+       "name": "Hellmouth"
+      }
+     },
+     {
+      "hash": 730551779,
+      "displayProperties": {
+       "name": "K1 Crew Quarters"
+      }
+     },
+     {
+      "hash": 3679336794,
+      "displayProperties": {
+       "name": "Admittance"
+      }
+     },
+     {
+      "hash": 2685756106,
+      "displayProperties": {
+       "name": "Scarlet Keep"
+      }
+     },
+     {
+      "hash": 3800422194,
+      "displayProperties": {
+       "name": "Traitor's Ketch"
+      }
+     },
+     {
+      "hash": 1943521683,
+      "displayProperties": {
+       "name": "Seraph Bunker: The Moon"
+      }
+     },
+     {
+      "hash": 1630893319,
+      "displayProperties": {
+       "name": "Seraph Bunker: The Moon"
+      }
+     },
+     {
+      "hash": 877913945,
+      "displayProperties": {
+       "name": "Temple of Crota"
+      }
+     },
+     {
+      "hash": 286194652,
+      "displayProperties": {
+       "name": "Circle of Bones"
+      }
+     },
+     {
+      "hash": 4025450777,
+      "displayProperties": {
+       "name": "Anchor of Light"
+      }
+     },
+     {
+      "hash": 2367480803,
+      "displayProperties": {
+       "name": "K1 Communion"
+      }
+     },
+     {
+      "hash": 3924595249,
+      "displayProperties": {
+       "name": "Necropolis"
+      }
+     },
+     {
+      "hash": 240420607,
+      "displayProperties": {
+       "name": "Sanctuary"
+      }
+     },
+     {
+      "hash": 2204642885,
+      "displayProperties": {
+       "name": "Shrine of Oryx"
+      }
+     },
+     {
+      "hash": 1973847113,
+      "displayProperties": {
+       "name": "Chamber of Night"
+      }
+     },
+     {
+      "hash": 422252418,
+      "displayProperties": {
+       "name": "Tower of Woe"
+      }
+     },
+     {
+      "hash": 1008270286,
+      "displayProperties": {
+       "name": "The World's Grave"
+      }
+     },
+     {
+      "hash": 3259346071,
+      "displayProperties": {
+       "name": "The Pit"
+      }
+     },
+     {
+      "hash": 1149128373,
+      "displayProperties": {
+       "name": "The Gatehouse"
+      }
+     },
+     {
+      "hash": 1873893295,
+      "displayProperties": {
+       "name": "Enduring Abyss"
+      }
+     },
+     {
+      "hash": 4033993124,
+      "displayProperties": {
+       "name": "Hall of Wisdom"
+      }
+     },
+     {
+      "hash": 4066175629,
+      "displayProperties": {
+       "name": "The Summoning Pits"
+      }
+     }
+    ],
+    "redacted": false
+   }
+  },
+  "DestinyInventoryBucketDefinition": {
+   "1498876634": {
+    "hash": 1498876634,
+    "displayProperties": {
+     "name": "Kinetic Weapons",
+     "description": "Weapons that deal kinetic damage. Most effective when dealing with unshielded enemies."
+    },
+    "redacted": false
+   },
+   "2465295065": {
+    "hash": 2465295065,
+    "displayProperties": {
+     "name": "Energy Weapons",
+     "description": "Weapons that deal Arc, Solar, or Void damage. Most effective when dealing with shielded enemies."
+    },
+    "redacted": false
+   },
+   "953998645": {
+    "hash": 953998645,
+    "displayProperties": {
+     "name": "Power Weapons",
+     "description": "Machine guns and rocket launchers."
+    },
+    "redacted": false
+   }
+  },
+  "DestinyInventoryItemDefinition": {
+   "1363886209": {
+    "hash": 1363886209,
+    "displayProperties": {
+     "name": "Gjallarhorn",
+     "description": ""
+    },
+    "equippingBlock": {
+     "uniqueLabel": "exotic_weapon",
+     "uniqueLabelHash": 4017842899,
+     "equipmentSlotTypeHash": 953998645,
+     "attributes": 0,
+     "equippingSoundHash": 0,
+     "hornSoundHash": 0,
+     "ammoType": 3,
+     "displayStrings": [
+      ""
+     ]
+    },
+    "redacted": false
+   },
+   "2531049971": {
+    "hash": 2531049971,
+    "displayProperties": {
+     "name": "Altars of Sorrow",
+     "description": "Throughout Sorrow's Harbor, the Hive perform Nightmarish rituals."
+    },
+    "redacted": false
+   },
+   "2609952321": {
+    "hash": 2609952321,
+    "displayProperties": {
+     "name": "Legacy: The Witch Queen",
+     "description": "Return to the Altar of Reflection in Witch's Echo, Throne World."
+    },
+    "redacted": false
+   },
+   "3089417789": {
+    "hash": 3089417789,
+    "displayProperties": {
+     "name": "Riskrunner",
+     "description": ""
+    },
+    "equippingBlock": {
+     "uniqueLabel": "exotic_weapon",
+     "uniqueLabelHash": 4017842899,
+     "equipmentSlotTypeHash": 2465295065,
+     "attributes": 0,
+     "equippingSoundHash": 0,
+     "hornSoundHash": 0,
+     "ammoType": 1,
+     "displayStrings": [
+      ""
+     ]
+    },
+    "inventory": {
+     "maxStackSize": 1,
+     "bucketTypeHash": 2465295065,
+     "recoveryBucketTypeHash": 215593132,
+     "tierTypeHash": 2759499571,
+     "isInstanceItem": true,
+     "nonTransferrableOriginal": false,
+     "tierTypeName": "Exotic",
+     "tierType": 6,
+     "expirationTooltip": "",
+     "expiredInActivityMessage": "",
+     "expiredInOrbitMessage": "",
+     "suppressExpirationWhenObjectivesComplete": true
+    },
+    "redacted": false
+   },
+   "3960926756": {
+    "hash": 3960926756,
+    "displayProperties": {
+     "name": "Celestial Nighthawk",
+     "description": ""
+    },
+    "equippingBlock": {
+     "uniqueLabel": "exotic_armor",
+     "uniqueLabelHash": 761097285,
+     "equipmentSlotTypeHash": 3448274439,
+     "attributes": 0,
+     "equippingSoundHash": 0,
+     "hornSoundHash": 0,
+     "ammoType": 0,
+     "displayStrings": [
+      ""
+     ]
+    },
+    "classType": 1,
+    "redacted": false
+   },
+   "502173648": {
+    "hash": 502173648,
+    "displayProperties": {
+     "name": "Heart of Inmost Light",
+     "description": ""
+    },
+    "equippingBlock": {
+     "uniqueLabel": "exotic_armor",
+     "uniqueLabelHash": 761097285,
+     "equipmentSlotTypeHash": 14239492,
+     "attributes": 0,
+     "equippingSoundHash": 0,
+     "hornSoundHash": 0,
+     "ammoType": 0,
+     "displayStrings": [
+      ""
+     ]
+    },
+    "classType": 0,
+    "redacted": false
+   }
+  },
+  "DestinyItemCategoryDefinition": {
+   "10": {
+    "hash": 10,
+    "displayProperties": {
+     "name": "Sniper Rifle",
+     "description": ""
+    },
+    "redacted": false
+   },
+   "11": {
+    "hash": 11,
+    "displayProperties": {
+     "name": "Shotgun",
+     "description": ""
+    },
+    "redacted": false
+   },
+   "12": {
+    "hash": 12,
+    "displayProperties": {
+     "name": "Machine Gun",
+     "description": ""
+    },
+    "redacted": false
+   },
+   "13": {
+    "hash": 13,
+    "displayProperties": {
+     "name": "Rocket Launcher",
+     "description": ""
+    },
+    "redacted": false
+   },
+   "14": {
+    "hash": 14,
+    "displayProperties": {
+     "name": "Sidearm",
+     "description": ""
+    },
+    "redacted": false
+   },
+   "1504945536": {
+    "hash": 1504945536,
+    "displayProperties": {
+     "name": "Linear Fusion Rifles",
+     "description": "Yet another type of laser rifle."
+    },
+    "redacted": false
+   },
+   "153950757": {
+    "hash": 153950757,
+    "displayProperties": {
+     "name": "Grenade Launchers",
+     "description": "When you'd rather that your explosions come in a bouncing variety."
+    },
+    "redacted": false
+   },
+   "1784235469": {
+    "hash": 1784235469,
+    "displayProperties": {
+     "name": "Bounties",
+     "description": "Bounties are brief missions that you can pick up from NPCs in the world."
+    },
+    "redacted": false
+   },
+   "2489664120": {
+    "hash": 2489664120,
+    "displayProperties": {
+     "name": "Trace Rifles",
+     "description": "A more different kind of rifle."
+    },
+    "redacted": false
+   },
+   "3317538576": {
+    "hash": 3317538576,
+    "displayProperties": {
+     "name": "Bows",
+     "description": "For those who prefer a silent takedown."
+    },
+    "redacted": false
+   },
+   "3871742104": {
+    "hash": 3871742104,
+    "displayProperties": {
+     "name": "Glaives",
+     "description": "Perform melee combos, fire projectiles, and deploy an energy shield."
+    },
+    "redacted": false
+   },
+   "3954685534": {
+    "hash": 3954685534,
+    "displayProperties": {
+     "name": "Submachine Guns",
+     "description": "For the pew pew pews."
+    },
+    "redacted": false
+   },
+   "5": {
+    "hash": 5,
+    "displayProperties": {
+     "name": "Auto Rifle",
+     "description": ""
+    },
+    "redacted": false
+   },
+   "53": {
+    "hash": 53,
+    "displayProperties": {
+     "name": "Quest",
+     "description": "Quests that can be completed in Destiny."
+    },
+    "redacted": false
+   },
+   "54": {
+    "hash": 54,
+    "displayProperties": {
+     "name": "Sword",
+     "description": "Make sure the pointy end faces toward your enemy."
+    },
+    "redacted": false
+   },
+   "6": {
+    "hash": 6,
+    "displayProperties": {
+     "name": "Hand Cannon",
+     "description": ""
+    },
+    "redacted": false
+   },
+   "7": {
+    "hash": 7,
+    "displayProperties": {
+     "name": "Pulse Rifle",
+     "description": ""
+    },
+    "redacted": false
+   },
+   "713159888": {
+    "hash": 713159888,
+    "displayProperties": {
+     "name": "Repeatable Bounties",
+     "description": "Repeatable bounties that you can purchase from various vendors."
+    },
+    "redacted": false
+   },
+   "8": {
+    "hash": 8,
+    "displayProperties": {
+     "name": "Scout Rifle",
+     "description": ""
+    },
+    "redacted": false
+   },
+   "9": {
+    "hash": 9,
+    "displayProperties": {
+     "name": "Fusion Rifle",
+     "description": ""
+    },
+    "redacted": false
+   }
+  },
+  "DestinyObjectiveDefinition": {
+   "2314788368": {
+    "hash": 2314788368,
+    "displayProperties": {
+     "name": "",
+     "description": ""
+    },
+    "progressDescription": "Public events and patrols",
+    "redacted": false
+   }
+  },
+  "DestinyPresentationNodeDefinition": {
+   "1163735237": {
+    "hash": 1163735237,
+    "displayProperties": {
+     "name": "Triumphs",
+     "description": "Records of the Guardian's achievements."
+    },
+    "parentNodeHashes": [],
+    "redacted": false
+   },
+   "1325869705": {
+    "hash": 1325869705,
+    "displayProperties": {
+     "name": "Altars of Sorrow",
+     "description": ""
+    },
+    "parentNodeHashes": [
+     2178633627
+    ],
+    "redacted": false
+   },
+   "1473265108": {
+    "hash": 1473265108,
+    "displayProperties": {
+     "name": "The Moon",
+     "description": "An ancient evil stirs beneath the shattered surface of our Moon."
+    },
+    "parentNodeHashes": [
+     1866538467
+    ],
+    "redacted": false
+   },
+   "1721072046": {
+    "hash": 1721072046,
+    "displayProperties": {
+     "name": "Altars of Summoning",
+     "description": ""
+    },
+    "parentNodeHashes": [
+     4182787737
+    ],
+    "redacted": false
+   },
+   "1866538467": {
+    "hash": 1866538467,
+    "displayProperties": {
+     "name": "Triumphs",
+     "description": "Records of the Guardian's achievements."
+    },
+    "parentNodeHashes": [
+     1163735237
+    ],
+    "redacted": false
+   },
+   "2178633627": {
+    "hash": 2178633627,
+    "displayProperties": {
+     "name": "Activities",
+     "description": ""
+    },
+    "parentNodeHashes": [
+     1473265108
+    ],
+    "redacted": false
+   },
+   "264892844": {
+    "hash": 264892844,
+    "displayProperties": {
+     "name": "Season of the Witch",
+     "description": "Claim rewards during Season of the Witch."
+    },
+    "parentNodeHashes": [
+     3215903653
+    ],
+    "redacted": false
+   },
+   "3215903653": {
+    "hash": 3215903653,
+    "displayProperties": {
+     "name": "Legacy Triumphs",
+     "description": "Legacy records of the Guardian's achievements."
+    },
+    "parentNodeHashes": [],
+    "redacted": false
+   },
+   "4182787737": {
+    "hash": 4182787737,
+    "displayProperties": {
+     "name": "Ritual",
+     "description": ""
+    },
+    "parentNodeHashes": [
+     264892844
+    ],
+    "redacted": false
+   }
+  },
+  "DestinyRecordDefinition": {
+   "1120376861": {
+    "hash": 1120376861,
+    "displayProperties": {
+     "name": "Altars of Sorrow: Waves upon Waves",
+     "description": "Complete waves of Altars of Sorrow."
+    },
+    "parentNodeHashes": [
+     1325869705
+    ],
+    "redacted": false
+   },
+   "1532375312": {
+    "hash": 1532375312,
+    "displayProperties": {
+     "name": "Flawless Logic",
+     "description": "Complete Altars of Summoning encounters without dying."
+    },
+    "parentNodeHashes": [
+     1721072046
+    ],
+    "redacted": false
+   },
+   "2452164086": {
+    "hash": 2452164086,
+    "displayProperties": {
+     "name": "Vent Core: Frog Blasted",
+     "description": "Destroy a vent during the Cabal Injection Rig public event. The public event can be found at the EDZ, Nessus, or Neptune."
+    },
+    "parentNodeHashes": [
+     372806460
+    ],
+    "redacted": false
+   },
+   "448445933": {
+    "hash": 448445933,
+    "displayProperties": {
+     "name": "Acquire Riskrunner",
+     "description": "Complete the Exotic weapon mission \"Spark of Hope\" to obtain Riskrunner.\n\nExotic weapons provide unique effects and are a critical part of your Guardian's loadout. You can only equip one Exotic weapon at a time.\n\nThere are many different ways that Exotic weapons can be acquired, including by completing Exotic quests."
+    },
+    "parentNodeHashes": [],
+    "redacted": false
+   }
+  },
+  "DestinyVendorDefinition": {
+   "3989934776": {
+    "hash": 3989934776,
+    "displayProperties": {
+     "name": "Exotic Armor",
+     "description": "This engram may contain Exotic armor for your current class."
+    },
+    "redacted": false
+   }
+  }
+ }
+}
