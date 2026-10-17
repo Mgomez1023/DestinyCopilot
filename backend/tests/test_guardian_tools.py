@@ -32,6 +32,7 @@ from app.models import (
     ProgressionSummary,
     QuestSummary,
     RecentActivitySummary,
+    RecordObjectiveSummary,
     RecordProgressSummary,
     SocketedPlugSummary,
     TitleProgressSummary,
@@ -52,7 +53,11 @@ def item(
     equipped: bool = True,
     plugs: list[SocketedPlugSummary] | None = None,
     stats: list[ItemStatSummary] | None = None,
+    class_restriction: str | None = "default",
 ) -> ItemSummary:
+    # Manifest shape: weapons use classType 3 (any class); armor and subclasses are locked.
+    if class_restriction == "default":
+        class_restriction = "Any" if item_type == "Weapon" else "Titan"
     return ItemSummary(
         item_hash=abs(hash((name, location))) % 2**32,
         instance_id=f"{name}-{location}",
@@ -60,6 +65,7 @@ def item(
         item_type=item_type,
         item_subtype=subtype,
         tier=tier,
+        class_restriction=class_restriction,  # type: ignore[arg-type]
         bucket_name="Energy Weapons" if item_type == "Weapon" else "Helmet",
         power=2000 if item_type in {"Weapon", "Armor"} else None,
         location=location,
@@ -82,31 +88,36 @@ def guardian_context() -> GuardianContext:
         activity_name="Nightfall",
         destination_name="Cosmodrome",
     )
+    # Plug fixtures mirror Manifest plug categories and Bungie's itemType 19 "Mod" typing.
     subclass_plugs = [
         SocketedPlugSummary(
             item_hash=1,
             name="Roaring Flames",
             item_type="Mod",
-            category_identifier="shared.aspects",
+            plug_type="Solar Aspect",
+            category_identifier="titan.solar.aspects",
         ),
         SocketedPlugSummary(
             item_hash=2,
             name="Ember of Torches",
             item_type="Mod",
-            category_identifier="shared.fragments",
+            plug_type="Solar Fragment",
+            category_identifier="shared.solar.fragments",
         ),
         SocketedPlugSummary(
             item_hash=3,
             name="Thermite Grenade",
             item_type="Mod",
-            category_identifier="shared.grenades",
+            plug_type="Solar Grenade",
+            category_identifier="shared.solar.grenades",
         ),
     ]
     armor_mod = SocketedPlugSummary(
         item_hash=4,
         name="Heavy Handed",
         item_type="Mod",
-        category_identifier="enhancements.mods",
+        plug_type="Arms Armor Mod",
+        category_identifier="enhancements.v2_arms",
     )
     subclass = item("Sunbreaker", "Subclass", plugs=subclass_plugs)
     weapon = item("Funnelweb", "Weapon", subtype="Submachine Gun", tier="Exotic")
@@ -283,6 +294,79 @@ def test_inventory_search_applies_name_type_subtype_and_location_filters() -> No
     }
 
 
+def test_character_scoped_inventory_search_includes_compatible_shared_items() -> None:
+    context = guardian_context()
+    context.inventory.items.extend(
+        [
+            item(
+                "Celestial Nighthawk",
+                "Armor",
+                tier="Exotic",
+                location="vault",
+                character_id=None,
+                equipped=False,
+                class_restriction="Hunter",
+            ),
+            item(
+                "Unresolved Vault Cloak",
+                "Armor",
+                location="vault",
+                character_id=None,
+                equipped=False,
+                class_restriction=None,
+            ),
+            item(
+                "Other Character Cloak",
+                "Armor",
+                location="character",
+                character_id="char-2",
+                equipped=False,
+                class_restriction="Hunter",
+            ),
+        ]
+    )
+    tools = GuardianToolService(context)
+
+    scoped = tools.search_inventory(InventorySearchRequest(character_class="Titan", limit=100))
+    unscoped = tools.search_inventory(InventorySearchRequest(limit=100))
+
+    scoped_names = {value["name"] for value in scoped["items"]}
+    # Vault items are shared, so a Titan search includes the Titan-usable ones.
+    assert {"The Hero's Burden", "Vault Helm", "Unresolved Vault Cloak"} <= scoped_names
+    assert {"Funnelweb", "Synthoceps"} <= scoped_names
+    assert "Celestial Nighthawk" not in scoped_names
+    assert "Other Character Cloak" not in scoped_names
+    assert scoped["excluded_other_class_count"] == 1
+    by_name = {value["name"]: value for value in scoped["items"]}
+    assert by_name["Synthoceps"]["class_restriction"] == "Titan"
+    assert by_name["The Hero's Burden"]["class_restriction"] == "Any"
+    unscoped_names = {value["name"] for value in unscoped["items"]}
+    assert {"Celestial Nighthawk", "Other Character Cloak"} <= unscoped_names
+    assert unscoped["excluded_other_class_count"] == 0
+
+
+def test_loadout_groups_movement_abilities_as_abilities_not_mods() -> None:
+    context = guardian_context()
+    subclass = context.characters[0].subclass
+    assert subclass is not None
+    subclass.socketed_plug_details.append(
+        SocketedPlugSummary(
+            item_hash=5,
+            name="Catapult Lift",
+            item_type="Mod",
+            plug_type="Movement Ability",
+            category_identifier="titan.solar.movement",
+        )
+    )
+
+    result = GuardianToolService(context).get_equipped_loadout(character_class="Titan")
+
+    assert "Catapult Lift" in result["subclass"]["abilities"]
+    assert "Catapult Lift" not in result["subclass"]["mods"]
+    assert result["subclass"]["aspects"] == ["Roaring Flames"]
+    assert result["subclass"]["fragments"] == ["Ember of Torches"]
+
+
 def test_build_details_extracts_subclass_exotics_stats_and_mods() -> None:
     result = GuardianToolService(guardian_context()).get_build_details("char-1")
     assert result["subclass"]["aspects"] == ["Roaring Flames"]
@@ -344,7 +428,13 @@ def test_missing_character_and_empty_results() -> None:
     with pytest.raises(CharacterNotFoundError):
         tools.get_build_details("missing")
     result = tools.search_inventory(InventorySearchRequest(query="does-not-exist"))
-    assert result == {"items": [], "total_matching": 0, "limit": 25, "truncated": False}
+    assert result == {
+        "items": [],
+        "total_matching": 0,
+        "excluded_other_class_count": 0,
+        "limit": 25,
+        "truncated": False,
+    }
 
 
 def test_title_progress_is_bounded_ranked_and_omits_raw_identifiers() -> None:
@@ -2051,7 +2141,7 @@ def test_planning_context_encodes_campaign_absence_without_inferring_completion(
 def test_planning_context_classifies_near_complete_records_without_promoting_them() -> None:
     context = guardian_context()
     context.records.near_completion = [
-        ObjectiveSummary(
+        RecordObjectiveSummary(
             objective_hash=901,
             name="Long Record Cleanup",
             progress=97,
@@ -2071,6 +2161,108 @@ def test_planning_context_classifies_near_complete_records_without_promoting_the
     assert record.classification == "record_or_collectible_cleanup"
     assert record.objectives[0].progress_percent == 97
     assert planning.candidates.index(record) > 0
+
+
+def _near_record_with_context() -> RecordObjectiveSummary:
+    return RecordObjectiveSummary(
+        objective_hash=902,
+        name="Altars of Sorrow: Nightmares",
+        progress=246,
+        completion_value=250,
+        progress_percent=98.4,
+        record_name="Altars of Sorrow: Nightmares",
+        record_description="Defeat Nightmares at the Altars of Sorrow.",
+        context_path=["Triumphs", "The Moon", "Activities", "Altars of Sorrow"],
+    )
+
+
+def test_planning_record_candidate_carries_context_path_without_inferring_destination() -> None:
+    context = guardian_context()
+    context.records.near_completion = [_near_record_with_context()]
+
+    planning = build_session_planning_context(context, "What should I do next?", "general", None)
+
+    record = next(
+        value for value in planning.candidates if value.name == "Altars of Sorrow: Nightmares"
+    )
+    assert planning.version == 5
+    assert record.context_path == ["Triumphs", "The Moon", "Activities", "Altars of Sorrow"]
+    assert record.description == "Defeat Nightmares at the Altars of Sorrow."
+    # The category path is evidence for the model, not a resolved destination.
+    assert record.destination is None
+    assert record.place is None
+    assert record.activity_type is None
+
+
+def test_planning_activity_and_quest_candidates_carry_resolved_context() -> None:
+    context = guardian_context()
+    context.characters[0].available_activities[0].place = "Earth"
+
+    planning = build_session_planning_context(context, "What should I do next?", "general", None)
+
+    by_name = {value.name: value for value in planning.candidates}
+    activity = by_name["Nightfall"]
+    assert activity.activity_type == "Strike"
+    assert activity.destination == "Cosmodrome"
+    assert activity.place == "Earth"
+    assert activity.description is None
+    quest = by_name["Into the Light"]
+    assert quest.description == "Complete the objective."
+    assert quest.destination is None
+
+
+def test_planning_candidate_merge_only_fills_missing_context() -> None:
+    context = guardian_context()
+    character = context.characters[0]
+    character.quests[0].name = "Nightfall"
+    character.quests[0].description = "Quest-specific description."
+    character.available_activities[0].description = "Activity description is not used."
+
+    planning = build_session_planning_context(context, "What should I do next?", "general", None)
+
+    merged = next(value for value in planning.candidates if value.name == "Nightfall")
+    assert merged.source_kinds[:2] == ["active_quest", "available_activity"]
+    assert merged.description == "Quest-specific description."
+    assert merged.activity_type == "Strike"
+    assert merged.destination == "Cosmodrome"
+
+
+def test_planning_candidate_description_is_bounded() -> None:
+    context = guardian_context()
+    context.characters[0].quests[0].description = "Long description. " * 40
+
+    planning = build_session_planning_context(context, "What should I do next?", "general", None)
+
+    quest = next(value for value in planning.candidates if value.name == "Into the Light")
+    assert quest.description is not None
+    assert len(quest.description) <= 160
+    assert quest.description.endswith("…")
+
+
+def test_available_activities_tool_exposes_place_separately_from_destination() -> None:
+    context = guardian_context()
+    context.characters[0].available_activities[0].place = "Earth"
+
+    result = GuardianToolService(context).get_available_activities()
+
+    activity = result["activities"][0]
+    assert activity["destination"] == "Cosmodrome"
+    assert activity["place"] == "Earth"
+
+
+def test_planning_turn_instructions_include_record_context_path() -> None:
+    context = guardian_context()
+    context.records.near_completion = [_near_record_with_context()]
+    service = RecommendationService(Settings(openai_api_key="test-key"))
+    fake = FakeOpenAI(request_tool=False)
+    service.client = fake
+
+    asyncio.run(service.chat(ChatRequest(message="What should I do next?"), context))
+
+    instructions = fake.responses.requests[0]["instructions"]
+    assert '"version":5' in instructions
+    assert '"context_path":["Triumphs","The Moon","Activities","Altars of Sorrow"]' in instructions
+    assert '"description":"Defeat Nightmares at the Altars of Sorrow."' in instructions
 
 
 @pytest.mark.parametrize(
@@ -2345,3 +2537,29 @@ def test_system_instructions_default_to_read_only_action_without_weakening_write
         in (SYSTEM_INSTRUCTIONS)
     )
     assert "All tools remain read-only" in SYSTEM_INSTRUCTIONS
+
+
+def test_planning_style_only_failure_returns_corrected_recommendation() -> None:
+    draft = "Run the Nightfall on your Titan for Vanguard rank progress. Want loot? Or story?"
+    corrected = (
+        "Run the Nightfall on your Titan for Vanguard rank progress. Want more loot? Or more story?"
+    )
+    scripted = ScriptedWebResponses(
+        [[assistant_message(draft)], [assistant_message(corrected)]], [draft, corrected]
+    )
+    service = RecommendationService(Settings(openai_api_key="test-key"))
+    service.client = SimpleNamespace(responses=scripted)
+
+    response = asyncio.run(
+        service.chat(ChatRequest(message="What should I do next?"), guardian_context())
+    )
+
+    # Only a presentation issue remained, so the grounded recommendation is kept instead of
+    # being replaced by "I can't make a grounded next-step recommendation".
+    assert response.message == corrected
+    assert "can't make a grounded" not in response.message
+    assert len(scripted.requests) == 2
+    assert scripted.requests[1]["tool_choice"] == "none"
+    correction = service.latest_trace()["planning_correction"]
+    assert correction["fallback"] == "style_only_accepted"
+    assert correction["remaining_violation_codes"] == ["too_many_followups"]

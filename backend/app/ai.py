@@ -10,7 +10,11 @@ from uuid import uuid4
 from openai import AsyncOpenAI, OpenAIError
 from pydantic import ValidationError
 
-from app.build_analysis import BuildRequestContext, derive_build_request_context
+from app.build_analysis import (
+    BuildRequestContext,
+    derive_build_request_context,
+    forced_alternatives_relevance,
+)
 from app.character_selection import CharacterResolutionError
 from app.chat_stream import (
     StreamStatusReporter,
@@ -33,6 +37,7 @@ from app.response_quality import (
     ReadOnlyActionValidationContext,
     ResponseModeContext,
     ResponseQualityValidator,
+    build_fallback_kind,
     is_account_fact_only,
     response_mode_context,
     response_mode_instruction,
@@ -469,6 +474,8 @@ class RecommendationService:
                     build_request_context.requires_current_build_analysis
                 ),
                 "requires_owned_inventory": build_request_context.requires_owned_inventory,
+                "forced_evidence_tools": [],
+                "forced_alternatives_relevance": [],
                 "analysis_used": False,
                 "alternative_search_used": False,
                 "owned_candidates_returned": 0,
@@ -508,6 +515,13 @@ class RecommendationService:
             },
             "answer": "not_generated",
             "tool_trace": [],
+            "tool_budget": {
+                "max_rounds": MAX_TOOL_ROUNDS,
+                "max_tool_calls": MAX_TOOL_CALLS,
+                "rounds_used": 0,
+                "tool_calls_used": 0,
+                "limit_reached": None,
+            },
         }
         live_topic = volatile_topic(request.message)
         if live_topic:
@@ -559,9 +573,24 @@ class RecommendationService:
             title_request_context,
         )
 
+        forced_evidence_attempted: set[str] = set()
+
         try:
             for round_number in range(1, MAX_TOOL_ROUNDS + 1):
+                trace["tool_budget"]["rounds_used"] = round_number
                 self._log_request_metadata(input_items, round_number)
+                tool_choice, forced_evidence = self._round_tool_choice(
+                    round_number,
+                    title_request_context,
+                    build_validation_context,
+                    forced_evidence_attempted,
+                )
+                if forced_evidence:
+                    trace["build_analysis"]["forced_evidence_tools"].extend(
+                        value
+                        for value in forced_evidence
+                        if value not in trace["build_analysis"]["forced_evidence_tools"]
+                    )
                 response = await self._create_response(
                     stream_status=stream_status,
                     model=self.settings.openai_model,
@@ -569,11 +598,7 @@ class RecommendationService:
                     input=input_items,
                     tools=tool_definitions,
                     include=RESPONSE_INCLUDE,
-                    tool_choice=(
-                        {"type": "function", "name": "get_title_progress"}
-                        if round_number == 1 and title_request_context.retrieval_required
-                        else "auto"
-                    ),
+                    tool_choice=tool_choice,
                     parallel_tool_calls=True,
                     reasoning={"effort": self.settings.openai_reasoning_effort},
                     max_output_tokens=self.settings.openai_max_output_tokens,
@@ -597,6 +622,14 @@ class RecommendationService:
                 function_calls = [
                     item for item in response_output if self._field(item, "type") == "function_call"
                 ]
+                if forced_evidence:
+                    # Each evidence tool is forced at most once. With a two-tool choice, only
+                    # the tools actually called count, so the other can be forced next round.
+                    called = {self._field(item, "name") for item in function_calls}
+                    attempted = set(forced_evidence) & called
+                    forced_evidence_attempted.update(
+                        attempted if len(forced_evidence) > 1 and attempted else forced_evidence
+                    )
                 phase = "tool_calls" if function_calls else "final"
                 self._log_response_metadata(response, phase)
                 self._require_completed_response(response)
@@ -676,12 +709,51 @@ class RecommendationService:
                             self._merge_sources(web_sources, correction_sources)
                             trace["web_research"]["source_count"] = len(web_sources)
                         elif build_validation_context.is_build_request:
-                            message = quality_validator.safe_build_answer(build_validation_context)
-                            safe_fallback = True
-                            trace["planning_correction"]["fallback"] = "build_evidence"
+                            fallback_kind = build_fallback_kind(corrected_violations)
+                            trace["planning_correction"]["remaining_violation_codes"] = [
+                                value.code for value in corrected_violations
+                            ]
+                            if fallback_kind == "evidence":
+                                message = quality_validator.safe_build_answer(
+                                    build_validation_context
+                                )
+                                safe_fallback = True
+                                trace["planning_correction"]["fallback"] = "build_evidence"
+                            elif fallback_kind == "grounding_safety":
+                                # The data was available; the draft made unsupported or
+                                # constraint-breaking claims. Block it without blaming retrieval.
+                                message = quality_validator.safe_build_grounding_answer()
+                                safe_fallback = True
+                                trace["planning_correction"]["fallback"] = "build_grounding"
+                            else:
+                                # Only presentation issues remain, so the grounded answer is
+                                # kept rather than replaced with a false retrieval refusal.
+                                if corrected_message:
+                                    message = corrected_message
+                                    correction_sources, _ = self._extract_web_sources(
+                                        correction_output
+                                    )
+                                    self._merge_sources(web_sources, correction_sources)
+                                    trace["web_research"]["source_count"] = len(web_sources)
+                                trace["planning_correction"]["fallback"] = "style_only_accepted"
                         elif planning_context is not None:
-                            message = quality_validator.planning.safe_answer(planning_context)
-                            safe_fallback = True
+                            if build_fallback_kind(corrected_violations) == "style_only":
+                                # Same principle as build turns: a grounded recommendation
+                                # with only presentation issues is not an evidence failure.
+                                if corrected_message:
+                                    message = corrected_message
+                                    correction_sources, _ = self._extract_web_sources(
+                                        correction_output
+                                    )
+                                    self._merge_sources(web_sources, correction_sources)
+                                    trace["web_research"]["source_count"] = len(web_sources)
+                                trace["planning_correction"]["remaining_violation_codes"] = [
+                                    value.code for value in corrected_violations
+                                ]
+                                trace["planning_correction"]["fallback"] = "style_only_accepted"
+                            else:
+                                message = quality_validator.planning.safe_answer(planning_context)
+                                safe_fallback = True
                     safe_message = self._enforce_power_safety(message)
                     safe_message = self._enforce_campaign_completion_safety(safe_message)
                     safe_message = self._enforce_campaign_comparison_safety(
@@ -717,7 +789,9 @@ class RecommendationService:
                 for call in function_calls:
                     total_tool_calls += 1
                     if total_tool_calls > MAX_TOOL_CALLS:
+                        trace["tool_budget"]["limit_reached"] = "tool_calls"
                         raise RuntimeError("The recommendation requested too many account tools.")
+                    trace["tool_budget"]["tool_calls_used"] = total_tool_calls
                     category = self._knowledge_category(call.name) or "guardian"
                     if stream_status is not None:
                         stage, label = status_for_tool(call.name, category)
@@ -758,6 +832,13 @@ class RecommendationService:
                         call.name,
                         result,
                     )
+                    if call.name == "find_build_alternatives" and call.name in forced_evidence:
+                        # Observability only: never alters answers, validation, or tool choice.
+                        trace["build_analysis"]["forced_alternatives_relevance"].append(
+                            self._forced_alternatives_relevance(
+                                request.message, guardian_tools.context, call.arguments, result
+                            )
+                        )
                     if call.name == "get_title_progress" and "error" not in result:
                         trace["title_progress"]["retrieval_used"] = True
                     trace["tools"].append(call.name)
@@ -834,6 +915,7 @@ class RecommendationService:
                         "build" if mode_context.mode == "build_advice" else "comparison"
                     )
                     trace["emitted_status_categories"] = list(stream_status.emitted_categories)
+            trace["tool_budget"]["limit_reached"] = "rounds"
             raise RuntimeError("The recommendation did not finish its account lookup.")
         except OpenAIError as exc:
             logger.exception("OpenAI recommendation failed")
@@ -1215,6 +1297,69 @@ class RecommendationService:
         if not match:
             return None
         return next(value for value in match.groups() if value).title()
+
+    @staticmethod
+    def _forced_alternatives_relevance(
+        message: str,
+        context: GuardianContext,
+        arguments_json: str,
+        result: dict[str, Any],
+    ) -> str:
+        try:
+            arguments = json.loads(arguments_json)
+            return forced_alternatives_relevance(message, context, arguments, result)
+        except Exception:
+            # A trace signal must never be able to break a chat turn.
+            logger.warning("Forced alternatives relevance could not be computed")
+            return "not_applicable"
+
+    @staticmethod
+    def _round_tool_choice(
+        round_number: int,
+        title_request_context: TitleRequestContext,
+        build_context: BuildResponseValidationContext,
+        already_forced: set[str],
+    ) -> tuple[str | dict[str, Any], tuple[str, ...]]:
+        """Select this round's tool_choice and the build evidence tools it forces.
+
+        Title retrieval keeps first-round priority. Required build evidence is acquired up
+        front instead of being requested later by a tool-less correction. Each evidence tool
+        is forced at most once, and the final round is never forced so the model can answer.
+        """
+
+        if round_number == 1 and title_request_context.retrieval_required:
+            return {"type": "function", "name": "get_title_progress"}, ()
+        if round_number >= MAX_TOOL_ROUNDS:
+            return "auto", ()
+        missing = tuple(
+            name
+            for name, required in (
+                (
+                    "analyze_current_build",
+                    build_context.requires_current_build_analysis
+                    and not build_context.current_build_analysis_used,
+                ),
+                (
+                    "find_build_alternatives",
+                    build_context.requires_owned_inventory
+                    and not build_context.inventory_ownership_checked,
+                ),
+            )
+            if required and name not in already_forced
+        )
+        if not missing:
+            return "auto", ()
+        if len(missing) == 1:
+            return {"type": "function", "name": missing[0]}, missing
+        # Require at least one of them while still allowing both in one parallel round.
+        return (
+            {
+                "type": "allowed_tools",
+                "mode": "required",
+                "tools": [{"type": "function", "name": name} for name in missing],
+            },
+            missing,
+        )
 
     @staticmethod
     def _turn_instructions(

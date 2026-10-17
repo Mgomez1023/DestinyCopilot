@@ -1,5 +1,7 @@
 import asyncio
 import json
+import threading
+import time
 from types import SimpleNamespace
 from typing import Any
 
@@ -133,9 +135,7 @@ def manifest_tables() -> dict[str, dict[str, Any]]:
                 "rewardItems": [{"itemHash": 1, "quantity": 1}],
             }
         },
-        "DestinyDamageTypeDefinition": {
-            "99": {**display("Solar", "Solar damage."), "hash": 99}
-        },
+        "DestinyDamageTypeDefinition": {"99": {**display("Solar", "Solar damage."), "hash": 99}},
         "DestinyItemCategoryDefinition": {
             "41": {**display("Weapon", "A weapon category."), "hash": 41}
         },
@@ -189,9 +189,7 @@ def test_exact_item_search_prefers_real_inventory_item(tmp_path: Any) -> None:
     )
     assert result["results"][0]["name"] == "Wish-Ender"
     assert result["results"][0]["hash"] == 1
-    details = asyncio.run(
-        service.execute("get_item_details", {"item_name_or_hash": "Wish-Ender"})
-    )
+    details = asyncio.run(service.execute("get_item_details", {"item_name_or_hash": "Wish-Ender"}))
     assert details["item"]["hash"] == 1
 
 
@@ -217,9 +215,7 @@ def test_unknown_entity_is_graceful(tmp_path: Any) -> None:
 
 def test_item_details_resolve_perks_stats_and_collectible(tmp_path: Any) -> None:
     service = knowledge_service(tmp_path)
-    result = asyncio.run(
-        service.execute("get_item_details", {"item_name_or_hash": "1"})
-    )
+    result = asyncio.run(service.execute("get_item_details", {"item_name_or_hash": "1"}))
     assert result["item"]["subtype"] == "Combat Bow"
     assert result["item"]["intrinsic_perks"][0]["name"] == "Broadhead"
     assert result["item"]["base_definition_stats"][0] == {"name": "Impact", "value": 92}
@@ -231,9 +227,7 @@ def test_item_details_resolve_perks_stats_and_collectible(tmp_path: Any) -> None
 def test_activity_details_resolve_location_and_possible_metadata(tmp_path: Any) -> None:
     service = knowledge_service(tmp_path)
     result = asyncio.run(
-        service.execute(
-            "get_activity_details", {"activity_name_or_hash": "The Shattered Throne"}
-        )
+        service.execute("get_activity_details", {"activity_name_or_hash": "The Shattered Throne"})
     )
     assert result["activity"]["activity_type"]["name"] == "Dungeon"
     assert result["activity"]["destination"]["name"] == "Dreaming City"
@@ -243,9 +237,7 @@ def test_activity_details_resolve_location_and_possible_metadata(tmp_path: Any) 
 def test_quest_details_resolve_steps_objectives_and_activity(tmp_path: Any) -> None:
     service = knowledge_service(tmp_path)
     result = asyncio.run(
-        service.execute(
-            "get_quest_details", {"quest_name_or_hash": "Hunter's Remembrance"}
-        )
+        service.execute("get_quest_details", {"quest_name_or_hash": "Hunter's Remembrance"})
     )
     assert result["quest"]["name"] == "Hunter's Remembrance"
     assert len(result["quest"]["steps"]) == 2
@@ -257,9 +249,7 @@ def test_quest_details_resolve_steps_objectives_and_activity(tmp_path: Any) -> N
 
 def test_item_source_returns_manifest_evidence(tmp_path: Any) -> None:
     service = knowledge_service(tmp_path)
-    result = asyncio.run(
-        service.execute("find_item_source", {"item_name_or_hash": "Wish-Ender"})
-    )
+    result = asyncio.run(service.execute("find_item_source", {"item_name_or_hash": "Wish-Ender"}))
     assert result["source_known"] is True
     assert {value["kind"] for value in result["evidence"]} >= {
         "collectible_source_string",
@@ -354,7 +344,8 @@ class FakeOpenAI:
 def test_ai_uses_destiny_tool_for_general_question() -> None:
     knowledge = FakeKnowledge()
     service = RecommendationService(
-        Settings(openai_api_key="test-key"), knowledge  # type: ignore[arg-type]
+        Settings(openai_api_key="test-key"),
+        knowledge,  # type: ignore[arg-type]
     )
     fake = FakeOpenAI()
     service.client = fake
@@ -364,15 +355,15 @@ def test_ai_uses_destiny_tool_for_general_question() -> None:
     assert response.message == "Grounded answer."
     assert knowledge.calls[0][0] == "get_activity_details"
     assert any(
-        value["name"] == "get_activity_details"
-        for value in fake.responses.requests[0]["tools"]
+        value["name"] == "get_activity_details" for value in fake.responses.requests[0]["tools"]
     )
 
 
 def test_ai_combines_guardian_and_destiny_tools() -> None:
     knowledge = FakeKnowledge()
     service = RecommendationService(
-        Settings(openai_api_key="test-key"), knowledge  # type: ignore[arg-type]
+        Settings(openai_api_key="test-key"),
+        knowledge,  # type: ignore[arg-type]
     )
     fake = FakeOpenAI(combined=True)
     service.client = fake
@@ -390,6 +381,129 @@ def test_ai_combines_guardian_and_destiny_tools() -> None:
     ]
     assert [value["call_id"] for value in tool_outputs] == ["guardian-1", "knowledge-1"]
     assert json.loads(tool_outputs[0]["output"])["quests"][0]["name"] == "Into the Light"
-    assert json.loads(tool_outputs[1]["output"])["activity"]["name"] == (
-        "The Shattered Throne"
-    )
+    assert json.loads(tool_outputs[1]["output"])["activity"]["name"] == ("The Shattered Throne")
+
+
+class CountingIndexResolver(FakeResolver):
+    def __init__(self, *, fail_version: bool = False) -> None:
+        super().__init__()
+        self.scans: list[str] = []
+        self.fail_version = fail_version
+
+    async def manifest_version(self) -> str:
+        if self.fail_version:
+            raise RuntimeError("Manifest metadata unavailable")
+        return await super().manifest_version()
+
+    async def iter_definitions(self, entity_type: str):
+        self.scans.append(entity_type)
+        await asyncio.sleep(0)
+        async for value in super().iter_definitions(entity_type):
+            yield value
+
+
+def _provider(tmp_path: Any, resolver: FakeResolver | None = None) -> ManifestKnowledgeProvider:
+    settings = Settings(manifest_cache_dir=tmp_path)
+    return ManifestKnowledgeProvider(resolver or FakeResolver(), settings)  # type: ignore[arg-type]
+
+
+def test_fuzzy_scoring_runs_in_a_worker_thread_with_unchanged_results(tmp_path: Any) -> None:
+    provider = _provider(tmp_path)
+    scoring_threads: list[int] = []
+    original = provider._score_entries
+
+    def recording(*args: Any) -> Any:
+        scoring_threads.append(threading.get_ident())
+        return original(*args)
+
+    provider._score_entries = recording  # type: ignore[method-assign]
+
+    async def run() -> tuple[int, dict[str, Any]]:
+        result = await provider.search_entities("Wish Ender", ["item"], 5)
+        return threading.get_ident(), result
+
+    loop_thread, result = asyncio.run(run())
+
+    assert scoring_threads and all(value != loop_thread for value in scoring_threads)
+    direct = original("Wish Ender", ["item"], 5)
+    assert [value["hash"] for value in result["results"]] == [
+        entry.entity_hash for entry, _ in direct
+    ]
+    assert result["results"][0]["name"] == "Wish-Ender"
+
+
+def test_slow_fuzzy_scoring_does_not_block_the_event_loop(tmp_path: Any) -> None:
+    provider = _provider(tmp_path)
+    original = provider._score_entries
+
+    def slow(*args: Any) -> Any:
+        time.sleep(0.3)  # Stand-in for a broad query's CPU-bound scoring.
+        return original(*args)
+
+    provider._score_entries = slow  # type: ignore[method-assign]
+
+    async def run() -> float:
+        await provider.warm_index()
+        gaps: list[float] = []
+        stop = asyncio.Event()
+
+        async def heartbeat() -> None:
+            last = time.perf_counter()
+            while not stop.is_set():
+                await asyncio.sleep(0.01)
+                now = time.perf_counter()
+                gaps.append(now - last)
+                last = now
+
+        beat = asyncio.create_task(heartbeat())
+        await provider.search_entities("Wish Ender", None, 5)
+        stop.set()
+        await beat
+        return max(gaps)
+
+    assert asyncio.run(run()) < 0.15
+
+
+def test_warmup_builds_the_index_once_even_with_a_concurrent_first_search(tmp_path: Any) -> None:
+    resolver = CountingIndexResolver()
+    provider = _provider(tmp_path, resolver)
+
+    async def run() -> tuple[dict[str, Any], dict[str, Any]]:
+        warmup = asyncio.create_task(provider.warm_index())
+        await asyncio.sleep(0)
+        search = await provider.search_entities("Wish Ender", ["item"], 5)
+        return await warmup, search
+
+    warm_state, search = asyncio.run(run())
+
+    assert warm_state["state"] == "ready"
+    assert warm_state["entries"] > 0
+    assert search["results"][0]["name"] == "Wish-Ender"
+    assert resolver.scans.count("DestinyInventoryItemDefinition") == 1
+    status = asyncio.run(provider.index_status())
+    assert status["warmup"]["state"] == "ready"
+
+
+def test_warmup_reuses_the_versioned_on_disk_index(tmp_path: Any) -> None:
+    asyncio.run(_provider(tmp_path).warm_index())
+    resolver = CountingIndexResolver()
+    provider = _provider(tmp_path, resolver)
+
+    state = asyncio.run(provider.warm_index())
+
+    assert state["state"] == "ready"
+    assert resolver.scans == []
+
+
+def test_failed_warmup_is_recorded_and_search_still_builds_lazily(tmp_path: Any) -> None:
+    resolver = CountingIndexResolver(fail_version=True)
+    provider = _provider(tmp_path, resolver)
+
+    state = asyncio.run(provider.warm_index())
+
+    assert state["state"] == "failed"
+    assert state["error_type"] == "RuntimeError"
+    assert provider._entries is None
+    resolver.fail_version = False
+    result = asyncio.run(provider.search_entities("Wish Ender", ["item"], 5))
+    assert result["results"][0]["name"] == "Wish-Ender"

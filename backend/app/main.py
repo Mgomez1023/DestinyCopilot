@@ -1,5 +1,6 @@
+import asyncio
 import logging
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
 import httpx
 from fastapi import FastAPI
@@ -58,7 +59,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             recommendations=RecommendationService(settings, knowledge),
             guardian_refresh=GuardianRefreshService(guardian_service, settings),
         )
+        # Background, not awaited: the server becomes healthy immediately, and a request
+        # that arrives mid-warmup waits on the index lock instead of building it twice.
+        warmup = (
+            asyncio.create_task(manifest_knowledge.warm_index(), name="manifest-index-warmup")
+            if settings.manifest_index_warmup and settings.bungie_api_key
+            else None
+        )
+        if warmup is None:
+            manifest_knowledge.warmup_state = {"state": "disabled"}
         yield
+        if warmup is not None and not warmup.done():
+            warmup.cancel()
+            with suppress(asyncio.CancelledError):
+                await warmup
         if application.state.services.guardian_refresh is not None:
             await application.state.services.guardian_refresh.close()
         await application.state.services.recommendations.close()

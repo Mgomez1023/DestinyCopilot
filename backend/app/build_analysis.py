@@ -477,38 +477,165 @@ def _matches(value: str | None, expected: str | None) -> bool:
     return expected is None or _normalized(expected) in _normalized(value)
 
 
+ForcedAlternativesRelevance = Literal["match", "mismatch", "not_applicable"]
+
+
+def _gear_term_pattern(term: str) -> re.Pattern[str]:
+    # Plain English plural handling only ("hand cannons", "gauntlet"); no Destiny aliases.
+    base = term[:-1] if term.endswith("s") else term
+    return re.compile(rf"\b{re.escape(base)}s?\b")
+
+
+def forced_alternatives_relevance(
+    message: str,
+    context: GuardianContext,
+    arguments: dict[str, Any],
+    result: dict[str, Any],
+) -> ForcedAlternativesRelevance:
+    """Trace-only check that a forced alternatives lookup targeted the gear the user named.
+
+    The vocabulary is the slot and subtype names already present in this Guardian's own
+    weapons and armor, so nothing is hard-coded. Anything ambiguous is not_applicable. The
+    result is observability only and never affects answers, validation, or tool choice.
+    """
+
+    if not isinstance(result, dict) or "error" in result or not isinstance(arguments, dict):
+        return "not_applicable"
+    owned = [
+        *context.inventory.items,
+        *(item for character in context.characters for item in character.equipped_gear),
+    ]
+    vocabulary = {
+        _normalized(value)
+        for item in owned
+        if item.item_type in {"Weapon", "Armor"}
+        for value in (item.item_subtype, item.bucket_name)
+        if _normalized(value)
+    }
+    text = _normalized(message)
+    named = {term for term in vocabulary if _gear_term_pattern(term).search(text)}
+    # "linear fusion rifle" also contains "fusion rifle"; keep only the most specific term.
+    named = {term for term in named if not any(term != other and term in other for other in named)}
+    if len(named) != 1:
+        return "not_applicable"
+    term = next(iter(named))
+
+    filters = [
+        _normalized(value)
+        for value in (arguments.get("slot"), arguments.get("subtype"))
+        if isinstance(value, str) and _normalized(value)
+    ]
+    # Mirror the tool's own filter semantics: a filter selects items whose name contains it.
+    if any(value in term for value in filters):
+        return "match"
+    candidates = [value for value in result.get("candidates") or [] if isinstance(value, dict)]
+    if candidates and all(
+        _gear_term_pattern(term).search(
+            " ".join(_normalized(value.get(key)) for key in ("subtype", "slot"))
+        )
+        for value in candidates
+    ):
+        return "match"
+    return "mismatch"
+
+
+PlugRole = Literal["ability", "aspect", "fragment", "perk", "mod", "cosmetic", "other"]
+
+# Segments of Bungie's dot-separated plugCategoryIdentifier, taken from the Manifest.
+# Whole-segment matching avoids substring accidents such as
+# "exotic_new_grenade_launcher0_skins" (an ornament) or "armor.super_dr" (a masterwork).
+_ABILITY_SEGMENTS = frozenset(
+    {"supers", "class_abilities", "movement", "melee", "grenades", "prism_grenade"}
+)
+_PERK_SEGMENTS = frozenset(
+    {
+        "frames",
+        "intrinsics",
+        "origins",
+        "barrels",
+        "tubes",
+        "magazines",
+        "magazines_gl",
+        "batteries",
+        "scopes",
+        "stocks",
+        "grips",
+        "blades",
+        "guards",
+        "hafts",
+        "arrows",
+        "bowstrings",
+        "rails",
+        "bolts",
+        "catalysts",
+    }
+)
+_COSMETIC_MARKERS = ("shader", "skins", "ornament", "memento", "tracker", "holofoil")
+_PLUG_GROUP_KEYS: dict[PlugRole, str] = {
+    "ability": "abilities",
+    "aspect": "aspects",
+    "fragment": "fragments",
+    "perk": "perks",
+    "mod": "mods",
+    "cosmetic": "cosmetic",
+    "other": "other",
+}
+
+
+def classify_plug(category_identifier: str | None, item_type: str | None = None) -> PlugRole:
+    """Classify a socketed plug by its Manifest plug category.
+
+    This is the single plug classification rule for every build-facing tool. Generic item
+    types are only a fallback because every itemType 19 plug, including weapon traits,
+    barrels, and shaders, is typed "Mod" by the Manifest.
+    """
+
+    category = (category_identifier or "").casefold()
+    if not category:
+        return "mod" if (item_type or "").casefold() == "mod" else "other"
+    if any(marker in category for marker in _COSMETIC_MARKERS):
+        return "cosmetic"
+    segments = set(category.split("."))
+    if "aspects" in segments:
+        return "aspect"
+    if "fragments" in segments:
+        return "fragment"
+    if segments & _ABILITY_SEGMENTS:
+        return "ability"
+    if segments & _PERK_SEGMENTS:
+        return "perk"
+    if any(
+        segment == "mods" or segment.startswith(("mod_", "enhancements")) for segment in segments
+    ):
+        return "mod"
+    return "other"
+
+
 def _plug(value: SocketedPlugSummary) -> dict[str, Any]:
     return {
         "name": value.name,
         "description": value.description[:240] if value.description else None,
-        "type": value.item_type,
+        "type": value.plug_type or value.item_type,
+        "role": classify_plug(value.category_identifier, value.item_type),
         "category": value.category_identifier,
     }
 
 
-def _plug_groups(plugs: list[SocketedPlugSummary]) -> dict[str, list[dict[str, Any]]]:
-    groups: dict[str, list[dict[str, Any]]] = {
-        "abilities": [],
-        "aspects": [],
-        "fragments": [],
-        "mods": [],
-        "other": [],
-    }
-    for value in plugs[:MAX_SOCKETED_PLUGS]:
-        category = (value.category_identifier or "").casefold()
-        item_type = (value.item_type or "").casefold()
-        if "aspect" in category:
-            key = "aspects"
-        elif "fragment" in category:
-            key = "fragments"
-        elif any(marker in category for marker in ("abilit", "grenade", "melee", "super", "jump")):
-            key = "abilities"
-        elif item_type == "mod" or "mod" in category:
-            key = "mods"
-        else:
-            key = "other"
-        groups[key].append(_plug(value))
+def plug_groups(plugs: list[SocketedPlugSummary]) -> dict[str, list[SocketedPlugSummary]]:
+    """Group plugs by role using the shared classifier, preserving socket order."""
+
+    groups: dict[str, list[SocketedPlugSummary]] = {key: [] for key in _PLUG_GROUP_KEYS.values()}
+    for value in plugs:
+        role = classify_plug(value.category_identifier, value.item_type)
+        groups[_PLUG_GROUP_KEYS[role]].append(value)
     return groups
+
+
+def _plug_groups(plugs: list[SocketedPlugSummary]) -> dict[str, list[dict[str, Any]]]:
+    return {
+        key: [_plug(value) for value in values]
+        for key, values in plug_groups(plugs[:MAX_SOCKETED_PLUGS]).items()
+    }
 
 
 def _data_state(explicit: bool | None, values_present: bool) -> str:
@@ -527,6 +654,7 @@ def _item(value: ItemSummary, *, copy_number: int | None = None) -> dict[str, An
         "subtype": value.item_subtype,
         "slot": value.bucket_name,
         "rarity": value.tier,
+        "class_restriction": value.class_restriction,
         "damage_type": value.damage_type,
         "location": value.location,
         "equipped": value.is_equipped,
@@ -538,15 +666,7 @@ def _item(value: ItemSummary, *, copy_number: int | None = None) -> dict[str, An
             _plug(plug) for plug in value.socketed_plug_details[:MAX_SOCKETED_PLUGS]
         ],
         "socketed_plug_names": value.socketed_plugs[:MAX_SOCKETED_PLUGS],
-        "relevant_perks": [
-            plug
-            for plug in groups["other"]
-            if any(
-                marker in (plug.get("category") or "").casefold()
-                for marker in ("perk", "intrinsic", "trait")
-            )
-            or (plug.get("type") or "").casefold() in {"perk", "trait"}
-        ],
+        "relevant_perks": groups["perks"],
         "data_quality": {
             "manifest": (
                 "unresolved"
@@ -570,6 +690,21 @@ def _item(value: ItemSummary, *, copy_number: int | None = None) -> dict[str, An
     if copy_number is not None:
         result["copy_number"] = copy_number
     return result
+
+
+ClassCompatibility = Literal["compatible", "incompatible", "unknown"]
+
+
+def class_compatibility(item: ItemSummary, class_name: str) -> ClassCompatibility:
+    """Compare an item's Manifest class restriction with a character class."""
+
+    restriction = item.class_restriction
+    if restriction == "Any":
+        return "compatible"
+    if restriction is None or class_name.casefold() not in {"titan", "hunter", "warlock"}:
+        # An unresolved item or character class must never hide owned gear.
+        return "unknown"
+    return "compatible" if restriction.casefold() == class_name.casefold() else "incompatible"
 
 
 def _equipped_exotics(character: CharacterSummary) -> list[ItemSummary]:
@@ -792,7 +927,7 @@ class BuildAnalysisService:
                 return True
             return not any(equipped.item_type == item.item_type for equipped in equipped_exotics)
 
-        filtered = (
+        matching = (
             []
             if locked_equipped and request.slot
             else [
@@ -810,6 +945,17 @@ class BuildAnalysisService:
                 and perk_matches(item)
                 and exotic_compatible(item)
             ]
+        )
+        # Vault items are shared by every character, so another class's armor must not be
+        # offered as an owned option. Unknown restrictions are kept and disclosed.
+        filtered = [
+            item
+            for item in matching
+            if class_compatibility(item, character.class_name) != "incompatible"
+        ]
+        excluded_other_class = len(matching) - len(filtered)
+        unknown_class_restriction = sum(
+            class_compatibility(item, character.class_name) == "unknown" for item in filtered
         )
         filtered.sort(
             key=lambda item: (
@@ -860,6 +1006,16 @@ class BuildAnalysisService:
                 "Some matching owned copies lack returned socket/perk data and cannot be judged "
                 "by roll quality."
             )
+        if excluded_other_class:
+            limitations.append(
+                f"{excluded_other_class} otherwise matching owned item(s) are restricted to "
+                f"another class and were excluded for this {character.class_name}."
+            )
+        if unknown_class_restriction:
+            limitations.append(
+                f"{unknown_class_restriction} returned item(s) have no Manifest class "
+                f"restriction data; verify that this {character.class_name} can equip them."
+            )
         limitations.extend(self.context.data_availability.notes[:3])
         limitations.extend(
             f"Guardian component unavailable: {name}"
@@ -894,6 +1050,7 @@ class BuildAnalysisService:
             },
             "candidates": candidates,
             "total_matching_owned_copies": len(filtered),
+            "excluded_other_class_count": excluded_other_class,
             "returned": len(candidates),
             "limit": request.limit,
             "truncated": len(filtered) > request.limit,

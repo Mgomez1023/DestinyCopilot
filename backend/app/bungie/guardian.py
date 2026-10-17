@@ -27,6 +27,7 @@ from app.models import (
     ProgressionSummary,
     QuestSummary,
     RecentActivitySummary,
+    RecordObjectiveSummary,
     RecordProgressSummary,
     RecordSummary,
     SocketedPlugSummary,
@@ -46,6 +47,8 @@ PLATFORM_NAMES = {
     10: "Demon",
 }
 CLASS_NAMES = {0: "Titan", 1: "Hunter", 2: "Warlock", 3: "Unknown class"}
+# For item definitions, classType 3 means usable by any class rather than unknown.
+ITEM_CLASS_RESTRICTIONS = {0: "Titan", 1: "Hunter", 2: "Warlock", 3: "Any"}
 RACE_NAMES = {0: "Human", 1: "Awoken", 2: "Exo", 3: "Unknown race"}
 GENDER_NAMES = {0: "Male", 1: "Female", 2: "Unknown gender"}
 ITEM_TYPE_NAMES = {
@@ -72,6 +75,8 @@ RECORD_OBJECTIVE_LIMIT = 4
 TITLE_NODE_LIMIT = 256
 TITLE_GROUP_LIMIT = 96
 TITLE_RECORD_LIMIT = 32
+CONTEXT_PATH_DEPTH = 6
+RECORD_CONTEXT_DESCRIPTION_LIMIT = 300
 ACTIVITY_DIFFICULTY_NAMES = {
     0: "Trivial",
     1: "Easy",
@@ -225,6 +230,17 @@ def _collect_hashes(value: Any, key_name: str) -> set[int]:
         for child in value:
             found.update(_collect_hashes(child, key_name))
     return found
+
+
+def _first_parent_hash(definition: dict[str, Any]) -> int | None:
+    parents = definition.get("parentNodeHashes") or []
+    if not isinstance(parents, list) or not parents:
+        return None
+    try:
+        parent = int(parents[0])
+    except (TypeError, ValueError):
+        return None
+    return parent or None
 
 
 def _progress_percent(progress: int | None, completion: int) -> float | None:
@@ -401,6 +417,9 @@ class GuardianNormalizer:
     def __init__(self, resolver: DefinitionResolver) -> None:
         self.resolver = resolver
         self.definitions: dict[str, dict[int, dict[str, Any]]] = {}
+        # Record ancestry nodes are kept apart from Title/Seal nodes so that
+        # category nodes can never be interpreted as Titles.
+        self._context_nodes: dict[int, dict[str, Any]] = {}
         self._title_nodes_truncated = False
         self._title_groups_truncated = False
 
@@ -597,6 +616,62 @@ class GuardianNormalizer:
             "DestinyActivityTypeDefinition", referenced_activity_types
         )
         self.resolver.release_table("DestinyActivityTypeDefinition")
+        referenced_places = {
+            int(value["placeHash"])
+            for value in activity_definitions.values()
+            if value.get("placeHash")
+        }
+        self.definitions["DestinyPlaceDefinition"] = await self._safe_resolve_many(
+            "DestinyPlaceDefinition", referenced_places
+        )
+        self.resolver.release_table("DestinyPlaceDefinition")
+
+        record_definitions = self.definitions.get("DestinyRecordDefinition", {})
+        near_record_parents = {
+            parent
+            for value in near_records
+            if (parent := _first_parent_hash(record_definitions.get(value[1], {})))
+        }
+        self._context_nodes = await self._resolve_context_nodes(near_record_parents)
+
+    async def _resolve_context_nodes(self, start_hashes: set[int]) -> dict[int, dict[str, Any]]:
+        """Resolve bounded presentation-node ancestry, one batched lookup per level."""
+
+        resolved: dict[int, dict[str, Any]] = {}
+        attempted: set[int] = set()
+        pending = set(start_hashes)
+        for _ in range(CONTEXT_PATH_DEPTH):
+            batch = pending - attempted
+            if not batch:
+                break
+            attempted.update(batch)
+            definitions = await self._safe_resolve_many("DestinyPresentationNodeDefinition", batch)
+            resolved.update(definitions)
+            pending = {
+                parent
+                for definition in definitions.values()
+                if (parent := _first_parent_hash(definition))
+            }
+        self.resolver.release_table("DestinyPresentationNodeDefinition")
+        return resolved
+
+    def _record_context_path(self, record_definition: dict[str, Any]) -> list[str]:
+        """Return the record's Manifest category path from broadest to most specific."""
+
+        names: list[str] = []
+        visited: set[int] = set()
+        current = _first_parent_hash(record_definition)
+        while current and current not in visited and len(visited) < CONTEXT_PATH_DEPTH:
+            visited.add(current)
+            node = self._context_nodes.get(current)
+            if not node:
+                break
+            name = str((node.get("displayProperties") or {}).get("name") or "").strip()
+            if name:
+                names.append(name[:100])
+            current = _first_parent_hash(node)
+        names.reverse()
+        return [name for index, name in enumerate(names) if index == 0 or name != names[index - 1]]
 
     async def _resolve_title_nodes(
         self, profile: dict[str, Any]
@@ -716,6 +791,21 @@ class GuardianNormalizer:
         definition = self._definition(entity_type, value)
         return _display(definition)[0] if definition else fallback
 
+    def _resolved_name(self, entity_type: str, value: Any) -> str | None:
+        """Return a real display name, or None when the definition is missing or unnamed."""
+
+        definition = self._definition(entity_type, value)
+        name = str((definition.get("displayProperties") or {}).get("name") or "").strip()
+        return name or None
+
+    def _place_name(self, activity_definition: dict[str, Any]) -> str | None:
+        return self._resolved_name("DestinyPlaceDefinition", activity_definition.get("placeHash"))
+
+    def _destination_name(self, activity_definition: dict[str, Any]) -> str | None:
+        return self._resolved_name(
+            "DestinyDestinationDefinition", activity_definition.get("destinationHash")
+        )
+
     def _raw_inventory_items(
         self, profile: dict[str, Any], *, include_equipped: bool
     ) -> Iterable[tuple[str, str | None, dict[str, Any]]]:
@@ -752,6 +842,12 @@ class GuardianNormalizer:
         subtype = definition.get("itemTypeDisplayName") or None
         inventory_definition = definition.get("inventory") or {}
         tier = inventory_definition.get("tierTypeName") or None
+        class_type = definition.get("classType")
+        class_restriction = (
+            ITEM_CLASS_RESTRICTIONS.get(int(class_type))
+            if isinstance(class_type, int) and not isinstance(class_type, bool)
+            else None
+        )
         bucket_definition = self._definition(
             "DestinyInventoryBucketDefinition", raw.get("bucketHash")
         )
@@ -812,6 +908,9 @@ class GuardianNormalizer:
                         or plug_definition.get("itemTypeDisplayName")
                         or None
                     ),
+                    # Bungie's specific label (Trait, Barrel, Magazine) survives even
+                    # though every itemType 19 plug maps to the generic "Mod" type.
+                    plug_type=plug_definition.get("itemTypeDisplayName") or None,
                     category_identifier=plug_block.get("plugCategoryIdentifier") or None,
                 )
             )
@@ -824,6 +923,7 @@ class GuardianNormalizer:
             item_type=type_name,
             item_subtype=subtype if subtype != type_name else None,
             tier=tier,
+            class_restriction=class_restriction,
             icon_url=icon,
             bucket_name=bucket_name,
             quantity=max(0, int(raw.get("quantity", 1))),
@@ -892,7 +992,17 @@ class GuardianNormalizer:
     def _normalize_objective(self, raw: dict[str, Any], *, prefix: str = "") -> ObjectiveSummary:
         objective_hash = int(raw.get("objectiveHash", 0))
         definition = self._definition("DestinyObjectiveDefinition", objective_hash)
-        name, description, _ = _display(definition)
+        display = definition.get("displayProperties") or {}
+        # Most objective definitions leave displayProperties.name empty and carry
+        # their player-facing label in progressDescription.
+        label = str(display.get("name") or definition.get("progressDescription") or "").strip()
+        description = display.get("description") or None
+        if prefix and label:
+            name = f"{prefix}: {label}"
+        elif prefix:
+            name = prefix
+        else:
+            name = label or "Unknown"
         progress = raw.get("progress")
         progress_value = int(progress) if progress is not None else None
         completion = int(raw.get("completionValue", definition.get("completionValue", 0)) or 0)
@@ -905,7 +1015,7 @@ class GuardianNormalizer:
         )
         return ObjectiveSummary(
             objective_hash=objective_hash,
-            name=f"{prefix}: {name}" if prefix else name,
+            name=name,
             description=description,
             progress=progress_value,
             completion_value=completion,
@@ -1149,12 +1259,8 @@ class GuardianNormalizer:
                 )
                 or None
             )
-            destination = (
-                self._definition_name(
-                    "DestinyDestinationDefinition", definition.get("destinationHash"), ""
-                )
-                or None
-            )
+            destination = self._destination_name(definition)
+            place = self._place_name(definition)
             difficulty_tier = activity.get("difficultyTier")
             objectives = [
                 self._normalize_objective(value)
@@ -1168,6 +1274,7 @@ class GuardianNormalizer:
                     character_id=character_id,
                     activity_type=activity_type,
                     destination=destination,
+                    place=place,
                     difficulty=(
                         ACTIVITY_DIFFICULTY_NAMES.get(int(difficulty_tier))
                         if difficulty_tier is not None
@@ -1213,12 +1320,8 @@ class GuardianNormalizer:
                 )
                 or None
             )
-            destination = (
-                self._definition_name(
-                    "DestinyDestinationDefinition", definition.get("destinationHash"), ""
-                )
-                or None
-            )
+            destination = self._destination_name(definition)
+            place = self._place_name(definition)
             difficulty_tier = definition.get("tier")
             stats = activity.get("values") or {}
             completed_raw = (stats.get("completed") or {}).get("basic", {}).get("value")
@@ -1236,6 +1339,7 @@ class GuardianNormalizer:
                     mode=int(details["mode"]) if details.get("mode") is not None else None,
                     activity_type=activity_type,
                     destination=destination,
+                    place=place,
                     difficulty=(
                         ACTIVITY_DIFFICULTY_NAMES.get(int(difficulty_tier))
                         if difficulty_tier is not None
@@ -1297,11 +1401,26 @@ class GuardianNormalizer:
             any(not int(value.get("state", 0)) & 4 for value in values) for _, values in visible
         )
 
-        near_completion: list[ObjectiveSummary] = []
+        near_completion: list[RecordObjectiveSummary] = []
         for _, record_hash, objective in _near_record_candidates(profile, NEAR_RECORD_LIMIT):
             record_definition = self._definition("DestinyRecordDefinition", record_hash)
-            record_name = _display(record_definition)[0] if record_definition else "Record"
-            near_completion.append(self._normalize_objective(objective, prefix=record_name))
+            record_display = record_definition.get("displayProperties") or {}
+            resolved_name = str(record_display.get("name") or "").strip()[:200] or None
+            resolved_description = (
+                str(record_display.get("description") or "").strip()[
+                    :RECORD_CONTEXT_DESCRIPTION_LIMIT
+                ]
+                or None
+            )
+            summary = self._normalize_objective(objective, prefix=resolved_name or "Record")
+            near_completion.append(
+                RecordObjectiveSummary(
+                    **summary.model_dump(),
+                    record_name=resolved_name,
+                    record_description=resolved_description,
+                    context_path=self._record_context_path(record_definition),
+                )
+            )
         retained, retained_total = _retained_record_candidates(profile, RETAINED_RECORD_LIMIT)
         record_summaries: list[RecordSummary] = []
         for record_hash, raw, scope, character_id in retained:

@@ -18,6 +18,14 @@ class ObjectiveSummary(BaseModel):
     destination_name: str | None = None
 
 
+class RecordObjectiveSummary(ObjectiveSummary):
+    """A near-complete Record objective with the Record's own Manifest context."""
+
+    record_name: str | None = Field(default=None, max_length=200)
+    record_description: str | None = Field(default=None, max_length=300)
+    context_path: list[str] = Field(default_factory=list, max_length=6)
+
+
 class ItemStatSummary(BaseModel):
     name: str
     value: int
@@ -28,7 +36,11 @@ class SocketedPlugSummary(BaseModel):
     name: str
     description: str | None = None
     item_type: str | None = None
+    plug_type: str | None = None
     category_identifier: str | None = None
+
+
+ClassRestriction = Literal["Titan", "Hunter", "Warlock", "Any"]
 
 
 class ItemSummary(BaseModel):
@@ -39,6 +51,7 @@ class ItemSummary(BaseModel):
     item_type: str
     item_subtype: str | None = None
     tier: str | None = None
+    class_restriction: ClassRestriction | None = None
     icon_url: str | None = None
     bucket_name: str | None = None
     quantity: int = Field(default=1, ge=0)
@@ -126,6 +139,7 @@ class RecentActivitySummary(BaseModel):
     mode: int | None = None
     activity_type: str | None = None
     destination: str | None = None
+    place: str | None = None
     difficulty: str | None = None
     recommended_power: int | None = None
     completed: bool | None = None
@@ -139,6 +153,7 @@ class AvailableActivitySummary(BaseModel):
     character_id: str
     activity_type: str | None = None
     destination: str | None = None
+    place: str | None = None
     difficulty: str | None = None
     display_level: int | None = None
     recommended_power: int | None = None
@@ -201,7 +216,7 @@ class TitleProgressSummary(BaseModel):
 class RecordProgressSummary(BaseModel):
     total_visible: int = Field(default=0, ge=0)
     completed: int = Field(default=0, ge=0)
-    near_completion: list[ObjectiveSummary] = Field(default_factory=list)
+    near_completion: list[RecordObjectiveSummary] = Field(default_factory=list)
     records: list[RecordSummary] = Field(default_factory=list, max_length=64)
     records_truncated: bool = False
     titles: list[TitleProgressSummary] = Field(default_factory=list, max_length=96)

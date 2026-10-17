@@ -22,6 +22,8 @@ CandidateClassification = Literal[
 
 MAX_CANDIDATES = 12
 MAX_OBJECTIVES_PER_CANDIDATE = 3
+MAX_CANDIDATE_DESCRIPTION = 160
+MAX_CONTEXT_PATH = 6
 MAX_RECENT_ACTIVITIES = 6
 MAX_PROGRESSIONS = 6
 
@@ -61,6 +63,11 @@ class PlanningCandidate(BaseModel):
     completion_scope: CompletionScope = "unknown"
     current_step: str | None = None
     progress_summary: str | None = None
+    activity_type: str | None = None
+    destination: str | None = None
+    place: str | None = None
+    description: str | None = Field(default=None, max_length=MAX_CANDIDATE_DESCRIPTION)
+    context_path: list[str] = Field(default_factory=list, max_length=MAX_CONTEXT_PATH)
     objectives: list[PlanningObjective] = Field(default_factory=list, max_length=3)
     recently_repeated: bool = False
     recent_occurrences: int = Field(default=0, ge=0)
@@ -69,7 +76,7 @@ class PlanningCandidate(BaseModel):
 
 
 class SessionPlanningContext(BaseModel):
-    version: Literal[4] = 4
+    version: Literal[5] = 5
     preferences: SessionPreferenceContext
     requested_character_scope: str | None
     requested_scope_explicit: bool
@@ -110,6 +117,15 @@ def _character_for_scope(
         context.characters,
         key=lambda value: value.last_played.timestamp() if value.last_played else 0,
     )
+
+
+def _bounded_description(value: str | None) -> str | None:
+    text = " ".join((value or "").split())
+    if not text:
+        return None
+    if len(text) <= MAX_CANDIDATE_DESCRIPTION:
+        return text
+    return text[: MAX_CANDIDATE_DESCRIPTION - 1].rstrip() + "…"
 
 
 def _objectives(values: list[ObjectiveSummary]) -> list[PlanningObjective]:
@@ -273,6 +289,11 @@ def build_session_planning_context(
         existing.overlap_signals = list(dict.fromkeys(existing.source_kinds))[:3]
         if candidate.objectives and not existing.objectives:
             existing.objectives = candidate.objectives
+        for field_name in ("activity_type", "destination", "place", "description"):
+            if getattr(existing, field_name) is None and getattr(candidate, field_name):
+                setattr(existing, field_name, getattr(candidate, field_name))
+        if candidate.context_path and not existing.context_path:
+            existing.context_path = candidate.context_path
 
     for content in content_evidence:
         key = _normalize(content.content)
@@ -306,6 +327,7 @@ def build_session_planning_context(
                 active_quest_status="KNOWN_TRUE",
                 completion_status="UNKNOWN" if is_named_content else "KNOWN_FALSE",
                 available_to_character="KNOWN_TRUE",
+                description=_bounded_description(quest.description),
                 objectives=_objectives(quest.objectives),
                 recently_repeated=recent_counts[key] > 1,
                 recent_occurrences=recent_counts[key],
@@ -344,6 +366,9 @@ def build_session_planning_context(
                     active_quest_status="NOT_RETURNED",
                     completion_status="KNOWN_TRUE" if activity.is_completed else "KNOWN_FALSE",
                     available_to_character="KNOWN_TRUE",
+                    activity_type=activity.activity_type,
+                    destination=activity.destination,
+                    place=activity.place,
                     objectives=_objectives(activity.objectives),
                     recently_repeated=recent_counts[key] > 1,
                     recent_occurrences=recent_counts[key],
@@ -360,6 +385,10 @@ def build_session_planning_context(
                 active_quest_status="NOT_RETURNED",
                 completion_status="KNOWN_TRUE" if objective.complete else "KNOWN_FALSE",
                 available_to_character="UNKNOWN",
+                # The Record's category path is passed through as-is. No destination is
+                # inferred from it; destination stays reserved for resolved hashes.
+                description=_bounded_description(objective.record_description),
+                context_path=list(objective.context_path[:MAX_CONTEXT_PATH]),
                 objectives=_objectives([objective]),
                 external_significance_needed=True,
             )

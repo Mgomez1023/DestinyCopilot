@@ -213,9 +213,7 @@ def test_live_cache_hits_then_expires_before_reset_boundary() -> None:
     assert third["cache"]["status"] == "miss"
     assert source.calls == 2
     assert first["reset_windows"]["daily"]["reset_cadence"] == "daily"
-    assert first["reset_windows"]["weekly"]["effective_until"] == (
-        "2026-09-15T17:00:00Z"
-    )
+    assert first["reset_windows"]["weekly"]["effective_until"] == ("2026-09-15T17:00:00Z")
 
 
 def test_live_cache_failure_does_not_break_retrieval() -> None:
@@ -224,9 +222,7 @@ def test_live_cache_failure_does_not_break_retrieval() -> None:
             del key, now
             raise OSError("cache unavailable")
 
-        async def set(
-            self, key: str, value: dict[str, Any], stale_after: datetime
-        ) -> None:
+        async def set(self, key: str, value: dict[str, Any], stale_after: datetime) -> None:
             del key, value, stale_after
             raise OSError("cache unavailable")
 
@@ -338,9 +334,7 @@ def test_live_search_and_current_activity_status_are_bounded() -> None:
 
 def test_unknown_volatile_live_search_returns_explicit_unsupported_state() -> None:
     result = asyncio.run(
-        live_provider(FakeLiveSource()).search_live_destiny(
-            "What is the current loot rotation?"
-        )
+        live_provider(FakeLiveSource()).search_live_destiny("What is the current loot rotation?")
     )
 
     assert result["status"] == "unsupported_by_current_sources"
@@ -368,35 +362,23 @@ class FakeBungieClient:
                     }
                 }
             },
-            "sales": {
-                "data": {str(2190858386): {"saleItems": {"0": {"itemHash": 30}}}}
-            },
+            "sales": {"data": {str(2190858386): {"saleItems": {"0": {"itemHash": 30}}}}},
         }
 
 
 class FakeResolver:
     definitions = {
-        "DestinyMilestoneDefinition": {
-            1: {"displayProperties": {"name": "Warlord's Ruin"}}
-        },
-        "DestinyActivityDefinition": {
-            10: {"displayProperties": {"name": "Warlord's Ruin"}}
-        },
-        "DestinyActivityModifierDefinition": {
-            20: {"displayProperties": {"name": "Extinguish"}}
-        },
+        "DestinyMilestoneDefinition": {1: {"displayProperties": {"name": "Warlord's Ruin"}}},
+        "DestinyActivityDefinition": {10: {"displayProperties": {"name": "Warlord's Ruin"}}},
+        "DestinyActivityModifierDefinition": {20: {"displayProperties": {"name": "Extinguish"}}},
         "DestinyVendorDefinition": {
             2190858386: {
                 "displayProperties": {"name": "Xûr"},
                 "locations": [{"destinationHash": 40}],
             }
         },
-        "DestinyInventoryItemDefinition": {
-            30: {"displayProperties": {"name": "Orpheus Rig"}}
-        },
-        "DestinyDestinationDefinition": {
-            40: {"displayProperties": {"name": "Tower"}}
-        },
+        "DestinyInventoryItemDefinition": {30: {"displayProperties": {"name": "Orpheus Rig"}}},
+        "DestinyDestinationDefinition": {40: {"displayProperties": {"name": "Tower"}}},
     }
 
     async def resolve_many(
@@ -629,3 +611,24 @@ def test_live_and_account_tools_can_compose(
     assert trace["grounding"]["live_provider"] is True
     assert trace["grounding"]["guardian_account"] is True
     assert expected_guardian_tools <= set(trace["tools"])
+
+
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        # Truly live state stays gated.
+        ("What is the Nightfall this week?", "weekly_nightfall"),
+        ("Is it worth farming now?", "current_destiny_state"),
+        ("What's worth farming today?", "current_destiny_state"),
+        ("Is Gjallarhorn worth using currently?", "current_destiny_state"),
+        ("Is Altars of Sorrow available now?", "current_destiny_state"),
+        # Deliberately still gated in Phase 0.5: separating a value judgement about a named
+        # activity from the live questions above needs entity awareness, not a regex tweak.
+        ("Is Altars of Sorrow worth doing now?", "current_destiny_state"),
+        # Questions without a current-time marker are not live.
+        ("Is Altars of Sorrow worth doing?", None),
+        ("What is a Nightfall?", None),
+    ],
+)
+def test_live_gate_worth_now_behavior_is_pinned(query: str, expected: str | None) -> None:
+    assert volatile_topic(query) == expected

@@ -22,6 +22,87 @@ ResponseMode = Literal[
 ]
 
 
+ViolationGroup = Literal["evidence", "grounding_safety", "style"]
+BuildFallbackKind = Literal["evidence", "grounding_safety", "style_only"]
+
+# Required Guardian evidence was never gathered for a personalized build answer.
+EVIDENCE_VIOLATION_CODES = frozenset(
+    {
+        "missing_current_build_analysis",
+        "missing_owned_inventory_evidence",
+    }
+)
+# Presentation-only problems. An answer whose only remaining issues are listed here is
+# still grounded, so it must not be replaced by a claim that data retrieval failed.
+STYLE_VIOLATION_CODES = frozenset(
+    {
+        "answer_not_first",
+        "extreme_verbosity",
+        "followup_restarts_plan",
+        "internal_jargon",
+        "inventory_dump",
+        "mechanical_structure",
+        "repeated_content",
+        "too_many_build_changes",
+        "too_many_followups",
+        "unnecessary_read_only_permission",
+    }
+)
+# Claims that are unsupported, unsafe, or conflict with explicit constraints. These are
+# always blocked. Unlisted codes are treated as this group so new checks fail closed.
+GROUNDING_SAFETY_VIOLATION_CODES = frozenset(
+    {
+        "active_quest_only",
+        "activity_mode_constraint",
+        "build_constraint_conflict",
+        "character_scope",
+        "chill_constraint",
+        "fake_build_score",
+        "false_authentication_guidance",
+        "group_constraint",
+        "implied_bungie_write",
+        "incompatible_exotic_recommendation",
+        "known_time_window_exceeded",
+        "locked_item_replaced",
+        "near_completion_only",
+        "raw_build_identifier",
+        # Re-asking a preference the user already stated ignores explicit constraints.
+        "reasked_known_activity_mode",
+        "reasked_known_character",
+        "reasked_known_duration",
+        "reasked_known_fireteam",
+        "reasked_known_goal",
+        "reasked_known_intensity",
+        "reasked_known_time",
+        "solo_constraint",
+        "ungrounded_current_build_claim",
+        "unknown_completion_as_known",
+        "unrequested_timed_itinerary",
+        "unsupported_ownership_claim",
+        "unsupported_stat_threshold",
+    }
+)
+
+
+def violation_group(code: str) -> ViolationGroup:
+    if code in EVIDENCE_VIOLATION_CODES:
+        return "evidence"
+    if code in STYLE_VIOLATION_CODES:
+        return "style"
+    return "grounding_safety"
+
+
+def build_fallback_kind(violations: list[PlanningViolation]) -> BuildFallbackKind:
+    """Choose the build fallback for violations that remain after the single correction."""
+
+    groups = {violation_group(value.code) for value in violations}
+    if "evidence" in groups:
+        return "evidence"
+    if "grounding_safety" in groups:
+        return "grounding_safety"
+    return "style_only"
+
+
 class ResponseModeContext(BaseModel):
     mode: ResponseMode
     target_min_words: int | None
@@ -705,6 +786,16 @@ class ResponseQualityValidator:
         return (
             "I couldn't retrieve the required build evidence, so I can't give a grounded "
             "personalized recommendation yet."
+        )
+
+    @staticmethod
+    def safe_build_grounding_answer() -> str:
+        """Fallback for an unsupported or constraint-breaking draft; data was available."""
+
+        return (
+            "I couldn't put together a recommendation I could fully verify against your gear "
+            "and the constraints you gave, so I'd rather not guess. Narrowing it to one slot or "
+            "goal usually helps."
         )
 
     @staticmethod

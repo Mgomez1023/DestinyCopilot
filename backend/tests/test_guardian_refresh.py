@@ -7,12 +7,13 @@ from test_guardian_tools import guardian_context
 from app.config import Settings
 from app.guardian_refresh import (
     ALL_SLICES,
+    CACHE_SCHEMA_VERSION,
     TOOL_SLICE_DEPENDENCIES,
     GuardianRefreshService,
     GuardianSlice,
     MemoryGuardianStateCache,
 )
-from app.models import GuardianContext, RecentActivitySummary
+from app.models import GuardianContext, RecentActivitySummary, RecordObjectiveSummary
 
 
 class Clock:
@@ -465,3 +466,42 @@ async def test_manual_normal_skips_collections_but_full_replaces_every_slice() -
     assert status["generation"] > 1
     assert {value["generation"] for value in status["slices"].values()} == {status["generation"]}
     assert all(value["reason"] == "manual_full" for value in status["slices"].values())
+
+
+@pytest.mark.asyncio
+async def test_record_context_and_place_survive_slice_round_trip() -> None:
+    context = guardian_context()
+    context.records.near_completion = [
+        RecordObjectiveSummary(
+            objective_hash=902,
+            name="Altars of Sorrow: Nightmares",
+            progress=246,
+            completion_value=250,
+            progress_percent=98.4,
+            record_name="Altars of Sorrow: Nightmares",
+            record_description="Defeat Nightmares at the Altars of Sorrow.",
+            context_path=["Triumphs", "The Moon", "Activities", "Altars of Sorrow"],
+        )
+    ]
+    character = context.characters[0]
+    character.available_activities[0].place = "The Moon"
+    character.recent_activities[0].place = "The Moon"
+    service, guardian, _ = make_service(context=context)
+
+    await service.get_context("session-a", "token")
+    warm = await service.get_context("session-a", "token")
+
+    assert guardian.full_calls == 1
+    assert warm.cache_hit
+    record = warm.context.records.near_completion[0]
+    assert isinstance(record, RecordObjectiveSummary)
+    assert record.record_name == "Altars of Sorrow: Nightmares"
+    assert record.record_description == "Defeat Nightmares at the Altars of Sorrow."
+    assert record.context_path == ["Triumphs", "The Moon", "Activities", "Altars of Sorrow"]
+    restored = warm.context.characters[0]
+    assert restored.available_activities[0].place == "The Moon"
+    assert {value.place for value in restored.recent_activities} >= {"The Moon"}
+
+
+def test_cache_schema_version_tracks_record_context_fields() -> None:
+    assert CACHE_SCHEMA_VERSION == 3

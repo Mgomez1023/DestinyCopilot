@@ -3,6 +3,7 @@ import hashlib
 import json
 import logging
 import re
+import time
 import unicodedata
 from dataclasses import asdict, dataclass, field
 from difflib import SequenceMatcher
@@ -290,6 +291,7 @@ class ManifestKnowledgeProvider:
         self._hash_lookup: dict[tuple[str, int], KnowledgeIndexEntry] = {}
         self._trigram_lookup: dict[str, set[int]] = {}
         self._index_lock = asyncio.Lock()
+        self.warmup_state: dict[str, Any] = {"state": "not_started"}
         self._indexed_types: list[str] = []
         self._empty_types: list[str] = []
         self._unavailable_types: list[str] = []
@@ -333,13 +335,56 @@ class ManifestKnowledgeProvider:
             if entries is None:
                 entries = await self._build_index()
                 await asyncio.to_thread(self._write_index, cache_path, entries)
-            self._install_index(entries)
+            # Building the lookup structures is CPU-bound, so it runs off the event loop.
+            prepared = await asyncio.to_thread(self._prepare_index, entries)
+            self._apply_index(entries, prepared)
             logger.info(
                 "Destiny knowledge index ready entries=%d definition_types=%s unavailable=%s",
                 len(entries),
                 self._indexed_types,
                 self._unavailable_types,
             )
+
+    async def warm_index(self) -> dict[str, Any]:
+        """Build or load the search index ahead of the first user request.
+
+        Never raises (except cancellation): a failed warmup is recorded and the index is
+        built lazily on first use exactly as before.
+        """
+
+        started = time.perf_counter()
+        self.warmup_state = {"state": "running"}
+        try:
+            await self._ensure_index()
+        except asyncio.CancelledError:
+            self.warmup_state = {"state": "cancelled"}
+            raise
+        except Exception as exc:
+            elapsed_ms = int((time.perf_counter() - started) * 1000)
+            self.warmup_state = {
+                "state": "failed",
+                "elapsed_ms": elapsed_ms,
+                "error_type": type(exc).__name__,
+            }
+            logger.warning(
+                "Destiny knowledge index warmup failed error_type=%s elapsed_ms=%d; "
+                "the index will be built on first use",
+                type(exc).__name__,
+                elapsed_ms,
+            )
+            return dict(self.warmup_state)
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        self.warmup_state = {
+            "state": "ready",
+            "elapsed_ms": elapsed_ms,
+            "entries": len(self._entries or []),
+        }
+        logger.info(
+            "Destiny knowledge index warmup complete entries=%d elapsed_ms=%d",
+            len(self._entries or []),
+            elapsed_ms,
+        )
+        return dict(self.warmup_state)
 
     @staticmethod
     def _read_index(path: Path) -> list[KnowledgeIndexEntry] | None:
@@ -469,18 +514,34 @@ class ManifestKnowledgeProvider:
             search_text=search_text,
         )
 
-    def _install_index(self, entries: list[KnowledgeIndexEntry]) -> None:
-        self._entries = entries
+    @classmethod
+    def _prepare_index(
+        cls, entries: list[KnowledgeIndexEntry]
+    ) -> tuple[dict[tuple[str, int], KnowledgeIndexEntry], dict[str, set[int]]]:
+        """Build immutable lookup structures; safe to run in a worker thread."""
+
+        hash_lookup = {(value.definition_type, value.entity_hash): value for value in entries}
+        trigrams: dict[str, set[int]] = {}
+        for index, entry in enumerate(entries):
+            for trigram in cls._trigrams(_normalized(entry.name)):
+                trigrams.setdefault(trigram, set()).add(index)
+        return hash_lookup, trigrams
+
+    def _apply_index(
+        self,
+        entries: list[KnowledgeIndexEntry],
+        prepared: tuple[dict[tuple[str, int], KnowledgeIndexEntry], dict[str, set[int]]],
+    ) -> None:
+        self._hash_lookup, self._trigram_lookup = prepared
         self._indexed_types = sorted({value.definition_type for value in entries})
         self._empty_types = sorted(
             set(INDEXED_DEFINITION_TYPES) - set(self._indexed_types) - set(self._unavailable_types)
         )
-        self._hash_lookup = {(value.definition_type, value.entity_hash): value for value in entries}
-        trigrams: dict[str, set[int]] = {}
-        for index, entry in enumerate(entries):
-            for trigram in self._trigrams(_normalized(entry.name)):
-                trigrams.setdefault(trigram, set()).add(index)
-        self._trigram_lookup = trigrams
+        # Published last: readers treat a non-None entry list as a fully installed index.
+        self._entries = entries
+
+    def _install_index(self, entries: list[KnowledgeIndexEntry]) -> None:
+        self._apply_index(entries, self._prepare_index(entries))
 
     @staticmethod
     def _trigrams(value: str) -> set[str]:
@@ -501,6 +562,14 @@ class ManifestKnowledgeProvider:
         self, query: str, entity_types: list[str] | None, limit: int
     ) -> list[tuple[KnowledgeIndexEntry, float]]:
         await self._ensure_index()
+        # Fuzzy scoring is CPU-bound (up to ~0.7s for broad queries). Running it in a worker
+        # thread keeps concurrent requests and SSE streams responsive. The installed index
+        # is never mutated after publication, so concurrent reads are safe.
+        return await asyncio.to_thread(self._score_entries, query, entity_types, limit)
+
+    def _score_entries(
+        self, query: str, entity_types: list[str] | None, limit: int
+    ) -> list[tuple[KnowledgeIndexEntry, float]]:
         assert self._entries is not None
         allowed = self._allowed_types(entity_types)
         quests_only = bool(
@@ -1013,6 +1082,7 @@ class ManifestKnowledgeProvider:
             "indexed_definition_types": self._indexed_types,
             "empty_definition_types": self._empty_types,
             "unavailable_definition_types": self._unavailable_types,
+            "warmup": dict(self.warmup_state),
         }
 
     async def status(self) -> dict[str, Any]:

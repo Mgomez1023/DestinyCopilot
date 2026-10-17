@@ -88,6 +88,24 @@ def _definition(name: str, **extra: Any) -> dict[str, Any]:
     }
 
 
+def _objective_definition(progress_description: str = "", **extra: Any) -> dict[str, Any]:
+    """Mirror the Manifest shape: an empty display name plus progressDescription."""
+
+    return {
+        "displayProperties": {"name": "", "description": "", "hasIcon": False},
+        "progressDescription": progress_description,
+        **extra,
+    }
+
+
+def _node(name: str, parent: int | None = None, **extra: Any) -> dict[str, Any]:
+    return {
+        "displayProperties": {"name": name, "description": ""},
+        "parentNodeHashes": [parent] if parent else [],
+        **extra,
+    }
+
+
 def test_normalizes_private_profile_components_without_raw_envelopes() -> None:
     definitions = {
         "DestinyClassDefinition": {10: _definition("Warlock")},
@@ -111,19 +129,22 @@ def test_normalizes_private_profile_components_without_raw_envelopes() -> None:
             22: _definition("Subclass"),
         },
         "DestinyObjectiveDefinition": {
-            500: _definition("Defeat targets", completionValue=10),
+            # Real objective definitions usually leave displayProperties.name empty.
+            500: _objective_definition("Defeat targets", completionValue=10),
         },
         "DestinyActivityDefinition": {
             600: _definition(
                 "Test Strike",
                 activityTypeHash=601,
                 destinationHash=602,
+                placeHash=603,
                 activityLightLevel=2000,
                 tier=4,
             )
         },
         "DestinyActivityTypeDefinition": {601: _definition("Strike")},
         "DestinyDestinationDefinition": {602: _definition("Cosmodrome")},
+        "DestinyPlaceDefinition": {603: _definition("Earth")},
         "DestinyMilestoneDefinition": {700: _definition("Weekly Test")},
         "DestinyProgressionDefinition": {800: _definition("Season Rank")},
         "DestinyRecordDefinition": {
@@ -408,9 +429,12 @@ def test_normalizes_private_profile_components_without_raw_envelopes() -> None:
     assert context.characters[0].subclass.socket_count == 1
     assert context.characters[0].subclass.empty_socket_count == 0
     assert context.characters[0].quests[0].objectives[0].progress_percent == 80.0
+    assert context.characters[0].quests[0].objectives[0].name == "Defeat targets"
     assert context.characters[0].available_activities[0].name == "Test Strike"
     assert context.characters[0].available_activities[0].activity_type == "Strike"
     assert context.characters[0].available_activities[0].destination == "Cosmodrome"
+    assert context.characters[0].available_activities[0].place == "Earth"
+    assert context.characters[0].recent_activities[0].place == "Earth"
     assert context.characters[0].available_activities[0].difficulty == "Challenging"
     assert context.characters[0].available_activities[0].recommended_power == 1990
     assert context.characters[0].recent_activities[0].duration_seconds == 900
@@ -430,6 +454,302 @@ def test_normalizes_private_profile_components_without_raw_envelopes() -> None:
     serialized = context.model_dump()
     assert "itemComponents" not in serialized
     assert "Response" not in serialized
+
+
+class CountingResolver(FakeResolver):
+    def __init__(self, definitions: dict[str, dict[int, dict[str, Any]]]) -> None:
+        super().__init__(definitions)
+        self.calls: list[tuple[str, set[int]]] = []
+
+    async def resolve_many(
+        self, entity_type: str, entity_hashes: set[int]
+    ) -> dict[int, dict[str, Any]]:
+        self.calls.append((entity_type, set(entity_hashes)))
+        return await super().resolve_many(entity_type, entity_hashes)
+
+
+def _normalize_profile(
+    definitions: dict[str, dict[int, dict[str, Any]]],
+    profile_extra: dict[str, Any],
+    histories: dict[str, dict[str, Any] | None] | None = None,
+    resolver: FakeResolver | None = None,
+) -> Any:
+    profile = {
+        "profile": {"data": {"minutesPlayedTotal": "0"}},
+        "characters": {"data": {}},
+        **profile_extra,
+    }
+    membership = {"membershipId": "123", "membershipType": 3, "displayName": "Guardian"}
+    return asyncio.run(
+        GuardianNormalizer(cast(Any, resolver or FakeResolver(definitions))).normalize(
+            {}, membership, profile, histories
+        )
+    )
+
+
+def _near_record_profile(record_hash: int, objective_hash: int) -> dict[str, Any]:
+    return {
+        "profileRecords": {
+            "data": {
+                "records": {
+                    str(record_hash): {
+                        "state": 4,
+                        "intervalObjectives": [
+                            {
+                                "objectiveHash": objective_hash,
+                                "progress": 246,
+                                "completionValue": 250,
+                                "complete": False,
+                                "visible": True,
+                            }
+                        ],
+                    }
+                }
+            }
+        }
+    }
+
+
+def test_objective_label_prefers_display_name_then_progress_description() -> None:
+    normalizer = GuardianNormalizer(cast(Any, FakeResolver({})))
+    normalizer.definitions = {
+        "DestinyObjectiveDefinition": {
+            1: _definition("Named objective"),
+            2: _objective_definition("Waves completed"),
+            3: _objective_definition(""),
+        }
+    }
+
+    def name(objective_hash: int, prefix: str = "") -> str:
+        return normalizer._normalize_objective(
+            {"objectiveHash": objective_hash}, prefix=prefix
+        ).name
+
+    assert name(1) == "Named objective"
+    assert name(2) == "Waves completed"
+    assert name(3) == "Unknown"
+    assert name(404) == "Unknown"
+    assert name(2, "Altars of Sorrow: Waves upon Waves") == (
+        "Altars of Sorrow: Waves upon Waves: Waves completed"
+    )
+    assert name(3, "Altars of Sorrow: Nightmares") == "Altars of Sorrow: Nightmares"
+    assert name(404, "Some Record") == "Some Record"
+
+
+def test_near_complete_interval_record_keeps_manifest_category_context() -> None:
+    # Shaped like the Manifest: an interval Triumph whose objective has no label, and
+    # whose location is only expressed by its presentation-node ancestry.
+    definitions = {
+        "DestinyRecordDefinition": {
+            3001: {
+                "displayProperties": {
+                    "name": "Altars of Sorrow: Nightmares",
+                    "description": "Defeat Nightmares at the Altars of Sorrow.",
+                },
+                "parentNodeHashes": [4001],
+                "intervalInfo": {
+                    "intervalObjectives": [{"intervalObjectiveHash": 5001, "intervalScoreValue": 0}]
+                },
+            }
+        },
+        "DestinyObjectiveDefinition": {5001: _objective_definition("", completionValue=250)},
+        "DestinyPresentationNodeDefinition": {
+            4001: _node("Altars of Sorrow", 4002),
+            4002: _node("Activities", 4003),
+            4003: _node("The Moon", 4004),
+            4004: _node("Triumphs", 4005),
+            4005: _node("Triumphs"),
+        },
+    }
+
+    context = _normalize_profile(definitions, _near_record_profile(3001, 5001))
+
+    record = context.records.near_completion[0]
+    assert record.name == "Altars of Sorrow: Nightmares"
+    assert ": Unknown" not in record.name
+    assert (record.progress, record.completion_value) == (246, 250)
+    assert record.record_name == "Altars of Sorrow: Nightmares"
+    assert record.record_description == "Defeat Nightmares at the Altars of Sorrow."
+    assert record.context_path == ["Triumphs", "The Moon", "Activities", "Altars of Sorrow"]
+    # Path context is never converted into an inferred destination.
+    assert record.destination_name is None
+    assert record.activity_name is None
+
+
+def test_record_context_path_is_depth_limited_and_batched_per_level() -> None:
+    nodes = {
+        6000 + index: _node(f"Node {index}", 6000 + index + 1 if index < 10 else None)
+        for index in range(1, 11)
+    }
+    definitions = {
+        "DestinyRecordDefinition": {
+            3002: {**_definition("Deep Record"), "parentNodeHashes": [6001]},
+            3003: {**_definition("Sibling Record"), "parentNodeHashes": [6001]},
+        },
+        "DestinyObjectiveDefinition": {5002: _objective_definition("Progress")},
+        "DestinyPresentationNodeDefinition": nodes,
+    }
+    profile = _near_record_profile(3002, 5002)
+    profile["profileRecords"]["data"]["records"]["3003"] = profile["profileRecords"]["data"][
+        "records"
+    ]["3002"]
+    resolver = CountingResolver(definitions)
+
+    context = _normalize_profile(definitions, profile, resolver=resolver)
+
+    for record in context.records.near_completion:
+        assert record.context_path == [f"Node {index}" for index in range(6, 0, -1)]
+    node_calls = [
+        hashes
+        for entity_type, hashes in resolver.calls
+        if entity_type == "DestinyPresentationNodeDefinition"
+    ]
+    assert len(node_calls) == 6
+    assert node_calls[0] == {6001}
+    assert all(len(hashes) == 1 for hashes in node_calls)
+
+
+def test_record_context_path_is_cycle_safe() -> None:
+    definitions = {
+        "DestinyRecordDefinition": {
+            3004: {**_definition("Loop Record"), "parentNodeHashes": [7001]}
+        },
+        "DestinyObjectiveDefinition": {5004: _objective_definition("Progress")},
+        "DestinyPresentationNodeDefinition": {
+            7001: _node("Inner", 7002),
+            7002: _node("Outer", 7001),
+        },
+    }
+
+    context = _normalize_profile(definitions, _near_record_profile(3004, 5004))
+
+    assert context.records.near_completion[0].context_path == ["Outer", "Inner"]
+
+
+def test_record_context_nodes_are_never_treated_as_titles() -> None:
+    definitions = {
+        "DestinyRecordDefinition": {
+            3005: {**_definition("Category Record"), "parentNodeHashes": [8001]},
+        },
+        "DestinyObjectiveDefinition": {5005: _objective_definition("Progress")},
+        "DestinyPresentationNodeDefinition": {
+            # Worst case: a category node that looks Title-shaped.
+            8001: _node(
+                "Category",
+                completionRecordHash=3005,
+                children={"records": [{"recordHash": 3005}]},
+            ),
+        },
+    }
+
+    context = _normalize_profile(definitions, _near_record_profile(3005, 5005))
+
+    assert context.records.near_completion[0].context_path == ["Category"]
+    assert context.records.titles == []
+    assert context.records.title_data_available is False
+
+
+def test_activity_place_resolves_without_overwriting_empty_destination() -> None:
+    definitions = {
+        "DestinyClassDefinition": {10: _definition("Titan")},
+        "DestinyActivityDefinition": {
+            610: _definition(
+                "Haunted Arena",
+                activityTypeHash=611,
+                destinationHash=612,
+                placeHash=613,
+            )
+        },
+        "DestinyActivityTypeDefinition": {611: _definition("Seasonal Arena")},
+        "DestinyDestinationDefinition": {
+            612: {"displayProperties": {"name": "", "description": ""}}
+        },
+        "DestinyPlaceDefinition": {613: _definition("The Moon")},
+    }
+    profile_extra = {
+        "characters": {"data": {"c1": {"classHash": 10, "light": 0, "minutesPlayedTotal": "0"}}},
+        "characterActivities": {
+            "data": {"c1": {"availableActivities": [{"activityHash": 610, "isVisible": True}]}}
+        },
+    }
+    history = {"activities": [{"activityDetails": {"directorActivityHash": 610}, "values": {}}]}
+
+    context = _normalize_profile(definitions, profile_extra, {"c1": history})
+
+    available = context.characters[0].available_activities[0]
+    recent = context.characters[0].recent_activities[0]
+    assert available.place == "The Moon"
+    assert recent.place == "The Moon"
+    # An unnamed destination definition is represented as unknown, never as the
+    # "Unknown" placeholder string and never filled in from place.
+    assert available.destination is None
+    assert recent.destination is None
+
+
+def test_items_keep_manifest_class_restriction_and_specific_plug_type() -> None:
+    definitions = {
+        "DestinyClassDefinition": {10: _definition("Titan")},
+        "DestinyInventoryItemDefinition": {
+            100: _definition(
+                "Synthoceps",
+                itemType=2,
+                itemTypeDisplayName="Gauntlets",
+                classType=0,
+                inventory={"tierTypeName": "Exotic"},
+            ),
+            101: _definition(
+                "Celestial Nighthawk",
+                itemType=2,
+                itemTypeDisplayName="Helmet",
+                classType=1,
+                inventory={"tierTypeName": "Exotic"},
+            ),
+            102: _definition(
+                "Test Hand Cannon", itemType=3, itemTypeDisplayName="Hand Cannon", classType=3
+            ),
+            103: _definition("Legacy Helm", itemType=2, itemTypeDisplayName="Helmet"),
+            200: _definition(
+                "Rampage",
+                itemType=19,
+                itemTypeDisplayName="Trait",
+                plug={"plugCategoryIdentifier": "frames"},
+            ),
+        },
+    }
+    profile_extra = {
+        "characters": {"data": {"c1": {"classHash": 10, "light": 0, "minutesPlayedTotal": "0"}}},
+        "profileInventory": {
+            "data": {
+                "items": [
+                    {"itemHash": 101, "itemInstanceId": "i101", "location": 2},
+                    {"itemHash": 102, "itemInstanceId": "i102", "location": 2},
+                    {"itemHash": 103, "itemInstanceId": "i103", "location": 2},
+                ]
+            }
+        },
+        "characterEquipment": {
+            "data": {"c1": {"items": [{"itemHash": 100, "itemInstanceId": "i100"}]}}
+        },
+        "itemComponents": {
+            "sockets": {"data": {"i102": {"sockets": [{"plugHash": 200}]}}},
+        },
+    }
+
+    context = _normalize_profile(definitions, profile_extra)
+
+    items = {
+        value.name: value
+        for value in [*context.inventory.items, *context.characters[0].equipped_gear]
+    }
+    assert items["Synthoceps"].class_restriction == "Titan"
+    assert items["Celestial Nighthawk"].class_restriction == "Hunter"
+    assert items["Test Hand Cannon"].class_restriction == "Any"
+    assert items["Legacy Helm"].class_restriction is None
+    rampage = items["Test Hand Cannon"].socketed_plug_details[0]
+    assert rampage.name == "Rampage"
+    assert rampage.item_type == "Mod"
+    assert rampage.plug_type == "Trait"
+    assert rampage.category_identifier == "frames"
 
 
 def test_missing_private_components_are_reported_instead_of_guessed() -> None:

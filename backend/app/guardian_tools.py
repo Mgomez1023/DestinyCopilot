@@ -8,6 +8,8 @@ from app.build_analysis import (
     AnalyzeCurrentBuildRequest,
     BuildAnalysisService,
     FindBuildAlternativesRequest,
+    class_compatibility,
+    plug_groups,
 )
 from app.character_selection import (
     CharacterClass,
@@ -317,6 +319,7 @@ class GuardianToolService:
             "character_id": value.character_id,
             "equipped": value.is_equipped,
             "tier": value.tier,
+            "class_restriction": value.class_restriction,
             "damage_type": value.damage_type,
             "item_hash": value.item_hash,
             "instance_id": value.instance_id,
@@ -330,20 +333,11 @@ class GuardianToolService:
     def _plug_groups(
         plugs: list[SocketedPlugSummary],
     ) -> dict[str, list[str]]:
-        groups = {"abilities": [], "aspects": [], "fragments": [], "mods": []}
-        for plug in plugs:
-            category = (plug.category_identifier or "").casefold()
-            if "aspect" in category:
-                groups["aspects"].append(plug.name)
-            elif "fragment" in category:
-                groups["fragments"].append(plug.name)
-            elif any(
-                marker in category for marker in ("abilit", "grenade", "melee", "super", "jump")
-            ):
-                groups["abilities"].append(plug.name)
-            elif plug.item_type == "Mod" or "mod" in category:
-                groups["mods"].append(plug.name)
-        return {key: list(dict.fromkeys(values)) for key, values in groups.items()}
+        groups = plug_groups(plugs)
+        return {
+            key: list(dict.fromkeys(plug.name for plug in groups[key]))
+            for key in ("abilities", "aspects", "fragments", "mods")
+        }
 
     def get_character_summary(
         self,
@@ -479,6 +473,7 @@ class GuardianToolService:
                         "description": activity.description,
                         "activity_type": activity.activity_type,
                         "destination": activity.destination,
+                        "place": activity.place,
                         "difficulty": activity.difficulty,
                         "display_level": activity.display_level,
                         "power_eligibility": "unknown_not_compared",
@@ -726,12 +721,12 @@ class GuardianToolService:
         }
 
     def search_inventory(self, request: InventorySearchRequest) -> dict[str, Any]:
-        selected_character_id: str | None = None
+        selected: CharacterSummary | None = None
         if request.character_id is not None or request.character_class is not None:
-            selected_character_id = self.characters.resolve_one(
+            selected = self.characters.resolve_one(
                 character_id=request.character_id,
                 character_class=request.character_class,
-            ).character_id
+            )
         items = list(self.context.inventory.items)
         items.extend(
             item for character in self.context.characters for item in character.equipped_gear
@@ -740,15 +735,27 @@ class GuardianToolService:
         def matches(value: str | None, expected: str | None) -> bool:
             return expected is None or expected.casefold() in (value or "").casefold()
 
-        filtered = [
+        def is_shared(item: ItemSummary) -> bool:
+            # Vault and profile items belong to no single character, so a character-scoped
+            # search includes the shared items that character's class can actually use.
+            return item.location in {"vault", "profile"} and item.character_id is None
+
+        candidates = [
             item
             for item in items
             if matches(item.name, request.query)
             and matches(item.item_type, request.item_type)
             and matches(item.item_subtype, request.subtype)
             and matches(item.bucket_name, request.bucket)
-            and (selected_character_id is None or item.character_id == selected_character_id)
             and (not request.equipped_only or item.is_equipped)
+            and (selected is None or item.character_id == selected.character_id or is_shared(item))
+        ]
+        filtered = [
+            item
+            for item in candidates
+            if selected is None
+            or item.character_id == selected.character_id
+            or class_compatibility(item, selected.class_name) != "incompatible"
         ]
         tier_order = {"Exotic": 4, "Legendary": 3, "Rare": 2, "Uncommon": 1}
         filtered.sort(
@@ -763,6 +770,7 @@ class GuardianToolService:
         return {
             "items": [self._item(item) for item in filtered[: request.limit]],
             "total_matching": len(filtered),
+            "excluded_other_class_count": len(candidates) - len(filtered),
             "limit": request.limit,
             "truncated": len(filtered) > request.limit,
         }
@@ -786,6 +794,7 @@ class GuardianToolService:
             plug for item in character.equipped_gear for plug in item.socketed_plug_details
         ]
         groups = self._plug_groups(all_plugs)
+        role_groups = plug_groups(all_plugs)
         return {
             "character": loadout["character"],
             "subclass": loadout["subclass"],
@@ -794,15 +803,8 @@ class GuardianToolService:
             "armor": loadout["armor"],
             "armor_stats": loadout["armor_stats"],
             "mods": groups["mods"],
+            # Weapon/armor perks and unclassified sockets; cosmetics are not build-affecting.
             "other_build_affecting_sockets": list(
-                dict.fromkeys(
-                    plug.name
-                    for plug in all_plugs
-                    if plug.name
-                    not in groups["mods"]
-                    + groups["abilities"]
-                    + groups["aspects"]
-                    + groups["fragments"]
-                )
+                dict.fromkeys(plug.name for plug in [*role_groups["perks"], *role_groups["other"]])
             )[:30],
         }

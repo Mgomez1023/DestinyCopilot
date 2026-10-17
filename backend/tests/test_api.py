@@ -1,6 +1,13 @@
+import asyncio
+import time
+from typing import Any
+
+import pytest
 from fastapi.testclient import TestClient
 
-from app.main import app
+from app.config import Settings
+from app.destiny_knowledge import ManifestKnowledgeProvider
+from app.main import app, create_app
 
 
 def test_health() -> None:
@@ -76,3 +83,59 @@ def test_debug_recent_chat_trace_endpoint_is_available_in_development() -> None:
         response = client.get("/api/debug/chat-traces")
     assert response.status_code == 200
     assert response.json() == {"traces": [], "count": 0}
+
+
+def _pending_warmup(calls: list[str]) -> Any:
+    async def warm_index(self: Any) -> dict[str, Any]:
+        calls.append("started")
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            calls.append("cancelled")
+            raise
+        return {}
+
+    return warm_index
+
+
+def test_startup_warmup_runs_in_background_and_never_blocks_health(monkeypatch: Any) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(ManifestKnowledgeProvider, "warm_index", _pending_warmup(calls))
+    application = create_app(Settings(bungie_api_key="test-key", manifest_index_warmup=True))
+
+    with TestClient(application) as client:
+        response = client.get("/api/health")
+        for _ in range(100):
+            if calls:
+                break
+            time.sleep(0.01)
+
+    # Health answered while the warmup was still pending; shutdown cancelled it cleanly.
+    assert response.status_code == 200
+    assert calls == ["started", "cancelled"]
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        {"bungie_api_key": "", "manifest_index_warmup": True},
+        {"bungie_api_key": "test-key", "manifest_index_warmup": False},
+    ],
+)
+def test_startup_warmup_is_skipped_without_api_key_or_when_disabled(
+    monkeypatch: Any, settings: dict[str, Any]
+) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(ManifestKnowledgeProvider, "warm_index", _pending_warmup(calls))
+    application = create_app(Settings(**settings))
+
+    with TestClient(application) as client:
+        assert client.get("/api/health").status_code == 200
+        provider = application.state.services.knowledge.providers[0]
+        assert provider.warmup_state == {"state": "disabled"}
+
+    assert calls == []
+
+
+def test_test_environment_never_warms_the_manifest_index() -> None:
+    assert Settings().manifest_index_warmup is False
