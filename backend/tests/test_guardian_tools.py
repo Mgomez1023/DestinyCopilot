@@ -401,10 +401,15 @@ def test_character_scoped_tool_schema_supports_exactly_one_public_selector() -> 
 
     assert properties["character_id"]["type"] == ["string", "null"]
     assert properties["character_class"]["enum"] == ["Titan", "Hunter", "Warlock", None]
+    # No selector falls back to the current character for current-default tools only.
+    defaulted = GuardianToolService(guardian_context()).execute(
+        "get_equipped_loadout", {"character_id": None, "character_class": None}
+    )
+    assert defaulted["character"]["class"] == "Titan"
     with pytest.raises(ValueError, match="character_id or character_class"):
         GuardianToolService(guardian_context()).execute(
-            "get_equipped_loadout",
-            {"character_id": None, "character_class": None},
+            "get_content_progression",
+            {"character_id": None, "character_class": None, "content_name": None},
         )
     with pytest.raises(ValueError, match="not both"):
         GuardianToolService(guardian_context()).execute(

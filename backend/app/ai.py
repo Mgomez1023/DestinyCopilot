@@ -1,4 +1,5 @@
 import dataclasses
+import hashlib
 import json
 import logging
 import re
@@ -17,7 +18,14 @@ from app.build_analysis import (
     derive_build_request_context,
     forced_alternatives_relevance,
 )
-from app.character_selection import CharacterResolutionError
+from app.character_selection import (
+    CharacterResolutionError,
+    ConversationScope,
+    CurrentCharacter,
+    resolve_conversation_scope,
+    resolve_current_character,
+    selector_source,
+)
 from app.chat_stream import (
     StreamStatusReporter,
     is_web_search_stream_event,
@@ -28,14 +36,20 @@ from app.content_progression import mentioned_content_names, supported_content_a
 from app.core_knowledge import DestinyKnowledgeEngine, normalize_text
 from app.core_knowledge_provider import CORE_PROVIDER_CATEGORY
 from app.destiny_knowledge import DestinyKnowledgeService, KnowledgeToolError
-from app.guardian_tools import GuardianToolError, GuardianToolService
+from app.guardian_tools import (
+    CONVERSATION_SCOPED_TOOLS,
+    CURRENT_DEFAULT_TOOLS,
+    GuardianToolError,
+    GuardianToolService,
+)
 from app.live_knowledge import (
     LIVE_PROVIDER_CATEGORY,
     unavailable_live_data,
     unavailable_live_message,
     volatile_topic,
 )
-from app.models import ChatRequest, ChatResponse, ChatSource, GuardianContext
+from app.models import ChatRequest, ChatResponse, ChatSource, ChatTurn, GuardianContext
+from app.ownership_evidence import record_ownership_evidence
 from app.response_quality import (
     BuildResponseValidationContext,
     ReadOnlyActionValidationContext,
@@ -57,6 +71,8 @@ from app.session_preferences import (
 from app.title_progress import TitleRequestContext, derive_title_request_context
 
 logger = logging.getLogger(__name__)
+
+MAX_TRACED_OWNERSHIP_CLAIMS = 12
 
 SYSTEM_INSTRUCTIONS = """You are Guardian Copilot, a concise and practical Destiny 2 companion.
 You have six read-only information categories. Guardian tools retrieve facts about this
@@ -425,11 +441,21 @@ class RecommendationService:
             stream_status.trace_id = trace_id
         preference_derivation = derive_session_preferences(request.history, request.message)
         preference_context = preference_derivation.preferences
+        # The conversation's character: what the user chose before this prompt, and after it.
+        previous_character = derive_session_preferences(request.history, "").preferences.character
+        chosen_this_turn = "character" in preference_derivation.current_turn_updates
+        conversation_scope = resolve_conversation_scope(
+            context,
+            previous_character,
+            preference_context.character,
+            chosen_this_turn=chosen_this_turn,
+        )
         build_request_context = derive_build_request_context(
             request.message, preference_context, request.history
         )
         title_request_context = derive_title_request_context(request.message, request.history)
         build_validation_context = BuildResponseValidationContext(
+            active_character=conversation_scope.active,
             is_build_request=build_request_context.is_build_request,
             requires_current_build_analysis=(build_request_context.requires_current_build_analysis),
             requires_owned_inventory=build_request_context.requires_owned_inventory,
@@ -443,8 +469,13 @@ class RecommendationService:
             intent_resolved=title_request_context.intent_resolved,
             lookup_required=title_request_context.retrieval_required,
         )
+        planning_continuation = self._switch_continues_planning(
+            request.history, conversation_scope, preference_derivation
+        )
         session_planning = bool(
-            self._is_session_planning(request.message) or preference_derivation.is_planning_followup
+            self._is_session_planning(request.message)
+            or preference_derivation.is_planning_followup
+            or planning_continuation
         )
         mode_context = response_mode_context(
             request.message,
@@ -481,6 +512,7 @@ class RecommendationService:
             if session_planning
             else None
         )
+        current_character = resolve_current_character(context)
         core_grounding = self._core_grounding(request.message, planning_context)
         quality_validator = ResponseQualityValidator()
         trace: dict[str, Any] = {
@@ -518,6 +550,7 @@ class RecommendationService:
             },
             "number_of_guardian_tools_used": 0,
             "core_knowledge": core_grounding.trace,
+            "current_character": self._current_character_trace(current_character, character_scope),
             "knowledge_categories_used": [],
             "web_research_occurred": False,
             "tools": [],
@@ -547,6 +580,8 @@ class RecommendationService:
             },
             "answer": "not_generated",
             "tool_trace": [],
+            "character_selections": [],
+            "ownership_validation": {"passes": [], "fallback_due_to_ownership": False},
             "tool_budget": {
                 "max_rounds": MAX_TOOL_ROUNDS,
                 "max_tool_calls": MAX_TOOL_CALLS,
@@ -581,17 +616,24 @@ class RecommendationService:
             self._store_trace(trace_id, trace)
             return response
 
-        guardian_tools = GuardianToolService(context)
+        guardian_tools = GuardianToolService(context, conversation_scope.explicit_class)  # type: ignore[arg-type]
         tool_definitions = list(guardian_tools.definitions())
         account_fact_only = is_account_fact_only(request.message)
         if self.knowledge is not None and not account_fact_only:
             tool_definitions.extend(self.knowledge.definitions())
         if not account_fact_only:
             tool_definitions.append(WEB_SEARCH_TOOL)
-        input_items: list[Any] = [
-            {"role": turn.role, "content": turn.content} for turn in request.history
-        ]
+        scoped_history, stale_turns_removed = self._scoped_history(
+            request.history, conversation_scope
+        )
+        input_items: list[Any] = scoped_history
         input_items.append({"role": "user", "content": request.message})
+        trace["conversation_scope"] = self._conversation_scope_trace(
+            conversation_scope,
+            planning_continuation=planning_continuation,
+            planning_rebuilt=planning_context is not None and conversation_scope.switched,
+            stale_turns_removed=stale_turns_removed,
+        )
         total_tool_calls = 0
         web_sources: list[ChatSource] = []
         knowledge_sources: list[ChatSource] = []
@@ -604,6 +646,7 @@ class RecommendationService:
                 mode_context,
                 build_request_context,
                 title_request_context,
+                current_character,
             ),
             core_grounding,
         )
@@ -698,13 +741,16 @@ class RecommendationService:
                         web_sources or trace["grounding"]["live_provider"]
                     )
                     safe_fallback = False
-                    violations = quality_validator.validate(
+                    message, violations = self._check_answer(
+                        quality_validator,
                         message,
+                        "initial",
                         mode_context,
                         request.message,
                         planning_context,
                         build_validation_context,
                         read_only_validation_context,
+                        trace,
                     )
                     if violations:
                         trace["planning_correction"] = {
@@ -718,25 +764,29 @@ class RecommendationService:
                             response_output,
                             turn_instructions,
                             tool_definitions,
-                            quality_validator.correction_instruction(violations),
+                            quality_validator.correction_instruction(
+                                violations, build_validation_context
+                            ),
                             stream_status,
                         )
                         correction_output = self._field(correction_response, "output", []) or []
                         self._log_response_metadata(correction_response, "planning_correction")
                         self._require_completed_response(correction_response)
                         corrected_message = self._extract_assistant_text(correction_response)
-                        corrected_violations = (
-                            quality_validator.validate(
+                        if corrected_message:
+                            corrected_message, corrected_violations = self._check_answer(
+                                quality_validator,
                                 corrected_message,
+                                "after_correction",
                                 mode_context,
                                 request.message,
                                 planning_context,
                                 build_validation_context,
                                 read_only_validation_context,
+                                trace,
                             )
-                            if corrected_message
-                            else violations
-                        )
+                        else:
+                            corrected_violations = violations
                         if corrected_message and not corrected_violations:
                             message = corrected_message
                             trace["planning_correction"]["succeeded"] = True
@@ -748,6 +798,13 @@ class RecommendationService:
                             trace["planning_correction"]["remaining_violation_codes"] = [
                                 value.code for value in corrected_violations
                             ]
+                            trace["ownership_validation"]["fallback_due_to_ownership"] = bool(
+                                fallback_kind in {"evidence", "grounding_safety"}
+                                and any(
+                                    value.code == "unsupported_ownership_claim"
+                                    for value in corrected_violations
+                                )
+                            )
                             if fallback_kind == "evidence":
                                 message = quality_validator.safe_build_answer(
                                     build_validation_context
@@ -835,7 +892,21 @@ class RecommendationService:
                         trace["emitted_status_categories"] = list(stream_status.emitted_categories)
                     if category == "guardian" and refresh_guardian is not None:
                         context = await refresh_guardian(call.name)
-                        guardian_tools = GuardianToolService(context)
+                        conversation_scope = resolve_conversation_scope(
+                            context,
+                            previous_character,
+                            preference_context.character,
+                            chosen_this_turn=chosen_this_turn,
+                        )
+                        build_validation_context.active_character = conversation_scope.active
+                        guardian_tools = GuardianToolService(
+                            context,
+                            conversation_scope.explicit_class,  # type: ignore[arg-type]
+                        )
+                        current_character = resolve_current_character(context)
+                        trace["current_character"] = self._current_character_trace(
+                            current_character, character_scope
+                        )
                         if planning_context is not None:
                             planning_context = build_session_planning_context(
                                 context,
@@ -855,6 +926,7 @@ class RecommendationService:
                                     mode_context,
                                     build_request_context,
                                     title_request_context,
+                                    current_character,
                                 ),
                                 core_grounding,
                             )
@@ -872,6 +944,10 @@ class RecommendationService:
                         trace,
                         call.name,
                         result,
+                        {
+                            value.character_id: value.class_name
+                            for value in guardian_tools.context.characters
+                        },
                     )
                     if call.name == "find_build_alternatives" and call.name in forced_evidence:
                         # Observability only: never alters answers, validation, or tool choice.
@@ -887,6 +963,15 @@ class RecommendationService:
                     if call.name == "get_title_progress" and "error" not in result:
                         trace["title_progress"]["retrieval_used"] = True
                     trace["tools"].append(call.name)
+                    selection = self._character_selection_trace(
+                        call.name,
+                        call.arguments,
+                        character_scope,
+                        current_character,
+                        conversation_scope.explicit_class,
+                    )
+                    if selection is not None:
+                        trace["character_selections"].append(selection)
                     tool_trace = self._safe_tool_trace(
                         call.name,
                         category,
@@ -1130,6 +1215,7 @@ class RecommendationService:
         trace: dict[str, Any],
         tool_name: str,
         result: dict[str, Any],
+        character_classes: dict[str, str] | None = None,
     ) -> None:
         if tool_name not in {
             "analyze_current_build",
@@ -1141,6 +1227,8 @@ class RecommendationService:
             return
         if "error" in result:
             return
+        # Equipped, analyzed, and inventory results each prove possession of what they list.
+        record_ownership_evidence(context.ownership, tool_name, result, character_classes)
         if tool_name in {"analyze_current_build", "get_build_details", "get_equipped_loadout"}:
             context.guardian_build_data_used = True
         if tool_name == "analyze_current_build":
@@ -1293,6 +1381,221 @@ class RecommendationService:
             getattr(provider, "knowledge_category", None) == LIVE_PROVIDER_CATEGORY
             for provider in providers
         )
+
+    @staticmethod
+    def _check_answer(
+        quality_validator: ResponseQualityValidator,
+        message: str,
+        stage: str,
+        mode_context: ResponseModeContext,
+        user_message: str,
+        planning_context: SessionPlanningContext | None,
+        build_context: BuildResponseValidationContext,
+        read_only_context: ReadOnlyActionValidationContext,
+        trace: dict[str, Any],
+    ) -> tuple[str, list[Any]]:
+        """Validate an answer; repair removable unsupported possession wording in build turns.
+
+        A possession or "equipped" sentence that no Guardian result supports is removed on its
+        own when it is not part of a recommendation, so a grounded build answer is not
+        replaced by a generic refusal. Everything else keeps its fail-closed handling. This
+        never calls tools or the model.
+        """
+
+        violations = quality_validator.validate(
+            message,
+            mode_context,
+            user_message,
+            planning_context,
+            build_context,
+            read_only_context,
+        )
+        if not build_context.is_build_request:
+            return message, violations
+        claims = quality_validator.ownership_claims(message, build_context)
+        removed: list[Any] = []
+        if any(value.code == "unsupported_ownership_claim" for value in violations):
+            repaired, removed = quality_validator.repair_ownership(message, build_context)
+            if removed:
+                message = repaired
+                violations = quality_validator.validate(
+                    message,
+                    mode_context,
+                    user_message,
+                    planning_context,
+                    build_context,
+                    read_only_context,
+                )
+        # Which characters the recorded "equipped" evidence belongs to (classes only).
+        trace["ownership_validation"]["equipped_evidence_characters"] = (
+            build_context.ownership.equipped_characters()
+        )
+        trace["ownership_validation"]["passes"].append(
+            {
+                "stage": stage,
+                "claims": [
+                    value.trace(
+                        "removed"
+                        if value in removed
+                        else "kept"
+                        if value.supported
+                        else "unsupported"
+                    )
+                    for value in claims[:MAX_TRACED_OWNERSHIP_CLAIMS]
+                ],
+                "claims_total": len(claims),
+                "active_character": build_context.active_character,
+                "repaired": bool(removed),
+                "removed_claims": len(removed),
+                "remaining_violation_codes": [value.code for value in violations],
+            }
+        )
+        return message, violations
+
+    def _switch_continues_planning(
+        self,
+        history: list[ChatTurn],
+        scope: ConversationScope,
+        derivation: SessionPreferenceDerivation,
+    ) -> bool:
+        """A character switch in a planning conversation is itself a planning request.
+
+        "Switch to my Hunter" has no time or planning words, but it asks for the same plan on
+        another character, so the planning context must be rebuilt for that character.
+        """
+
+        if not (scope.switched and scope.source == "explicit_prompt"):
+            return False
+        # An earlier character choice alone is not a planning conversation; a planning request
+        # or a real session constraint (time, goal, fireteam, mode, intensity) is.
+        prior = derive_session_preferences(history, "").preferences
+        return bool(
+            prior.time_minutes is not None
+            or prior.primary_goal != "unspecified"
+            or prior.fireteam != "unspecified"
+            or prior.activity_mode != "unspecified"
+            or prior.intensity != "unspecified"
+            or prior.duration_preference != "unspecified"
+            or prior.exclusions
+            or any(
+                turn.role == "user" and self._is_session_planning(turn.content) for turn in history
+            )
+        )
+
+    @staticmethod
+    def _scoped_history(
+        history: list[ChatTurn], scope: ConversationScope
+    ) -> tuple[list[dict[str, Any]], int]:
+        """History for the model with other characters' earlier replies removed.
+
+        An assistant reply was written for whichever character the conversation was scoped to
+        when it was sent. If that is not the active character, its quests, builds, and gear
+        claims are stale for this conversation, so the reply is replaced by a placeholder and
+        cannot be reused. The user's own turns are kept: they carry the constraints.
+        """
+
+        items: list[dict[str, Any]] = []
+        removed = 0
+        for index, turn in enumerate(history):
+            if turn.role == "assistant" and scope.active:
+                stated = derive_session_preferences(history[:index], "").preferences.character
+                written_for = stated if stated != "unspecified" else scope.bungie_current
+                if written_for and written_for != scope.active:
+                    items.append(
+                        {
+                            "role": "assistant",
+                            "content": (
+                                f"(An earlier reply about the player's {written_for} is omitted: "
+                                f"this conversation is now about the {scope.active}.)"
+                            ),
+                        }
+                    )
+                    removed += 1
+                    continue
+            items.append({"role": turn.role, "content": turn.content})
+        return items, removed
+
+    @staticmethod
+    def _conversation_scope_trace(
+        scope: ConversationScope,
+        *,
+        planning_continuation: bool,
+        planning_rebuilt: bool,
+        stale_turns_removed: int,
+    ) -> dict[str, Any]:
+        return {
+            "bungie_current": scope.bungie_current,
+            "active": scope.active,
+            "source": scope.source,
+            "previous_active": scope.previous_active,
+            "switched": scope.switched,
+            "planning_continuation": planning_continuation,
+            "planning_context_rebuilt": planning_rebuilt,
+            "stale_context_removed": {"assistant_turns": stale_turns_removed},
+        }
+
+    @staticmethod
+    def _current_character_trace(
+        current: CurrentCharacter | None, explicit_scope: str | None
+    ) -> dict[str, Any]:
+        """Why the current character is what it is; never alters tool behavior."""
+
+        if current is None:
+            return {"resolved": False, "explicit_user_scope": explicit_scope}
+        return {
+            "resolved": True,
+            "character_ref": hashlib.sha256(current.character_id.encode()).hexdigest()[:10],
+            "class": current.class_name,
+            "reason": current.reason,
+            "last_played": current.last_played.isoformat() if current.last_played else None,
+            "candidates": current.candidates,
+            "explicit_user_scope": explicit_scope,
+        }
+
+    @staticmethod
+    def _character_selection_trace(
+        tool_name: str,
+        arguments_json: str,
+        explicit_scope: str | None,
+        current: CurrentCharacter | None,
+        conversation_class: str | None = None,
+    ) -> dict[str, Any] | None:
+        """How one character-scoped Guardian call chose its character."""
+
+        try:
+            arguments = json.loads(arguments_json)
+        except (json.JSONDecodeError, TypeError):
+            return None
+        if not isinstance(arguments, dict) or not (
+            "character_id" in arguments or "character_class" in arguments
+        ):
+            return None
+        source = selector_source(arguments.get("character_id"), arguments.get("character_class"))
+        unspecified = source == "unspecified"
+        conversation_default = bool(
+            unspecified
+            and conversation_class
+            and tool_name in (CURRENT_DEFAULT_TOOLS | CONVERSATION_SCOPED_TOOLS)
+        )
+        defaulted = unspecified and tool_name in CURRENT_DEFAULT_TOOLS and not conversation_default
+        selected_class = arguments.get("character_class")
+        return {
+            "tool": tool_name,
+            "selector": (
+                "conversation_default"
+                if conversation_default
+                else "current_default"
+                if defaulted
+                else "all_characters"
+                if source == "unspecified"
+                else source
+            ),
+            "class": selected_class if isinstance(selected_class, str) else None,
+            "used_current_class": current.class_name if defaulted and current else None,
+            "used_conversation_class": conversation_class if conversation_default else None,
+            # A class chosen with no class named by the user is a model guess.
+            "class_without_user_scope": bool(source == "explicit_class" and explicit_scope is None),
+        }
 
     def _core_engine(self) -> DestinyKnowledgeEngine | None:
         providers = getattr(self.knowledge, "providers", None) or []
@@ -1608,6 +1911,7 @@ class RecommendationService:
         mode_context: ResponseModeContext,
         build_request_context: BuildRequestContext,
         title_request_context: TitleRequestContext,
+        current_character: CurrentCharacter | None = None,
     ) -> str:
         routing: list[str] = [response_mode_instruction(mode_context)]
         if session_planning:
@@ -1625,6 +1929,13 @@ class RecommendationService:
                 "class as the default or backup unless switching is necessary to answer the "
                 f"request. Pass character_class={character_scope} and character_id=null to "
                 "character-scoped Guardian tools; do not ask the user for an ID."
+            )
+        elif current_character is not None:
+            routing.append(
+                f"Current character (most recently played): {current_character.class_name}. "
+                "When the user does not name a character, pass null for both character_id "
+                "and character_class so Guardian tools use it; never guess a class. If the "
+                "user names a character, that explicit choice wins."
             )
         if planning_context is not None:
             routing.append(

@@ -16,6 +16,7 @@ from app.character_selection import (
     CharacterNotFoundError,
     GuardianCharacterResolver,
     GuardianToolError,
+    resolve_current_character,
 )
 from app.content_progression import ContentProgressionResolver
 from app.models import (
@@ -77,16 +78,42 @@ def _nullable_string(description: str) -> dict[str, Any]:
     return {"type": ["string", "null"], "description": description}
 
 
-def _character_selector(*, optional: bool) -> dict[str, Any]:
+CURRENT_CHARACTER_NOTE = (
+    "When both selectors are null, the player's current (most recently played) character is "
+    "used; pass a selector only when the user names a character."
+)
+# Character-scoped tools that fall back to the current character when no selector is given.
+CURRENT_DEFAULT_TOOLS = frozenset(
+    {
+        "get_equipped_loadout",
+        "get_build_details",
+        "analyze_current_build",
+        "find_build_alternatives",
+    }
+)
+
+
+# Per-character views whose unspecified selector means the conversation's explicit character.
+CONVERSATION_SCOPED_TOOLS = frozenset(
+    {"get_active_quests", "get_available_activities", "get_recent_activities"}
+)
+
+
+def _character_selector(*, optional: bool, current_default: bool = False) -> dict[str, Any]:
     scope = "or null for every character" if optional else "or null when character_class is used"
+    if current_default:
+        scope = "or null to use the current character"
+    class_note = (
+        "Character class selector, or null. Do not provide this together with character_id."
+    )
+    if current_default:
+        class_note = f"{class_note} {CURRENT_CHARACTER_NOTE}"
     return {
         "character_id": _nullable_string(f"Opaque character ID, {scope}."),
         "character_class": {
             "type": ["string", "null"],
             "enum": ["Titan", "Hunter", "Warlock", None],
-            "description": (
-                "Character class selector, or null. Do not provide this together with character_id."
-            ),
+            "description": class_note,
         },
     }
 
@@ -114,8 +141,9 @@ GUARDIAN_TOOL_DEFINITIONS: list[dict[str, Any]] = [
     ),
     _strict_tool(
         "get_equipped_loadout",
-        "Get one character's equipped weapons, armor, subclass, stats, and socketed perks.",
-        _character_selector(optional=False),
+        "Get one character's equipped weapons, armor, subclass, stats, and socketed perks. "
+        "Defaults to the current character.",
+        _character_selector(optional=False, current_default=True),
     ),
     _strict_tool(
         "get_active_quests",
@@ -201,8 +229,9 @@ GUARDIAN_TOOL_DEFINITIONS: list[dict[str, Any]] = [
     ),
     _strict_tool(
         "get_build_details",
-        "Get a build-focused subclass, exotic, weapon perk, armor stat, and mod view.",
-        _character_selector(optional=False),
+        "Get a build-focused subclass, exotic, weapon perk, armor stat, and mod view. "
+        "Defaults to the current character.",
+        _character_selector(optional=False, current_default=True),
     ),
 ]
 
@@ -224,9 +253,14 @@ REQUEST_MODELS: dict[str, type[ToolRequest]] = {
 class GuardianToolService:
     """Read-only, bounded queries over one already-normalized GuardianContext."""
 
-    def __init__(self, context: GuardianContext) -> None:
+    def __init__(
+        self, context: GuardianContext, active_character: CharacterClass | None = None
+    ) -> None:
         self.context = context
-        self.characters = GuardianCharacterResolver(context)
+        # The character the user explicitly chose for this conversation, if any. Calls that
+        # name no selector use it instead of reverting to the most recently played character.
+        self.active_character = active_character
+        self.characters = GuardianCharacterResolver(context, active_character)
 
     @staticmethod
     def definitions() -> list[dict[str, Any]]:
@@ -235,10 +269,14 @@ class GuardianToolService:
     def execute(self, name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
         if name == "analyze_current_build":
             request = AnalyzeCurrentBuildRequest.model_validate(arguments or {})
-            return BuildAnalysisService(self.context).analyze_current_build(request)
+            return BuildAnalysisService(self.context, self.active_character).analyze_current_build(
+                request
+            )
         if name == "find_build_alternatives":
             request = FindBuildAlternativesRequest.model_validate(arguments or {})
-            return BuildAnalysisService(self.context).find_build_alternatives(request)
+            return BuildAnalysisService(
+                self.context, self.active_character
+            ).find_build_alternatives(request)
         request_model = REQUEST_MODELS.get(name)
         if request_model is None:
             raise UnknownGuardianToolError(f"Unknown Guardian tool: {name}")
@@ -288,7 +326,14 @@ class GuardianToolService:
         self,
         character_id: str | None,
         character_class: CharacterClass | None = None,
+        *,
+        scoped_default: bool = False,
     ) -> list[CharacterSummary]:
+        # Quest, activity, and recent-activity views are per character. Inside a conversation
+        # scoped to one character, an unspecified selector means that character rather than
+        # every character, so another character's quests cannot leak into the answer.
+        if scoped_default and character_id is None and character_class is None:
+            character_class = self.active_character
         return self.characters.resolve_many(
             character_id=character_id,
             character_class=character_class,
@@ -345,6 +390,8 @@ class GuardianToolService:
         character_class: CharacterClass | None = None,
     ) -> dict[str, Any]:
         characters = []
+        current = resolve_current_character(self.context)
+        current_id = current.character_id if current else None
         for character in self._characters(character_id, character_class):
             characters.append(
                 {
@@ -354,6 +401,7 @@ class GuardianToolService:
                     "last_played": (
                         character.last_played.isoformat() if character.last_played else None
                     ),
+                    "is_current": character.character_id == current_id,
                     "subclass": character.subclass.name if character.subclass else None,
                     "equipped_weapons": [
                         item.name for item in character.equipped_gear if item.item_type == "Weapon"
@@ -366,7 +414,10 @@ class GuardianToolService:
                     ],
                 }
             )
-        return {"characters": characters}
+        return {
+            "characters": characters,
+            "current_character": current.class_name if current else None,
+        }
 
     def get_equipped_loadout(
         self,
@@ -376,6 +427,7 @@ class GuardianToolService:
         character = self.characters.resolve_one(
             character_id=character_id,
             character_class=character_class,
+            default_to_current=True,
         )
         weapons = [item for item in character.equipped_gear if item.item_type == "Weapon"]
         armor = [item for item in character.equipped_gear if item.item_type == "Armor"]
@@ -407,7 +459,7 @@ class GuardianToolService:
         character_class: CharacterClass | None = None,
     ) -> dict[str, Any]:
         quests: list[dict[str, Any]] = []
-        for character in self._characters(character_id, character_class):
+        for character in self._characters(character_id, character_class, scoped_default=True):
             for quest in character.quests:
                 if quest.completed and quest.redeemed:
                     continue
@@ -472,7 +524,7 @@ class GuardianToolService:
         character_class: CharacterClass | None = None,
     ) -> dict[str, Any]:
         merged: dict[int, dict[str, Any]] = {}
-        for character in self._characters(character_id, character_class):
+        for character in self._characters(character_id, character_class, scoped_default=True):
             for activity in character.available_activities:
                 if not activity.is_visible:
                     continue
@@ -537,7 +589,7 @@ class GuardianToolService:
     ) -> dict[str, Any]:
         activities = [
             value
-            for character in self._characters(character_id, character_class)
+            for character in self._characters(character_id, character_class, scoped_default=True)
             for value in character.recent_activities
         ]
         activities.sort(
@@ -794,6 +846,7 @@ class GuardianToolService:
         character = self.characters.resolve_one(
             character_id=character_id,
             character_class=character_class,
+            default_to_current=True,
         )
         loadout = self.get_equipped_loadout(character.character_id)
         exotics = [

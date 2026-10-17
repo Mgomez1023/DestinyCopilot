@@ -51,14 +51,16 @@ BUILD_TOOL_DEFINITIONS = [
         ),
         {
             "character_id": _nullable_string(
-                "Opaque character ID, or null when character_class is provided."
+                "Opaque character ID, or null to use the current character."
             ),
             "character_class": {
                 "type": ["string", "null"],
                 "enum": ["Titan", "Hunter", "Warlock", None],
                 "description": (
                     "Character class selector, or null when character_id is provided. "
-                    "Provide exactly one selector."
+                    "Provide at most one selector. When both are null, the player's current "
+                    "(most recently played) character is used; pass a selector only when the "
+                    "user names a character."
                 ),
             },
             "goal": _nullable_string("Build goal such as solo PvE or boss DPS, or null."),
@@ -83,14 +85,16 @@ BUILD_TOOL_DEFINITIONS = [
         ),
         {
             "character_id": _nullable_string(
-                "Opaque character ID, or null when character_class is provided."
+                "Opaque character ID, or null to use the current character."
             ),
             "character_class": {
                 "type": ["string", "null"],
                 "enum": ["Titan", "Hunter", "Warlock", None],
                 "description": (
                     "Character class selector, or null when character_id is provided. "
-                    "Provide exactly one selector."
+                    "Provide at most one selector. When both are null, the player's current "
+                    "(most recently played) character is used; pass a selector only when the "
+                    "user names a character."
                 ),
             },
             "slot": _nullable_string("Equipment bucket/slot filter, or null."),
@@ -724,14 +728,17 @@ def _equipped_exotics(character: CharacterSummary) -> list[ItemSummary]:
 class BuildAnalysisService:
     """Build facts and owned alternatives without a universal quality score."""
 
-    def __init__(self, context: GuardianContext) -> None:
+    def __init__(
+        self, context: GuardianContext, active_character: CharacterClass | None = None
+    ) -> None:
         self.context = context
-        self.characters = GuardianCharacterResolver(context)
+        self.characters = GuardianCharacterResolver(context, active_character)
 
     def analyze_current_build(self, request: AnalyzeCurrentBuildRequest) -> dict[str, Any]:
         character = self.characters.resolve_one(
             character_id=request.character_id,
             character_class=request.character_class,
+            default_to_current=True,
         )
         character_id = character.character_id
         items = [item for item in character.equipped_gear if item.item_type in {"Weapon", "Armor"}][
@@ -894,6 +901,7 @@ class BuildAnalysisService:
         character = self.characters.resolve_one(
             character_id=request.character_id,
             character_class=request.character_class,
+            default_to_current=True,
         )
         character_id = character.character_id
         equipped_exotics = _equipped_exotics(character)

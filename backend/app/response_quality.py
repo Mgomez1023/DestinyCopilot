@@ -5,6 +5,14 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from app.build_analysis import is_explicit_build_request
+from app.ownership_evidence import (
+    OwnershipClaim,
+    OwnershipEvidence,
+    evidence_summary,
+    find_ownership_claims,
+    repair_unsupported_ownership,
+    unsupported_claims,
+)
 from app.session_planning import (
     PlanningAnswerValidator,
     PlanningViolation,
@@ -129,10 +137,58 @@ class BuildResponseValidationContext(BaseModel):
     equipped_exotic_armor: list[str] = Field(default_factory=list)
     owned_exotic_weapons: list[str] = Field(default_factory=list)
     owned_exotic_armor: list[str] = Field(default_factory=list)
+    # Items proven possessed or equipped by trusted Guardian results (not effects or meta).
+    ownership: OwnershipEvidence = Field(default_factory=OwnershipEvidence)
+    # The character this conversation is about; "equipped" claims must be proven for it.
+    active_character: str | None = None
     current_external_grounding: bool = False
     activity_mode: str = "unspecified"
     fireteam: str = "unspecified"
     normal_change_limit: int | None = 3
+
+
+_ALWAYS_CURRENT = re.compile(
+    r"\b(?:meta|currently strongest|current(?:ly)? best|nerfed|buffed|current artifact|"
+    r"this season(?:'s)? best)\b",
+    re.IGNORECASE,
+)
+_BEST_DPS = re.compile(r"\bbest dps\b", re.IGNORECASE)
+_SUPERLATIVE_OPTION = re.compile(
+    r"\b(?:best|top|highest|strongest|most powerful|optimal)\b(?:\s+\w+){0,3}?\s+"
+    r"(?:weapons?|options?|builds?|dps|damage|picks?|choices?|exotics?|loadouts?|"
+    r"subclass(?:es)?|perks?)\b",
+    re.IGNORECASE,
+)
+_TIME_ANCHOR = re.compile(
+    r"\b(?:right now|currently|this season|this week|this patch|at the moment|these days|"
+    r"in the current|today)\b",
+    re.IGNORECASE,
+)
+# Wording that compares things within the player's own build rather than the game at large.
+_RELATIVE_TO_PLAYER = re.compile(
+    r"\byour\b|\byou(?:'ve| have| own| run| use)\b|\bequipped\b", re.IGNORECASE
+)
+_SENTENCE_BREAK = re.compile(r"(?<=[.!?])\s+|\n+")
+
+
+def _has_current_claim(answer: str) -> bool:
+    """Whether the answer asserts something about the current game state or meta.
+
+    Ordinary build analysis ("your weakest stat", "this slot contributes the least", "your
+    best DPS is the rocket you have equipped") is not a current claim. Absolute superlatives
+    about options in the game are, when time-anchored ("top PvE option right now").
+    """
+
+    for sentence in _SENTENCE_BREAK.split(answer):
+        if _ALWAYS_CURRENT.search(sentence):
+            return True
+        relative = bool(_RELATIVE_TO_PLAYER.search(sentence))
+        anchored = bool(_TIME_ANCHOR.search(sentence))
+        if _BEST_DPS.search(sentence) and (anchored or not relative):
+            return True
+        if _SUPERLATIVE_OPTION.search(sentence) and anchored and not relative:
+            return True
+    return False
 
 
 class ReadOnlyActionValidationContext(BaseModel):
@@ -552,19 +608,21 @@ class ResponseQualityValidator:
                     ),
                 )
             )
-        ownership_claim = re.search(
-            r"\b(?:you|your (?:guardian|titan|hunter|warlock))\s+"
-            r"(?:already\s+)?(?:own|have|possess)\b",
-            answer,
-            re.IGNORECASE,
+        # A possession or "equipped" claim about a named item needs Guardian evidence for that
+        # item (equipped loadout, current-build analysis, or inventory results). Wording that
+        # names no item ("you have high Grenade") is not a claim.
+        unsupported = unsupported_claims(
+            find_ownership_claims(answer, context.ownership, context.active_character)
         )
-        if ownership_claim and not context.inventory_ownership_checked:
+        if unsupported:
+            listed = ", ".join(dict.fromkeys(value.item for value in unsupported))
             violations.append(
                 PlanningViolation(
                     code="unsupported_ownership_claim",
                     correction=(
-                        "Remove ownership claims that are not backed by the owned-inventory "
-                        "results. Separate verified owned options from aspirational items."
+                        "Delete the statements that say the player has, owns, or has equipped: "
+                        f"{listed}. No Guardian result proves that. Keep the rest of the answer; "
+                        "separate verified owned options from aspirational items."
                     ),
                 )
             )
@@ -584,13 +642,7 @@ class ResponseQualityValidator:
                     )
                 )
 
-        current_claim = re.search(
-            r"\b(?:meta|best dps|currently strongest|current(?:ly)? best|"
-            r"nerfed|buffed|current artifact|this season(?:'s)? best)\b",
-            answer,
-            re.IGNORECASE,
-        )
-        if current_claim and not context.current_external_grounding:
+        if not context.current_external_grounding and _has_current_claim(answer):
             violations.append(
                 PlanningViolation(
                     code="ungrounded_current_build_claim",
@@ -799,5 +851,30 @@ class ResponseQualityValidator:
         )
 
     @staticmethod
-    def correction_instruction(violations: list[PlanningViolation]) -> str:
-        return PlanningAnswerValidator.correction_instruction(violations)
+    def correction_instruction(
+        violations: list[PlanningViolation],
+        build_context: BuildResponseValidationContext | None = None,
+    ) -> str:
+        """The no-tools correction request, with the possession facts already established."""
+
+        instruction = PlanningAnswerValidator.correction_instruction(violations)
+        if build_context is None or not build_context.is_build_request:
+            return instruction
+        summary = evidence_summary(build_context.ownership, build_context.active_character)
+        return f"{instruction} {summary}".strip() if summary else instruction
+
+    @staticmethod
+    def ownership_claims(
+        answer: str, context: BuildResponseValidationContext
+    ) -> list[OwnershipClaim]:
+        return find_ownership_claims(answer, context.ownership, context.active_character)
+
+    @staticmethod
+    def repair_ownership(
+        answer: str, context: BuildResponseValidationContext
+    ) -> tuple[str, list[OwnershipClaim]]:
+        """Remove only removable unsupported possession sentences; never rewrites the rest."""
+
+        return repair_unsupported_ownership(
+            answer, find_ownership_claims(answer, context.ownership, context.active_character)
+        )
