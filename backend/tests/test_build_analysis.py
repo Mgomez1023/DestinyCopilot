@@ -9,7 +9,13 @@ import pytest
 from pydantic import ValidationError
 
 from app import response_quality, session_planning
-from app.ai import MAX_TOOL_CALLS, MAX_TOOL_ROUNDS, SYSTEM_INSTRUCTIONS, RecommendationService
+from app.ai import (
+    FINAL_ROUND_LIMITATION_MESSAGE,
+    MAX_TOOL_CALLS,
+    MAX_TOOL_ROUNDS,
+    SYSTEM_INSTRUCTIONS,
+    RecommendationService,
+)
 from app.build_analysis import (
     AnalyzeCurrentBuildRequest,
     BuildAnalysisService,
@@ -1595,7 +1601,7 @@ async def test_failed_forced_evidence_call_is_not_forced_twice() -> None:
     assert responses.requests[1]["tool_choice"] == "auto"
 
 
-def test_title_forcing_keeps_priority_and_final_round_is_never_forced() -> None:
+def test_title_forcing_keeps_priority_and_final_round_allows_no_tools() -> None:
     title = TitleRequestContext(
         title_intent_present=True, intent_resolved=True, retrieval_required=True
     )
@@ -1612,7 +1618,7 @@ def test_title_forcing_keeps_priority_and_final_round_is_never_forced() -> None:
         (),
     )
     assert choose(2, title, needs_both, set())[0] == BOTH_EVIDENCE_CHOICE
-    assert choose(MAX_TOOL_ROUNDS, no_title, needs_both, set()) == ("auto", ())
+    assert choose(MAX_TOOL_ROUNDS, no_title, needs_both, set()) == ("none", ())
     already = {"analyze_current_build", "find_build_alternatives"}
     assert choose(1, no_title, needs_both, already) == ("auto", ())
     assert choose(1, no_title, BuildResponseValidationContext(), set()) == ("auto", ())
@@ -1625,11 +1631,16 @@ def test_evidence_forcing_does_not_change_tool_budgets() -> None:
 
 @pytest.mark.asyncio
 async def test_forced_evidence_still_respects_the_tool_round_limit() -> None:
-    looping = [[_call("get_character_summary", TITAN, f"loop-{index}")] for index in range(4)]
+    looping = [[_call("get_character_summary", TITAN, f"loop-{index}")] for index in range(3)]
     looping[0] = [ANALYZE_CALL, FIND_CALL]
 
-    with pytest.raises(RuntimeError, match="did not finish"):
-        await _chat("Anything better in my vault?", looping)
+    answer, responses, trace = await _chat(
+        "Anything better in my vault?", [*looping, [_answer("Best from what I checked: Sunshot.")]]
+    )
+
+    assert len(responses.requests) == MAX_TOOL_ROUNDS
+    assert answer.message.startswith("Best from what I checked")
+    assert trace["tool_loop"]["round_limit_reached"] is True
 
 
 @pytest.mark.asyncio
@@ -1939,40 +1950,138 @@ async def test_full_loadout_tool_pressure_is_observable_without_budget_changes()
 
 
 @pytest.mark.asyncio
-async def test_full_loadout_that_exceeds_the_call_budget_is_traced() -> None:
-    with pytest.raises(RuntimeError, match="too many account tools"):
-        await _chat(
-            FULL_LOADOUT,
+async def test_full_loadout_that_exceeds_the_call_budget_answers_from_evidence() -> None:
+    answer, responses, trace = await _chat(
+        FULL_LOADOUT,
+        [
+            [ANALYZE_CALL, *(_find(f"weapon-{slot}", slot=slot) for slot in WEAPON_SLOTS)],
             [
-                [ANALYZE_CALL, *(_find(f"weapon-{slot}", slot=slot) for slot in WEAPON_SLOTS)],
-                [
-                    *(_find(f"armor-{slot}", slot=slot) for slot in ARMOR_SLOTS),
-                    _call("get_build_details", TITAN, "subclass-details"),
-                    _call("get_equipped_loadout", TITAN, "loadout-details"),
-                ],
+                *(_find(f"armor-{slot}", slot=slot) for slot in ARMOR_SLOTS),
+                _call("get_build_details", TITAN, "subclass-details"),
+                _call("get_equipped_loadout", TITAN, "loadout-details"),
             ],
-        )
+            [_answer("Weapons are verified; I could not check every armor slot.")],
+        ],
+    )
 
-    trace = _LAST_SERVICE["value"].latest_trace()
+    assert answer.message.startswith("Weapons are verified")
     assert trace["tool_budget"]["limit_reached"] == "tool_calls"
     assert trace["tool_budget"]["tool_calls_used"] == MAX_TOOL_CALLS
-    assert trace["tool_budget"]["rounds_used"] == 2
+    assert trace["tool_budget"]["rounds_used"] == 3
+    assert responses.requests[2]["tool_choice"] == "none"
+    skipped = [
+        value
+        for value in responses.requests[2]["input"]
+        if isinstance(value, dict)
+        and value.get("type") == "function_call_output"
+        and "tool_budget_exhausted" in value["output"]
+    ]
+    assert len(skipped) == 1
+    assert trace["tool_loop"]["tool_limit_reached"] is True
+    assert trace["tool_loop"]["round_limit_reached"] is False
 
 
 @pytest.mark.asyncio
-async def test_sequential_full_loadout_that_exhausts_rounds_is_traced() -> None:
-    with pytest.raises(RuntimeError, match="did not finish"):
-        await _chat(
-            FULL_LOADOUT,
-            [
-                [ANALYZE_CALL],
-                [_find("weapon-kinetic", slot="Kinetic Weapons")],
-                [_find("weapon-energy", slot="Energy Weapons")],
-                [_find("weapon-power", slot="Power Weapons")],
-            ],
-        )
+async def test_sequential_full_loadout_that_exhausts_rounds_still_answers() -> None:
+    answer, responses, trace = await _chat(
+        FULL_LOADOUT,
+        [
+            [ANALYZE_CALL],
+            [_find("weapon-kinetic", slot="Kinetic Weapons")],
+            [_find("weapon-energy", slot="Energy Weapons")],
+            [_answer("Kinetic and Energy are checked; Power Weapons could not be verified.")],
+        ],
+    )
 
-    trace = _LAST_SERVICE["value"].latest_trace()
+    assert "could not be verified" in answer.message
+    assert len(responses.requests) == MAX_TOOL_ROUNDS
+    assert [value["tool_choice"] for value in responses.requests][-1] == "none"
     assert trace["tool_budget"]["limit_reached"] == "rounds"
     assert trace["tool_budget"]["rounds_used"] == MAX_TOOL_ROUNDS
-    assert trace["tool_budget"]["tool_calls_used"] == 4
+    loop = trace["tool_loop"]
+    assert loop["round_limit_reached"] is True
+    assert loop["tool_limit_reached"] is False
+    assert loop["final_answer_forced"] is True
+    assert loop["evidence_at_force"]["tool_calls_made"] == 3
+    assert loop["final_answer_succeeded"] is True
+    assert loop["final_answer_source"] == "model"
+
+
+LOOP_MESSAGES = [
+    "Is my Titan build good?",
+    "Anything better in my vault?",
+    "What should I do tonight on my Titan?",
+    "How does Sunshot work, and do I own it?",
+]
+
+
+@pytest.mark.parametrize("message", LOOP_MESSAGES)
+@pytest.mark.asyncio
+async def test_repeated_tool_requests_end_in_a_toolless_grounded_final_round(
+    message: str,
+) -> None:
+    looping = [[_call("get_character_summary", TITAN, f"loop-{index}")] for index in range(3)]
+    looping[0] = [ANALYZE_CALL, FIND_CALL]
+
+    answer, responses, trace = await _chat(message, [*looping, [_answer(GROUNDED_VAULT_ANSWER)]])
+
+    assert answer.message
+    assert len(responses.requests) == MAX_TOOL_ROUNDS
+    final = responses.requests[-1]
+    assert final["tool_choice"] == "none"
+    assert "no further tool calls are possible" in final["instructions"]
+    assert "do not invent" in final["instructions"]
+    assert all("no further tool calls" not in v["instructions"] for v in responses.requests[:-1])
+    assert trace["tool_loop"]["final_answer_forced"] is True
+    assert trace["tool_loop"]["final_answer_succeeded"] is True
+    assert trace["tool_loop"]["evidence_at_force"]["tool_calls_made"] == 4
+
+
+@pytest.mark.asyncio
+async def test_tool_calls_in_the_final_round_are_never_executed() -> None:
+    answer, responses, trace = await _chat(
+        "What should I do tonight on my Titan?",
+        [[_call("get_character_summary", TITAN, f"loop-{index}")] for index in range(4)],
+    )
+
+    assert answer.message == FINAL_ROUND_LIMITATION_MESSAGE
+    assert len(responses.requests) == MAX_TOOL_ROUNDS
+    assert trace["tool_budget"]["tool_calls_used"] == 3
+    assert trace["tool_loop"]["final_answer_succeeded"] is False
+    assert trace["tool_loop"]["final_answer_source"] == "limitation_fallback"
+
+
+@pytest.mark.asyncio
+async def test_insufficient_evidence_final_answer_is_a_limitation_not_invention() -> None:
+    limitation = "I could only verify your equipped Titan loadout; I couldn't check the vault."
+    looping = [[_call("get_character_summary", TITAN, f"loop-{index}")] for index in range(3)]
+
+    answer, _, trace = await _chat(
+        "What should I do tonight on my Titan?", [*looping, [_answer(limitation)]]
+    )
+
+    assert answer.message == limitation
+    assert trace["tool_loop"]["final_answer_succeeded"] is True
+
+
+@pytest.mark.parametrize("message", LOOP_MESSAGES)
+@pytest.mark.asyncio
+async def test_normal_two_and_three_round_flows_never_force_a_final_answer(message: str) -> None:
+    _, one, one_trace = await _chat(
+        message, [[ANALYZE_CALL, FIND_CALL], [_answer(GROUNDED_VAULT_ANSWER)]]
+    )
+    _, two, two_trace = await _chat(
+        message,
+        [
+            [ANALYZE_CALL, FIND_CALL],
+            [_call("get_character_summary", TITAN, "c1")],
+            [_answer(GROUNDED_VAULT_ANSWER)],
+        ],
+    )
+
+    assert len(one.requests) == 2 and len(two.requests) == 3
+    for trace, responses in ((one_trace, one), (two_trace, two)):
+        assert trace["tool_loop"]["final_answer_forced"] is False
+        assert trace["tool_loop"]["evidence_at_force"] is None
+        assert trace["tool_budget"]["limit_reached"] is None
+        assert all("no further tool calls" not in v["instructions"] for v in responses.requests)

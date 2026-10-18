@@ -293,6 +293,24 @@ response for the user. Do not end the turn with reasoning or tool calls only."""
 
 MAX_TOOL_ROUNDS = 4
 MAX_TOOL_CALLS = 10
+FINAL_ROUND_INSTRUCTION = (
+    "\n\nFinal answer round: no further tool calls are possible. Answer now using only the "
+    "evidence already gathered in this conversation. If that evidence is not enough to answer "
+    "fully, give the verified portion, say plainly what could not be checked, and do not "
+    "invent items, perks, ownership, or mechanics."
+)
+TOOL_BUDGET_EXHAUSTED_RESULT = {
+    "error": {
+        "code": "tool_budget_exhausted",
+        "message": "This lookup was not run because the tool budget is used up. Answer from "
+        "the evidence already gathered and state what could not be checked.",
+    }
+}
+FINAL_ROUND_LIMITATION_MESSAGE = (
+    "I gathered some of your account data but ran out of lookup budget before I could finish "
+    "a grounded answer, so I don't want to guess. Try a narrower question and I can check "
+    "that part directly."
+)
 MAX_CHAT_SOURCES = 8
 MAX_TRACE_ITEM_NAMES = 8
 TRACEABLE_GUARDIAN_TOOLS = {
@@ -589,6 +607,14 @@ class RecommendationService:
                 "tool_calls_used": 0,
                 "limit_reached": None,
             },
+            "tool_loop": {
+                "round_limit_reached": False,
+                "tool_limit_reached": False,
+                "final_answer_forced": False,
+                "evidence_at_force": None,
+                "final_answer_succeeded": None,
+                "final_answer_source": None,
+            },
         }
         live_topic = volatile_topic(request.message)
         if live_topic:
@@ -663,6 +689,27 @@ class RecommendationService:
                     build_validation_context,
                     forced_evidence_attempted,
                 )
+                # The last permitted round, or a spent tool budget, must produce the answer:
+                # no tools, answer from the evidence already gathered.
+                round_instructions = turn_instructions
+                final_forced = round_number >= MAX_TOOL_ROUNDS or (
+                    total_tool_calls >= MAX_TOOL_CALLS
+                )
+                if final_forced:
+                    tool_choice, forced_evidence = "none", ()
+                    round_instructions = turn_instructions + FINAL_ROUND_INSTRUCTION
+                    trace["tool_loop"].update(
+                        round_limit_reached=round_number >= MAX_TOOL_ROUNDS,
+                        tool_limit_reached=total_tool_calls >= MAX_TOOL_CALLS,
+                        final_answer_forced=True,
+                        evidence_at_force={
+                            "tool_calls_made": total_tool_calls,
+                            "tools": list(trace["tools"]),
+                        },
+                    )
+                    trace["tool_budget"]["limit_reached"] = (
+                        "tool_calls" if total_tool_calls >= MAX_TOOL_CALLS else "rounds"
+                    )
                 if forced_evidence:
                     trace["build_analysis"]["forced_evidence_tools"].extend(
                         value
@@ -672,7 +719,7 @@ class RecommendationService:
                 response = await self._create_response(
                     stream_status=stream_status,
                     model=self.settings.openai_model,
-                    instructions=turn_instructions,
+                    instructions=round_instructions,
                     input=input_items,
                     tools=tool_definitions,
                     include=RESPONSE_INCLUDE,
@@ -700,6 +747,9 @@ class RecommendationService:
                 function_calls = [
                     item for item in response_output if self._field(item, "type") == "function_call"
                 ]
+                if final_forced:
+                    # tool_choice="none" should yield no calls; never act on one if it appears.
+                    function_calls = []
                 if forced_evidence:
                     # Each evidence tool is forced at most once. With a two-tool choice, only
                     # the tools actually called count, so the other can be forced next round.
@@ -722,6 +772,13 @@ class RecommendationService:
                             message=unavailable_live_message(live_topic, provider_connected=True),
                         )
                     message = self._extract_assistant_text(response)
+                    if not message and final_forced:
+                        logger.error("Forced final round returned no assistant text")
+                        trace["tool_loop"]["final_answer_succeeded"] = False
+                        trace["tool_loop"]["final_answer_source"] = "limitation_fallback"
+                        trace["answer"] = "generated"
+                        self._store_trace(trace_id, trace)
+                        return ChatResponse(source="local", message=FINAL_ROUND_LIMITATION_MESSAGE)
                     if not message:
                         logger.error(
                             "OpenAI final response contained no assistant text; "
@@ -869,6 +926,9 @@ class RecommendationService:
                         allow_identifiers=bool(DEBUG_IDENTIFIER_PATTERN.search(request.message)),
                     )
                     self._record_destination_conflicts(core_grounding, message)
+                    if final_forced:
+                        trace["tool_loop"]["final_answer_succeeded"] = True
+                        trace["tool_loop"]["final_answer_source"] = "model"
                     trace["answer"] = "generated"
                     self._store_trace(trace_id, trace)
                     return ChatResponse(
@@ -880,10 +940,21 @@ class RecommendationService:
                 input_items.extend(self._normalize_replay_output_items(response_output))
                 trace["continuation_items_normalized"] = True
                 for call in function_calls:
-                    total_tool_calls += 1
-                    if total_tool_calls > MAX_TOOL_CALLS:
+                    if total_tool_calls >= MAX_TOOL_CALLS:
+                        # Over budget: skip the lookup but answer the call so the replay stays
+                        # valid; the next round is the tool-less final answer.
                         trace["tool_budget"]["limit_reached"] = "tool_calls"
-                        raise RuntimeError("The recommendation requested too many account tools.")
+                        input_items.append(
+                            {
+                                "type": "function_call_output",
+                                "call_id": call.call_id,
+                                "output": json.dumps(
+                                    TOOL_BUDGET_EXHAUSTED_RESULT, separators=(",", ":")
+                                ),
+                            }
+                        )
+                        continue
+                    total_tool_calls += 1
                     trace["tool_budget"]["tool_calls_used"] = total_tool_calls
                     category = self._knowledge_category(call.name) or "guardian"
                     if stream_status is not None:
@@ -1052,7 +1123,9 @@ class RecommendationService:
                         "build" if mode_context.mode == "build_advice" else "comparison"
                     )
                     trace["emitted_status_categories"] = list(stream_status.emitted_categories)
+            # Unreachable in practice: the last round is forced to answer and returns above.
             trace["tool_budget"]["limit_reached"] = "rounds"
+            trace["tool_loop"]["final_answer_succeeded"] = False
             raise RuntimeError("The recommendation did not finish its account lookup.")
         except OpenAIError as exc:
             logger.exception("OpenAI recommendation failed")
@@ -1865,13 +1938,13 @@ class RecommendationService:
 
         Title retrieval keeps first-round priority. Required build evidence is acquired up
         front instead of being requested later by a tool-less correction. Each evidence tool
-        is forced at most once, and the final round is never forced so the model can answer.
+        is forced at most once, and the final round allows no tools so the model must answer.
         """
 
         if round_number == 1 and title_request_context.retrieval_required:
             return {"type": "function", "name": "get_title_progress"}, ()
         if round_number >= MAX_TOOL_ROUNDS:
-            return "auto", ()
+            return "none", ()
         missing = tuple(
             name
             for name, required in (
