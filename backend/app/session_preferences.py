@@ -227,13 +227,18 @@ _GOAL_CLEAR: dict[PrimaryGoal, re.Pattern[str]] = {
     ),
 }
 
+# Shared "do not want this" lead-in, so "I don't feel like playing Crucible" excludes PvP the
+# way "no Crucible" does instead of being read as a request for it.
+_NEG = (
+    r"(?:no|avoid|skip|don'?t want(?: to (?:play|do))?|do not want(?: to (?:play|do))?|"
+    r"don'?t feel like(?: playing| doing)?|not (?:interested in|in the mood for)|"
+    r"sick of|tired of)"
+)
 _EXCLUSION_PATTERNS: dict[SessionExclusion, re.Pattern[str]] = {
-    "pvp": re.compile(
-        r"\b(?:no|avoid|don'?t want|not interested in)\s+(?:any\s+)?(?:pvp|crucible)\b", re.I
-    ),
-    "pve": re.compile(r"\b(?:no|avoid|don'?t want|not interested in)\s+(?:any\s+)?pve\b", re.I),
-    "dungeons": re.compile(r"\b(?:no|avoid|don'?t want)\s+(?:any\s+)?dungeons?\b", re.I),
-    "raids": re.compile(r"\b(?:no|avoid|don'?t want)(?:\s+to\s+do)?\s+(?:any\s+)?raids?\b", re.I),
+    "pvp": re.compile(rf"\b{_NEG}\s+(?:any\s+)?(?:pvp|crucible)\b", re.I),
+    "pve": re.compile(rf"\b{_NEG}\s+(?:any\s+)?pve\b", re.I),
+    "dungeons": re.compile(rf"\b{_NEG}\s+(?:any\s+)?dungeons?\b", re.I),
+    "raids": re.compile(rf"\b{_NEG}(?:\s+to\s+do)?\s+(?:any\s+)?raids?\b", re.I),
     "grinding": re.compile(
         r"\b(?:no|avoid|don'?t want)(?:\s+to)?\s+(?:grind|grinding|farm|farming)\b", re.I
     ),
@@ -341,7 +346,11 @@ def _apply_message(
     elif re.search(r"\b(?:something|make it|anything) shorter\b", message, re.I):
         context.duration_preference = "shorter"
         updates.add("duration_preference")
-    elif re.search(r"\b(?:a |something )?(?:short|quick) session\b", message, re.I):
+    elif re.search(
+        r"\b(?:a |something )?(?:short|quick) session\b|\b(?:something|anything) (?:quick|short)\b",
+        message,
+        re.I,
+    ):
         context.duration_preference = "short"
         updates.add("duration_preference")
     elif re.search(r"\b(?:a |something )?(?:long|extended) session\b", message, re.I):
@@ -465,3 +474,18 @@ def derive_session_preferences(
         current_turn_updates=ordered_updates,
         prior_context_present=prior_context_present,
     )
+
+
+def message_updates(message: str) -> set[PreferenceField]:
+    """Which preference fields this message alone states, regardless of conversation state."""
+
+    return _apply_message(SessionPreferenceContext(), message)[1]
+
+
+def replay_preferences(messages: Sequence[str]) -> SessionPreferenceContext:
+    """Preferences stated by exactly these user messages, in order."""
+
+    context = SessionPreferenceContext()
+    for message in messages:
+        context, _ = _apply_message(context, message)
+    return context

@@ -50,6 +50,7 @@ from app.live_knowledge import (
 )
 from app.models import ChatRequest, ChatResponse, ChatSource, ChatTurn, GuardianContext
 from app.ownership_evidence import record_ownership_evidence
+from app.planning_intent import classify_planning_intent, is_standalone_planning
 from app.response_quality import (
     BuildResponseValidationContext,
     ReadOnlyActionValidationContext,
@@ -342,25 +343,6 @@ UNSUPPORTED_POWER_PATTERN = re.compile(
     r"not high enough|must be|need(?:s)? to be|recommended power)\b",
     re.IGNORECASE | re.DOTALL,
 )
-SESSION_PLANNING_PATTERNS = (
-    re.compile(r"\bwhat should i (?:do|play|start)(?: next| on my \w+)?\b", re.IGNORECASE),
-    re.compile(
-        r"\bi (?:have|have got|got)\b.{0,24}\b(?:minutes?|mins?|hours?|hrs?)\b",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"\bi (?:just )?bought\b.{0,80}\b(?:dlcs?|expansions?|campaigns?)\b",
-        re.IGNORECASE,
-    ),
-    re.compile(r"\bshould i\b.{0,160}\bor\b", re.IGNORECASE),
-    re.compile(
-        r"\bi want\b.{0,80}\b(?:better gear|loot|rewards?|something chill|challenge|challenging)\b",
-        re.IGNORECASE,
-    ),
-    re.compile(r"\bgive me something\b", re.IGNORECASE),
-    re.compile(r"\b(?:what(?:'s| is) )?worth doing\b", re.IGNORECASE),
-    re.compile(r"\brecommend\b.{0,80}\b(?:activity|quest|campaign|play|do)\b", re.IGNORECASE),
-)
 TIME_INTENT_PATTERN = re.compile(
     r"\b(?:\d+|an?|one|half an?)\s*(?:minutes?|mins?|hours?|hrs?)\b|\btime[- ]limited\b",
     re.IGNORECASE,
@@ -487,14 +469,25 @@ class RecommendationService:
             intent_resolved=title_request_context.intent_resolved,
             lookup_required=title_request_context.retrieval_required,
         )
-        planning_continuation = self._switch_continues_planning(
-            request.history, conversation_scope, preference_derivation
+        planning_intent = classify_planning_intent(
+            request.history,
+            request.message,
+            character_switched=bool(
+                conversation_scope.switched and conversation_scope.source == "explicit_prompt"
+            ),
+            character=preference_context.character,
         )
-        session_planning = bool(
-            self._is_session_planning(request.message)
-            or preference_derivation.is_planning_followup
-            or planning_continuation
-        )
+        planning_continuation = planning_intent.kind == "character_switch"
+        session_planning = planning_intent.is_planning
+        if session_planning:
+            # Constraints come from this planning segment only; the character stays with the
+            # conversation scope above.
+            preference_context = planning_intent.preferences
+            preference_derivation = SessionPreferenceDerivation(
+                preferences=preference_context,
+                current_turn_updates=preference_derivation.current_turn_updates,
+                prior_context_present=preference_derivation.prior_context_present,
+            )
         mode_context = response_mode_context(
             request.message,
             session_planning=session_planning,
@@ -591,6 +584,9 @@ class RecommendationService:
                 ),
                 "requested_character_scope": character_scope,
             },
+            "planning_intent": planning_intent.trace(
+                context_rebuilt=bool(planning_continuation and conversation_scope.switched)
+            ),
             "planning_correction": {
                 "attempted": False,
                 "violation_codes": [],
@@ -1525,36 +1521,6 @@ class RecommendationService:
         )
         return message, violations
 
-    def _switch_continues_planning(
-        self,
-        history: list[ChatTurn],
-        scope: ConversationScope,
-        derivation: SessionPreferenceDerivation,
-    ) -> bool:
-        """A character switch in a planning conversation is itself a planning request.
-
-        "Switch to my Hunter" has no time or planning words, but it asks for the same plan on
-        another character, so the planning context must be rebuilt for that character.
-        """
-
-        if not (scope.switched and scope.source == "explicit_prompt"):
-            return False
-        # An earlier character choice alone is not a planning conversation; a planning request
-        # or a real session constraint (time, goal, fireteam, mode, intensity) is.
-        prior = derive_session_preferences(history, "").preferences
-        return bool(
-            prior.time_minutes is not None
-            or prior.primary_goal != "unspecified"
-            or prior.fireteam != "unspecified"
-            or prior.activity_mode != "unspecified"
-            or prior.intensity != "unspecified"
-            or prior.duration_preference != "unspecified"
-            or prior.exclusions
-            or any(
-                turn.role == "user" and self._is_session_planning(turn.content) for turn in history
-            )
-        )
-
     @staticmethod
     def _scoped_history(
         history: list[ChatTurn], scope: ConversationScope
@@ -1855,7 +1821,7 @@ class RecommendationService:
 
     @staticmethod
     def _is_session_planning(message: str) -> bool:
-        return any(pattern.search(message) for pattern in SESSION_PLANNING_PATTERNS)
+        return is_standalone_planning(message)
 
     @staticmethod
     def _intent_category(message: str) -> str:

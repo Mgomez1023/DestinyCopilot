@@ -500,12 +500,11 @@ def test_an_explicit_class_question_in_a_build_conversation_stays_a_build_turn()
     assert trace["conversation_scope"]["planning_continuation"] is False
 
 
-def test_a_session_constraint_without_planning_wording_still_makes_a_switch_continue_planning() -> (
-    None
-):
+def test_a_stray_constraint_without_a_planning_request_does_not_make_a_switch_planning() -> None:
     history = turns(("user", "Solo only please."), ("assistant", "Understood."))
 
     _, _, trace = chat(history, "Switch to my Warlock.")
 
-    assert trace["session_planning"] is True
-    assert trace["conversation_scope"]["planning_continuation"] is True
+    assert trace["session_planning"] is False
+    assert trace["conversation_scope"]["active"] == "Warlock"
+    assert trace["conversation_scope"]["planning_continuation"] is False
