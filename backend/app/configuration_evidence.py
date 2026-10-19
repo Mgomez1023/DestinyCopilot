@@ -14,6 +14,11 @@ set. `actionable` is always `unknown` in M5B: no fully verified configuration ch
 established, because material cost, armor energy, fragment slot capacity, activity restrictions
 and instance state are not read.
 
+Status of the underlying data: the shape of `profilePlugSets` / `characterPlugSets` follows
+Bungie's published API definitions. It has not been verified against a real Bungie profile
+response, so any missing, malformed or truncated data yields `unknown`, never an availability
+or absence claim.
+
 This is separate from `equipped_mechanics` and from M4's requirement fit, which describe the
 equipped loadout. Nothing here changes either.
 """
@@ -149,7 +154,10 @@ def scope_report(
     if evidence.unmatched_entries:
         report["not_in_manifest_set"] = evidence.unmatched_entries
     if evidence.omitted_entries:
+        # Truncated: the counts and lists below are lower bounds, and a plug that is not listed
+        # here may simply not have been retained. That is unknown, never verified absence.
         report["entries_not_retained"] = evidence.omitted_entries
+        report["counts_are_lower_bounds"] = True
     unreported = sum(value.can_insert is None for value in evidence.entries)
     if unreported:
         report["insertion_status_not_reported"] = unreported

@@ -933,3 +933,33 @@ def test_real_weapon_perk_sockets_are_not_treated_as_plug_set_evidence() -> None
 
     # Its perk columns draw on reusable items and randomized sets, not profile/character sets.
     assert {1, 2, 3, 4}.isdisjoint({v.socket_index for v in refs})
+
+
+# --- Truncation is never verified absence ---------------------------------------------------
+
+
+def test_a_truncated_set_reports_lower_bounds_and_unknown_for_unretained_plugs() -> None:
+    many = [entry(10_000 + index) for index in range(MAX_SET_ENTRIES + 25)]
+    profile = build_profile(profile_overrides={str(FRAGMENT_SET): many})
+    context = _normalize_profile(build_definitions(), profile)
+    titan = character_of(context, "Titan")
+
+    evidence = context.profile_plug_sets.get(FRAGMENT_SET)
+    assert evidence is not None and evidence.omitted_entries == 25
+    report = groups_by_category(titan, context)["FRAGMENTS"]["profile"]
+    assert report["entries_not_retained"] == 25 and report["counts_are_lower_bounds"] is True
+    assert report["listed"] == MAX_SET_ENTRIES + 25  # the total Bungie listed is still stated
+
+    # An equipped plug whose entry was not retained is unknown, not "not listed".
+    options = configuration_options(titan, context.profile_plug_sets)
+    fragment = next(v for v in options if v.plug_name == "Fragment Two")
+    unretained = [v for v in fragment.states if v.source.kind == "profile_plug_set"]
+    assert [v.state for v in unretained] == ["unknown"]
+    assert "account_listed" not in fragment.state_names()
+
+
+def test_an_untruncated_set_makes_no_lower_bound_claim() -> None:
+    context = normalized()
+    report = groups_by_category(character_of(context, "Titan"), context)["ASPECTS"]["profile"]
+
+    assert "counts_are_lower_bounds" not in report and "entries_not_retained" not in report

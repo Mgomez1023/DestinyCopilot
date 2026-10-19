@@ -6,6 +6,12 @@ with the ItemSockets component (305) and that the application previously discard
 * `profilePlugSets`:   {"data": {"plugs": {"<plugSetHash>": [DestinyItemPlug, ...]}}}
 * `characterPlugSets`: {"data": {"<characterId>": {"plugs": {"<plugSetHash>": [...]}}}}
 
+Unverified against a real response: this structure comes from Bungie's published API
+definitions (the OpenAPI schema), not from a live profile. Anything that does not match is
+treated as "not returned" (unknown), never as an empty or exhaustive set. Entries beyond the
+retention cap are counted in `omitted_entries`; a plug missing from the retained entries of a
+truncated set is unknown, not verified absent.
+
 Neither is a flat dictionary: a set's entries sit under `data.plugs[hash]`, and character sets
 add a character level. Each entry is a DestinyItemPlug (`plugItemHash`, `canInsert`, `enabled`,
 `insertFailIndexes`, `enableFailIndexes`). Everything here is pure: no network, no lookups. The
