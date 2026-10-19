@@ -11,6 +11,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.character_selection import CharacterClass, GuardianCharacterResolver
+from app.mechanics_evidence import effect_status, equipped_mechanics_section
 from app.models import (
     COSMETIC_PLUG_MARKERS,
     CharacterSummary,
@@ -666,26 +667,6 @@ def _same_text(left: str, right: str) -> bool:
     return bool(a) and bool(b) and (a == b or a in b or b in a)
 
 
-def effect_status(value: SocketedPlugSummary) -> str | None:
-    """Whether effect text exists, is verifiably absent, or was not retrieved.
-
-    None means the plug was normalized without equipped-plug evidence (a cosmetic, an empty
-    socket placeholder, or a context cached before this evidence existed).
-    """
-
-    evidence = value.evidence
-    if evidence is None:
-        return None
-    if value.description or any(perk.description for perk in value.sandbox_perks):
-        return "present"
-    if evidence.description == "definition_unavailable" or evidence.sandbox_perks in {
-        "unresolved",
-        "definition_unavailable",
-    }:
-        return "not_retrieved"
-    return "none_in_manifest"
-
-
 def _plug_mechanics(value: SocketedPlugSummary) -> dict[str, Any]:
     """Compact mechanics evidence for one equipped plug; empty when none was collected."""
 
@@ -1123,7 +1104,9 @@ class BuildAnalysisService:
             "limitations": limitations[:8],
             "scoring": "No universal numeric or tier score is produced.",
         }
-        return bound_plug_mechanics(result)
+        bound_plug_mechanics(result)
+        result["equipped_mechanics"] = equipped_mechanics_section(character)
+        return result
 
     def find_build_alternatives(self, request: FindBuildAlternativesRequest) -> dict[str, Any]:
         character = self.characters.resolve_one(

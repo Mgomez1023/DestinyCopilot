@@ -20,6 +20,7 @@ from app.character_selection import (
     resolve_current_character,
 )
 from app.content_progression import ContentProgressionResolver
+from app.mechanics_evidence import equipped_mechanics_section
 from app.models import (
     CharacterSummary,
     GuardianContext,
@@ -876,6 +877,8 @@ class GuardianToolService:
             "mods": groups["mods"],
             # Retrieved Manifest effect text for build-affecting equipped plugs, bounded.
             "equipped_plug_effects": equipped_plug_effects(character),
+            # Manifest socket structure joined with the equipped plugs, ranked and capped.
+            "equipped_mechanics": equipped_mechanics_section(character),
             # Weapon/armor perks and unclassified sockets; cosmetics are not build-affecting.
             "other_build_affecting_sockets": list(
                 dict.fromkeys(plug.name for plug in [*role_groups["perks"], *role_groups["other"]])

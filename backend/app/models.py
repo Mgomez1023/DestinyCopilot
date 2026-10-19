@@ -125,6 +125,39 @@ class SocketedPlugSummary(BaseModel):
 ClassRestriction = Literal["Titan", "Hunter", "Warlock", "Any"]
 
 
+class SocketConfigSummary(BaseModel):
+    """What an item *definition* declares about one socket (see socket_configuration).
+
+    Manifest structure only: it never says what a particular copy holds or what a player can
+    change. Empty fields are omitted on serialization.
+    """
+
+    index: int
+    category: str | None = None
+    classification: str
+    accepts: str | None = None
+    plug: str | None = None
+    initial_plug: str | None = None
+    pool_kind: str | None = None
+    options: int | None = None
+    rollable: int | None = None
+    distinct_names: int | None = None
+    set_hash: int | None = None
+    display_only: bool = False
+    sample: list[str] = Field(default_factory=list)
+    plug_sources: list[str] = Field(default_factory=list)
+
+    @model_serializer(mode="wrap")
+    def _omit_empty(self, handler: Any) -> dict[str, Any]:
+        data = handler(self)
+        return {
+            key: value
+            for key, value in data.items()
+            if key in {"index", "classification"} or value not in (None, [], False)
+        }
+
+
+SocketConfigStatus = Literal["verified", "partial", "no_sockets_declared"]
 EquipmentSlotState = Literal["known", "not_equippable", "unresolved", "not_collected"]
 _LOCATION_BUCKET_LOCATIONS = ("equipped", "character")
 
@@ -146,6 +179,9 @@ class ItemSummary(BaseModel):
     # implied by a set slot; "not_collected" marks payloads normalized before slots existed.
     equipment_slot: str | None = None
     equipment_slot_state: EquipmentSlotState = "not_collected"
+    # Manifest socket structure for equipped weapons and Exotic armor only; unset elsewhere.
+    socket_configuration: list[SocketConfigSummary] = Field(default_factory=list)
+    socket_configuration_status: SocketConfigStatus | None = None
     quantity: int = Field(default=1, ge=0)
     power: int | None = Field(default=None, ge=0)
     damage_type: str | None = None
@@ -180,6 +216,10 @@ class ItemSummary(BaseModel):
             data.pop("equipment_slot", None)
         if data.get("equipment_slot_state") in ("known", "not_collected"):
             data.pop("equipment_slot_state", None)
+        if not data.get("socket_configuration"):
+            data.pop("socket_configuration", None)
+        if data.get("socket_configuration_status") is None:
+            data.pop("socket_configuration_status", None)
         return data
 
     def gear_slot(self) -> str | None:

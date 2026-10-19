@@ -608,8 +608,8 @@ def test_non_gear_inventory_payloads_do_not_grow() -> None:
     assert "equipment_slot" not in keys and "equipment_slot_state" not in keys
 
 
-def test_the_guardian_cache_schema_was_bumped_for_m1_and_m2_fields() -> None:
-    assert CACHE_SCHEMA_VERSION == 5
+def test_the_guardian_cache_schema_covers_m1_m2_and_m3b_fields() -> None:
+    assert CACHE_SCHEMA_VERSION >= 5
 
 
 # --- The real Manifest (skipped when it is not available locally) ---

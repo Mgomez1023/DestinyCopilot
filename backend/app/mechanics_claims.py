@@ -267,6 +267,9 @@ class EntityEvidence:
     slot: str | None = None
     class_restriction: str | None = None
     equipped: bool = False
+    # Manifest socket structure by column ("barrels", "frames"): the configurability the build
+    # tools reported for this item's sockets. Observation only.
+    socket_classes: dict[str, str] = field(default_factory=dict)
 
     @property
     def has_text(self) -> bool:
@@ -281,7 +284,7 @@ class EntityEvidence:
 
 _EQUIPPED_KEYS = frozenset(
     {"equipped_weapons", "equipped_armor", "equipped_exotics", "subclass", "armor_mods",
-     "weapons", "armor", "mods", "equipped_plug_effects"}
+     "weapons", "armor", "mods", "equipped_plug_effects", "equipped_mechanics"}
 )  # fmt: skip
 _NAME_LIST_KEYS = frozenset(
     {"perks_and_sockets", "socketed_plug_names", "mods", "fragments", "aspects", "abilities",
@@ -363,6 +366,10 @@ class MechanicsEvidenceLedger:
         name = node.get("name")
         if isinstance(name, str) and name.strip():
             self._record_entity(node, name, source, is_equipped)
+        plug_name = node.get("equipped_plug")
+        if isinstance(plug_name, str) and plug_name.strip():
+            # A plug on the owned copy (build tools' socket evidence), not a Manifest sample.
+            self._record_name_only(plug_name, source, True)
         for key, value in node.items():
             child_equipped = is_equipped or (guardian and key in _EQUIPPED_KEYS)
             if key in _NAME_LIST_KEYS and isinstance(value, list):
@@ -407,6 +414,12 @@ class MechanicsEvidenceLedger:
             restriction = restriction.get("name")
         if isinstance(restriction, str) and restriction.casefold() in CLASS_NAMES:
             entity.class_restriction = restriction.casefold()
+        sockets = node.get("sockets")
+        for socket in sockets if isinstance(sockets, list) else []:
+            if isinstance(socket, dict) and isinstance(socket.get("configurability"), str):
+                column = socket.get("column")
+                if isinstance(column, str) and column.strip():
+                    entity.socket_classes[column.strip().casefold()] = socket["configurability"]
         for list_key in _TEXT_LIST_KEYS:
             values = node.get(list_key)
             for text in values if isinstance(values, list) else []:
@@ -444,9 +457,12 @@ class MechanicsClaim:
     evidence_sources: tuple[str, ...] = ()
     suspected_missing: tuple[MissingEvidence, ...] = ()
     sentence_index: int = 0
+    # What the Manifest says about the socket a proposed change targets (for example
+    # "fixed_per_manifest"). Context for the reader; the status is unchanged by it.
+    manifest_structure: str | None = None
 
     def trace(self) -> dict[str, Any]:
-        return {
+        result: dict[str, Any] = {
             "category": self.category,
             "entity": self.entity,
             "status": self.status,
@@ -454,6 +470,9 @@ class MechanicsClaim:
             "suspected_missing": list(self.suspected_missing),
             "sentence": self.sentence_index,
         }
+        if self.manifest_structure:
+            result["manifest_structure"] = self.manifest_structure
+        return result
 
 
 @dataclass(frozen=True)
@@ -520,6 +539,37 @@ def _classes_in(sentence: str) -> set[str]:
     return found
 
 
+_SOCKET_NOUN_COLUMNS = {
+    "barrel": "barrels",
+    "magazine": "magazines",
+    "mag": "magazines",
+    "grip": "grips",
+    "stock": "stocks",
+    "scope": "scopes",
+    "battery": "batteries",
+    "blade": "blades",
+    "guard": "guards",
+    "haft": "hafts",
+    "bowstring": "bowstrings",
+    "arrow": "arrows",
+    "frame": "frames",
+}
+
+
+def _manifest_structure(sentence: str, subject: EntityEvidence | None) -> str | None:
+    """The reported configurability of the one socket column a sentence names, if known."""
+
+    if subject is None or not subject.socket_classes:
+        return None
+    columns = {
+        column
+        for noun, column in _SOCKET_NOUN_COLUMNS.items()
+        if re.search(rf"\b{noun}s?\b", sentence, re.I)
+    }
+    known = {subject.socket_classes[value] for value in columns if value in subject.socket_classes}
+    return next(iter(known)) if len(known) == 1 else None
+
+
 def _classify_configuration(
     sentence: str, mentions: list[EntityEvidence], ledger: MechanicsEvidenceLedger, index: int
 ) -> list[MechanicsClaim]:
@@ -531,10 +581,14 @@ def _classify_configuration(
     states_equipped = bool(_KEEP_VERBS.search(sentence)) and not _CHANGE_VERBS.search(sentence)
     says_equipped_now = bool(_EQUIPPED_NOW.search(sentence)) and not _CHANGE_VERBS.search(sentence)
     if proposes:
-        subject = next((value for value in mentions if value.slot or value.class_restriction), None)
+        subject = next((value for value in mentions if value.socket_classes), None)
+        subject = subject or next(
+            (value for value in mentions if value.slot or value.class_restriction), None
+        )
         subject = subject or (mentions[0] if mentions else None)
         name = subject.name if subject else "unspecified"
         legal = any(_key(value.name) in ledger.legality for value in mentions)
+        structure = _manifest_structure(sentence, subject)
         return [
             MechanicsClaim(
                 "configuration",
@@ -543,6 +597,7 @@ def _classify_configuration(
                 tuple(sorted(subject.sources)) if subject else (),
                 () if legal else ("socket_options",),
                 index,
+                structure,
             )
         ]
     if states_equipped and plug_names:

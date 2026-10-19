@@ -36,9 +36,20 @@ from app.models import (
     RecordProgressSummary,
     RecordSummary,
     SandboxPerkSummary,
+    SocketConfigSummary,
     SocketedPlugSummary,
     TitleProgressSummary,
     TitleRecordProgressSummary,
+)
+from app.socket_configuration import (
+    build_specs,
+    cosmetic_socket_indexes,
+    describe_sockets,
+    name_hashes_needed,
+    plug_set_hashes,
+    referenced_definition_hashes,
+    socket_entries,
+    summary_entries,
 )
 
 logger = logging.getLogger(__name__)
@@ -248,6 +259,16 @@ def _raw_text(definition: dict[str, Any], field: str) -> str:
 
     value = (definition.get("displayProperties") or {}).get(field)
     return value.strip() if isinstance(value, str) else ""
+
+
+def _wants_socket_configuration(definition: dict[str, Any]) -> bool:
+    """Equipped weapons and Exotic armor get socket configuration; nothing else does."""
+
+    if definition.get("equippable") is not True:
+        return False
+    item_type = int(definition.get("itemType") or 0)
+    tier = (definition.get("inventory") or {}).get("tierTypeName")
+    return item_type == 3 or (item_type == 2 and tier == "Exotic")
 
 
 def _hash_list(entries: Any, key: str) -> list[int]:
@@ -482,6 +503,8 @@ class GuardianNormalizer:
         self._title_groups_truncated = False
         # entity type -> (hashes requested, hashes resolved) for equipped-plug enrichment.
         self._plug_lookups: dict[str, tuple[int, int]] = {}
+        # item hash -> (status, stored socket summaries), from Manifest definitions only.
+        self._socket_configs: dict[int, tuple[str, list[dict[str, Any]]]] = {}
 
     async def normalize(
         self,
@@ -659,6 +682,7 @@ class GuardianNormalizer:
 
         await self._resolve_plug_evidence_definitions(profile)
         await self._resolve_item_slot_buckets()
+        await self._resolve_socket_configurations(profile)
 
         # Quest and bounty rewards are declared as item hashes in value.itemValue; their
         # names need one more batched item lookup for hashes not already resolved.
@@ -712,6 +736,82 @@ class GuardianNormalizer:
             if (parent := _first_parent_hash(record_definitions.get(value[1], {})))
         }
         self._context_nodes = await self._resolve_context_nodes(near_record_parents)
+
+    async def _resolve_socket_configurations(self, profile: dict[str, Any]) -> None:
+        """Classify the sockets of equipped weapons and Exotic armor from their definitions.
+
+        The result depends on the item definition only, so it is computed once per distinct
+        equipped hash with batched, local-only lookups (plug sets, socket types, and the plug
+        names needed for samples). Subclasses and legendary armor are skipped: their sockets
+        depend on character or profile plug sets that are not read here.
+        """
+
+        item_definitions = self.definitions.get("DestinyInventoryItemDefinition", {})
+        targets: dict[int, dict[str, Any]] = {}
+        for location, _, raw in self._raw_inventory_items(profile, include_equipped=True):
+            if location != "equipped":
+                continue
+            with suppress(TypeError, ValueError):
+                item_hash = int(raw.get("itemHash", 0))
+                definition = item_definitions.get(item_hash)
+                if definition and _wants_socket_configuration(definition):
+                    targets[item_hash] = definition
+        if not targets:
+            return
+        wanted: dict[str, set[int]] = {
+            "plug_sets": set(),
+            "socket_types": set(),
+            "categories": set(),
+        }
+        for definition in targets.values():
+            for key, values in referenced_definition_hashes(definition).items():
+                wanted[key].update(values)
+        categories = self.definitions.setdefault("DestinySocketCategoryDefinition", {})
+        socket_types = await self._safe_resolve_many(
+            "DestinySocketTypeDefinition", wanted["socket_types"], local_only=True
+        )
+        missing_categories = wanted["categories"] - set(categories)
+        categories.update(
+            await self._safe_resolve_many(
+                "DestinySocketCategoryDefinition", missing_categories, local_only=True
+            )
+        )
+        # Cosmetic sockets are judged first so their very large plug sets are never read.
+        cosmetic = {
+            value: cosmetic_socket_indexes(definition, socket_types, categories)
+            for value, definition in targets.items()
+        }
+        plug_set_wanted: set[int] = set()
+        for value, definition in targets.items():
+            plug_set_wanted |= plug_set_hashes(definition, cosmetic[value])
+        plug_sets = await self._safe_resolve_many(
+            "DestinyPlugSetDefinition", plug_set_wanted, local_only=True
+        )
+        specs = {
+            value: build_specs(definition, plug_sets, cosmetic[value])
+            for value, definition in targets.items()
+        }
+        needed: set[int] = set()
+        for value in specs.values():
+            needed |= name_hashes_needed(value, categories)
+        names = await self._safe_resolve_many(
+            "DestinyInventoryItemDefinition", needed - set(item_definitions), local_only=True
+        )
+        names.update({key: item_definitions[key] for key in needed if key in item_definitions})
+        for item_hash, definition in targets.items():
+            if not socket_entries(definition):
+                self._socket_configs[item_hash] = ("no_sockets_declared", [])
+                continue
+            described = describe_sockets(
+                definition, specs[item_hash], socket_types, categories, names
+            )
+            self._socket_configs[item_hash] = (described["status"], summary_entries(described))
+        for table in (
+            "DestinyPlugSetDefinition",
+            "DestinySocketTypeDefinition",
+            "DestinySocketCategoryDefinition",
+        ):
+            self.resolver.release_table(table)
 
     async def _resolve_item_slot_buckets(self) -> None:
         """Resolve the buckets item *definitions* belong to; they name the equipment slots.
@@ -937,6 +1037,16 @@ class GuardianNormalizer:
                 character_id, histories.get(character_id)
             ),
         )
+
+    def _socket_configuration_fields(self, item_hash: int, location: str) -> dict[str, Any]:
+        stored = self._socket_configs.get(item_hash) if location == "equipped" else None
+        if stored is None:
+            return {}
+        status, entries = stored
+        return {
+            "socket_configuration": [SocketConfigSummary(**value) for value in entries],
+            "socket_configuration_status": status,
+        }
 
     def _socket_category_names(self, item_definition: dict[str, Any]) -> dict[int, str]:
         """Socket index -> category name (such as WEAPON PERKS) from the item definition."""
@@ -1220,6 +1330,7 @@ class GuardianNormalizer:
             icon_url=icon,
             bucket_name=bucket_name,
             equipment_slot=slot_name,
+            **self._socket_configuration_fields(item_hash, location),
             equipment_slot_state=slot_state,  # type: ignore[arg-type]
             quantity=max(0, int(raw.get("quantity", 1))),
             power=power,
