@@ -42,6 +42,8 @@ from app.models import (
 ConfigState = Literal[
     "manifest_possible",
     "equipped_now",
+    # The plug is socketed on an instance the profile says is not equipped (e.g. in the vault).
+    "socketed_not_equipped",
     "account_listed",
     "character_listed",
     "instance_listed",
@@ -66,7 +68,13 @@ SCOPE = "Equipped subclass and armor sockets only; weapon instances and vault it
 
 
 class ConfigSource(BaseModel):
-    kind: Literal["manifest_plug_set", "socket_component", "profile_plug_set", "character_plug_set"]
+    kind: Literal[
+        "manifest_plug_set",
+        "socket_component",
+        "profile_plug_set",
+        "character_plug_set",
+        "instance_reusable_plugs",
+    ]
     plug_set_hash: int | None = None
     item_hash: int | None = None
     socket_index: int | None = None
@@ -77,6 +85,8 @@ class ConfigSource(BaseModel):
 class ConfigStateRecord(BaseModel):
     state: ConfigState
     source: ConfigSource
+    # For manifest_possible: the pool's role ("randomized_roll_pool", "reusable_plug_pool", ...).
+    pool: str | None = None
     can_insert: bool | None = None
     enabled: bool | None = None
     # Manifest messages for the reported failure indexes; None keeps an index unresolved.
