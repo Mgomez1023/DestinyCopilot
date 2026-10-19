@@ -21,6 +21,16 @@ from app.equipment_identity import (
     equipment_slot,
     is_engram_variant,
 )
+from app.socket_configuration import (
+    build_specs,
+    cosmetic_socket_indexes,
+    describe_sockets,
+    name_hashes_needed,
+    not_applicable,
+    plug_set_hashes,
+    referenced_definition_hashes,
+    socket_entries,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -871,6 +881,44 @@ class ManifestKnowledgeProvider:
             "source_hash": collectible.get("sourceHash") or None,
         }
 
+    async def _resolve_local(self, entity_type: str, hashes: set[int]) -> dict[int, dict[str, Any]]:
+        """Batched Manifest lookup that never falls back to the network."""
+
+        if not hashes:
+            return {}
+        try:
+            return await self.resolver.resolve_many(entity_type, hashes, local_only=True)  # type: ignore[call-arg]
+        except TypeError:
+            # A resolver without the option (a test double or local resolver) has no network.
+            return await self.resolver.resolve_many(entity_type, hashes)
+
+    async def _socket_configuration(self, definition: dict[str, Any]) -> dict[str, Any]:
+        """What the Manifest declares about this item's sockets (see socket_configuration)."""
+
+        if definition.get("equippable") is not True:
+            return not_applicable("not_equippable")
+        if not socket_entries(definition):
+            return {"status": "no_sockets_declared", "basis": "manifest_definition"}
+        try:
+            wanted = referenced_definition_hashes(definition)
+            socket_types, categories = await asyncio.gather(
+                self._resolve_local("DestinySocketTypeDefinition", wanted["socket_types"]),
+                self._resolve_local("DestinySocketCategoryDefinition", wanted["categories"]),
+            )
+            # Cosmetic sockets are judged first so their very large plug sets are never read.
+            cosmetic = cosmetic_socket_indexes(definition, socket_types, categories)
+            plug_sets = await self._resolve_local(
+                "DestinyPlugSetDefinition", plug_set_hashes(definition, cosmetic)
+            )
+            specs = build_specs(definition, plug_sets, cosmetic)
+            names = await self._resolve_local(
+                "DestinyInventoryItemDefinition", name_hashes_needed(specs, categories)
+            )
+            return describe_sockets(definition, specs, socket_types, categories, names)
+        except Exception:
+            logger.warning("Socket configuration lookup failed", exc_info=True)
+            return {"status": "unresolved", "basis": "manifest_definition"}
+
     async def _item_identities(
         self, definitions: dict[int, dict[str, Any]], selected_hash: int
     ) -> list[dict[str, Any]]:
@@ -904,6 +952,7 @@ class ManifestKnowledgeProvider:
                     "equippable": bool(definition.get("equippable")),
                     "engram_dummy": is_engram_variant(definition),
                     "has_collectible": bool(definition.get("collectibleHash")),
+                    "socket_entries": len(socket_entries(definition)),
                 }
             )
         return identities
@@ -922,6 +971,8 @@ class ManifestKnowledgeProvider:
             record["slot_status"] = identity["slot_status"]
         if not identity["equippable"]:
             record["equippable"] = False
+        if identity["socket_entries"] != reference["socket_entries"]:
+            record["socket_entries"] = identity["socket_entries"]
         for flag in ("engram_dummy", "has_collectible"):
             if identity[flag]:
                 record[flag] = True
@@ -1028,6 +1079,7 @@ class ManifestKnowledgeProvider:
             },
             "resolution": resolved.resolution,
             **self._variant_report(identities),
+            "socket_configuration": await self._socket_configuration(definition),
             "limitations": [
                 *self._resolution_limitations(resolved.resolution, "item"),
                 "Manifest item stats and sockets are generic definition data; random rolls and "
