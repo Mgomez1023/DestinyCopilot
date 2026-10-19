@@ -26,6 +26,7 @@ from app.models import (
     ItemStatSummary,
     ItemSummary,
     MilestoneSummary,
+    ObjectiveRequirement,
     ObjectiveSummary,
     PlugEvidence,
     PlugStatEffect,
@@ -40,6 +41,11 @@ from app.models import (
     SocketedPlugSummary,
     TitleProgressSummary,
     TitleRecordProgressSummary,
+)
+from app.objective_requirements import (
+    item_description_requirements,
+    objective_definition_requirement,
+    requirements_consistency,
 )
 from app.socket_configuration import (
     build_specs,
@@ -56,6 +62,7 @@ logger = logging.getLogger(__name__)
 
 # Equipped-plug evidence bounds. Text is kept whole enough to quote, never unbounded.
 MAX_PLUG_SANDBOX_PERKS = 4
+MAX_QUEST_REQUIREMENTS = 3
 MAX_PLUG_STAT_EFFECTS = 6
 MAX_PLUG_EFFECT_TEXT = 500
 UNNAMED_PLUG = "Unnamed plug"
@@ -1421,6 +1428,7 @@ class GuardianNormalizer:
         )
         return ObjectiveSummary(
             objective_hash=objective_hash,
+            requirement=objective_definition_requirement(objective_hash, definition),
             name=name,
             description=description,
             progress=progress_value,
@@ -1431,6 +1439,38 @@ class GuardianNormalizer:
             activity_name=activity_name,
             destination_name=destination_name,
         )
+
+    @staticmethod
+    def _quest_requirements(
+        quest_hash: int,
+        quest_definition: dict[str, Any],
+        step_hash: int | None,
+        step_definition: dict[str, Any],
+        objectives: list[ObjectiveSummary],
+    ) -> dict[str, Any]:
+        """Requirements from the quest and step descriptions, each source kept apart.
+
+        Consistency compares the description-derived requirements with the objectives' own;
+        a disagreement is reported and nothing is merged.
+        """
+
+        found: list[ObjectiveRequirement] = []
+        seen: set[str] = set()
+        for entity_hash, definition in (
+            (quest_hash, quest_definition),
+            (step_hash or 0, step_definition),
+        ):
+            for requirement in item_description_requirements(entity_hash, definition):
+                if requirement.raw_requirement not in seen:
+                    seen.add(requirement.raw_requirement)
+                    found.append(requirement)
+        found = found[:MAX_QUEST_REQUIREMENTS]
+        compared = [*found, *(value.requirement for value in objectives if value.requirement)]
+        return {
+            "requirements": found,
+            "requirements_parsed": True,
+            "requirements_consistency": requirements_consistency(compared),
+        }
 
     def _item_objectives(
         self,
@@ -1495,6 +1535,9 @@ class GuardianNormalizer:
                     item_type_name=item_type_name(quest_definition)
                     or item_type_name(step_definition or {}),
                     **self._quest_rewards(reward_source),
+                    **self._quest_requirements(
+                        quest_hash, quest_definition, step_hash, step_definition, objectives
+                    ),
                 )
             )
             if status.get("itemInstanceId"):
@@ -1529,6 +1572,7 @@ class GuardianNormalizer:
                     objectives=objectives,
                     item_type_name=item_type_name(definition),
                     **self._quest_rewards(definition),
+                    **self._quest_requirements(item_hash, definition, None, {}, objectives),
                 )
             )
         return sorted(quests, key=lambda value: (value.completed, value.name))[:80]

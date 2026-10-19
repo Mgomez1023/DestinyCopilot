@@ -21,6 +21,12 @@ from app.equipment_identity import (
     equipment_slot,
     is_engram_variant,
 )
+from app.objective_requirements import (
+    compact_requirement,
+    item_description_requirements,
+    objective_definition_requirement,
+    requirements_consistency,
+)
 from app.socket_configuration import (
     build_specs,
     cosmetic_socket_indexes,
@@ -919,6 +925,40 @@ class ManifestKnowledgeProvider:
             logger.warning("Socket configuration lookup failed", exc_info=True)
             return {"status": "unresolved", "basis": "manifest_definition"}
 
+    async def _requirement_report(
+        self, item_hash: int, definition: dict[str, Any], objective_hashes: list[int]
+    ) -> dict[str, Any]:
+        """Structured requirements from an item's description and its objectives' own text.
+
+        Sources are reported separately with their provenance; disagreement is flagged, never
+        merged. Empty when nothing is stated. Local Manifest lookups only.
+        """
+
+        requirements = item_description_requirements(item_hash, definition)
+        objectives = await self._resolve_local("DestinyObjectiveDefinition", set(objective_hashes))
+        for objective_hash in objective_hashes:
+            parsed = objective_definition_requirement(
+                objective_hash, objectives.get(objective_hash, {})
+            )
+            if parsed is not None:
+                requirements.append(parsed)
+        if not requirements:
+            return {}
+        report: dict[str, Any] = {
+            "requirements": [
+                compact_requirement(
+                    value,
+                    include_raw=not (
+                        value.parse_status == "verified" and value.source.hash == item_hash
+                    ),
+                )
+                for value in requirements
+            ]
+        }
+        if consistency := requirements_consistency(requirements):
+            report["requirements_consistency"] = consistency
+        return report
+
     async def _item_identities(
         self, definitions: dict[int, dict[str, Any]], selected_hash: int
     ) -> list[dict[str, Any]]:
@@ -1079,6 +1119,7 @@ class ManifestKnowledgeProvider:
             },
             "resolution": resolved.resolution,
             **self._variant_report(identities),
+            **await self._requirement_report(entry.entity_hash, definition, objective_hashes),
             "socket_configuration": await self._socket_configuration(definition),
             "limitations": [
                 *self._resolution_limitations(resolved.resolution, "item"),
@@ -1228,6 +1269,7 @@ class ManifestKnowledgeProvider:
                     "description": step_description or None,
                     "step_summary": (step.get("setData") or {}).get("questStepSummary") or None,
                     "objectives": objective_details,
+                    **await self._requirement_report(step_hash, step, objective_hashes),
                 }
             )
         related_activity_hashes = _unique_hashes(related_activity_hashes)

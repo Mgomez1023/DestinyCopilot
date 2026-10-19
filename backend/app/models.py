@@ -4,6 +4,61 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field, field_validator, model_serializer, model_validator
 
+RequirementSourceKind = Literal["ability", "weapon", "any", "unknown"]
+RequirementElement = Literal["Arc", "Solar", "Void", "Stasis", "Strand", "Kinetic", "unknown"]
+RequirementAction = Literal["final_blow", "damage", "defeat", "unknown"]
+RequirementTarget = Literal[
+    "combatants",
+    "guardians",
+    "combatants_or_guardians",
+    "opponents",
+    "enemies",
+    "targets",
+    "unknown",
+]
+RequirementParseStatus = Literal["verified", "partial", "ambiguous", "unknown"]
+RequirementModifier = Literal["precision", "melee", "grenade", "super", "class_ability"]
+RequirementConsistency = Literal["consistent", "differs_in_specificity", "conflicting"]
+
+
+class RequirementSource(BaseModel):
+    """The exact Manifest definition and field a requirement was read from."""
+
+    definition: str
+    hash: int
+    field: str
+
+
+class ObjectiveRequirement(BaseModel):
+    """A requirement stated in Manifest text, parsed only as far as the wording allows.
+
+    "unknown" always means the text does not say, never "no restriction": a generic
+    "defeat enemies" has an unknown source and is not read as needing final blows. The
+    original sentence stays in `raw_requirement`; bonus-progress sentences are kept as raw text
+    in `bonus_conditions` and are not interpreted.
+    """
+
+    raw_requirement: str
+    source: RequirementSource
+    source_kind: RequirementSourceKind = "unknown"
+    element: RequirementElement = "unknown"
+    completion_action: RequirementAction = "unknown"
+    target_kind: RequirementTarget = "unknown"
+    modifiers: list[RequirementModifier] = Field(default_factory=list)
+    conditions: list[str] = Field(default_factory=list)
+    bonus_conditions: list[str] = Field(default_factory=list)
+    parse_status: RequirementParseStatus = "unknown"
+
+    @model_serializer(mode="wrap")
+    def _omit_unknowns(self, handler: Any) -> dict[str, Any]:
+        data = handler(self)
+        return {
+            key: value
+            for key, value in data.items()
+            if key in {"raw_requirement", "source", "parse_status"}
+            or value not in ("unknown", [], None)
+        }
+
 
 class ObjectiveSummary(BaseModel):
     objective_hash: int
@@ -16,6 +71,16 @@ class ObjectiveSummary(BaseModel):
     visible: bool = True
     activity_name: str | None = None
     destination_name: str | None = None
+    # Parsed from the objective definition's own text; set only when it restricts the source,
+    # element or action. Absent means nothing restrictive was stated, not "no requirement".
+    requirement: ObjectiveRequirement | None = None
+
+    @model_serializer(mode="wrap")
+    def _omit_empty_requirement(self, handler: Any) -> dict[str, Any]:
+        data = handler(self)
+        if data.get("requirement") is None:
+            data.pop("requirement", None)
+        return data
 
 
 class RecordObjectiveSummary(ObjectiveSummary):
@@ -267,6 +332,22 @@ class QuestSummary(BaseModel):
     reward_names: list[str] = Field(default_factory=list, max_length=4)
     reward_total: int = Field(default=0, ge=0)
     rewards_unresolved: int = Field(default=0, ge=0)
+    # Requirements parsed from the quest, step and objective Manifest text. Each source is kept
+    # apart and never merged; `requirements_parsed` is False for data collected before parsing.
+    requirements: list[ObjectiveRequirement] = Field(default_factory=list)
+    requirements_parsed: bool = False
+    requirements_consistency: RequirementConsistency | None = None
+
+    @model_serializer(mode="wrap")
+    def _omit_empty_requirements(self, handler: Any) -> dict[str, Any]:
+        data = handler(self)
+        if not data.get("requirements_parsed"):
+            data.pop("requirements_parsed", None)
+        if not data.get("requirements"):
+            data.pop("requirements", None)
+        if data.get("requirements_consistency") is None:
+            data.pop("requirements_consistency", None)
+        return data
 
 
 class MilestoneSummary(BaseModel):

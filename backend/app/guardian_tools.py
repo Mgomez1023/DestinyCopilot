@@ -28,6 +28,7 @@ from app.models import (
     ProgressionSummary,
     SocketedPlugSummary,
 )
+from app.objective_requirements import compact_requirement
 
 __all__ = ["CharacterNotFoundError", "GuardianToolError", "GuardianToolService"]
 
@@ -461,6 +462,30 @@ class GuardianToolService:
             "armor_stats": armor_stats,
         }
 
+    @staticmethod
+    def _requirement_fields(quest: Any) -> dict[str, Any]:
+        """Structured requirements parsed from Manifest text, only when there are any.
+
+        The original sentence is repeated only where it is not already in this result: a
+        verified requirement from the quest's own description is that description.
+        """
+
+        if not quest.requirements:
+            return {}
+        fields: dict[str, Any] = {
+            "requirements": [
+                compact_requirement(
+                    value,
+                    include_raw=value.parse_status != "verified"
+                    or value.source.hash != quest.quest_hash,
+                )
+                for value in quest.requirements
+            ]
+        }
+        if quest.requirements_consistency:
+            fields["requirements_consistency"] = quest.requirements_consistency
+        return fields
+
     def get_active_quests(
         self,
         character_id: str | None = None,
@@ -488,6 +513,7 @@ class GuardianToolService:
                         "reward_names": list(quest.reward_names),
                         "reward_total": quest.reward_total,
                         "rewards_unresolved": quest.rewards_unresolved,
+                        **self._requirement_fields(quest),
                     }
                 )
         quests.sort(
