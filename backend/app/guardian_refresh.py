@@ -23,6 +23,7 @@ from app.models import (
     DataAvailability,
     GuardianContext,
     InventorySummary,
+    PlugSetCollection,
     RecordProgressSummary,
 )
 
@@ -32,7 +33,8 @@ logger = logging.getLogger(__name__)
 # 7: structured objective requirements on quests and objectives (M4A). Entries cached under
 # an older version lack these fields; they are discarded and refetched rather than read as
 # complete.
-CACHE_SCHEMA_VERSION = 7
+# 8: profile and character plug-set evidence from the ItemSockets response (M5B).
+CACHE_SCHEMA_VERSION = 8
 
 
 class GuardianSlice(StrEnum):
@@ -775,10 +777,12 @@ class GuardianRefreshService:
             payload = {
                 "characters": {
                     value.character_id: value.model_dump(
-                        mode="json", include={"subclass", "equipped_gear"}
+                        mode="json", include={"subclass", "equipped_gear", "plug_sets"}
                     )
                     for value in characters
-                }
+                },
+                # M5B: profile-scoped plug sets travel with the slice that fetched ItemSockets.
+                "profile_plug_sets": context.profile_plug_sets.model_dump(mode="json"),
             }
         elif name == GuardianSlice.INVENTORY:
             payload = {
@@ -838,6 +842,7 @@ class GuardianRefreshService:
                 {
                     "subclass": None,
                     "equipped_gear": [],
+                    "plug_sets": {},
                     "quests": [],
                     "milestones": [],
                     "progressions": [],
@@ -858,6 +863,7 @@ class GuardianRefreshService:
                 )
 
         inventory = entry.slices.get(GuardianSlice.INVENTORY)
+        equipment_slice = entry.slices.get(GuardianSlice.EQUIPMENT)
         quests = entry.slices.get(GuardianSlice.QUESTS_PROGRESS)
         collections = entry.slices.get(GuardianSlice.COLLECTIONS)
         stale = [
@@ -904,6 +910,10 @@ class GuardianRefreshService:
             profile_progressions=(quests.payload.get("profile_progressions", []) if quests else []),
             collectibles=CollectionProgressSummary.model_validate(
                 collections.payload["collectibles"] if collections else {}
+            ),
+            profile_plug_sets=PlugSetCollection.model_validate(
+                (equipment_slice.payload.get("profile_plug_sets") if equipment_slice else None)
+                or {}
             ),
             records=RecordProgressSummary.model_validate(
                 quests.payload["records"] if quests else {}

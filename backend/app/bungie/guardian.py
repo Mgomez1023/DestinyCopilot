@@ -29,6 +29,8 @@ from app.models import (
     ObjectiveRequirement,
     ObjectiveSummary,
     PlugEvidence,
+    PlugSetCollection,
+    PlugSetSocketRef,
     PlugStatEffect,
     ProgressionSummary,
     QuestSummary,
@@ -46,6 +48,13 @@ from app.objective_requirements import (
     item_description_requirements,
     objective_definition_requirement,
     requirements_consistency,
+)
+from app.plug_set_evidence import (
+    build_collection,
+    flagged_and_sample_hashes,
+    resolve_reasons,
+    returned_sets,
+    socket_plug_set_refs,
 )
 from app.socket_configuration import (
     build_specs,
@@ -512,6 +521,10 @@ class GuardianNormalizer:
         self._plug_lookups: dict[str, tuple[int, int]] = {}
         # item hash -> (status, stored socket summaries), from Manifest definitions only.
         self._socket_configs: dict[int, tuple[str, list[dict[str, Any]]]] = {}
+        # M5B: item hash -> sockets fed by profile/character plug sets, and the retained sets.
+        self._plug_set_refs: dict[int, list[PlugSetSocketRef]] = {}
+        self._profile_plug_sets = PlugSetCollection()
+        self._character_plug_sets: dict[str, PlugSetCollection] = {}
 
     async def normalize(
         self,
@@ -566,6 +579,7 @@ class GuardianNormalizer:
             collectibles=self._normalize_collectibles(profile),
             records=self._normalize_records(profile),
             crafting=self._normalize_crafting(profile),
+            profile_plug_sets=self._profile_plug_sets,
             data_availability=availability,
             data_scope=availability.available_components,
         )
@@ -690,6 +704,7 @@ class GuardianNormalizer:
         await self._resolve_plug_evidence_definitions(profile)
         await self._resolve_item_slot_buckets()
         await self._resolve_socket_configurations(profile)
+        await self._resolve_plug_set_evidence(profile)
 
         # Quest and bounty rewards are declared as item hashes in value.itemValue; their
         # names need one more batched item lookup for hashes not already resolved.
@@ -818,6 +833,115 @@ class GuardianNormalizer:
             "DestinySocketTypeDefinition",
             "DestinySocketCategoryDefinition",
         ):
+            self.resolver.release_table(table)
+
+    async def _resolve_plug_set_evidence(self, profile: dict[str, Any]) -> None:
+        """Retain the profile/character plug sets that equipped sockets actually reference.
+
+        Reads only what the profile response already holds, plus local Manifest definitions
+        (exact hashes, no names). Subclasses and armor are the targets; cosmetic sockets and
+        every plug set no equipped socket references are dropped, so an account's full sets are
+        neither stored nor repeated per item.
+        """
+
+        item_definitions = self.definitions.get("DestinyInventoryItemDefinition", {})
+        equipment = _component_data(profile, "characterEquipment", {})
+        if not isinstance(equipment, dict) or not equipment:
+            return
+        items_by_character: dict[str, set[int]] = {}
+        targets: dict[int, dict[str, Any]] = {}
+        for character_id, component in equipment.items():
+            for raw in (component or {}).get("items") or []:
+                with suppress(TypeError, ValueError, AttributeError):
+                    item_hash = int(raw.get("itemHash", 0))
+                    definition = item_definitions.get(item_hash)
+                    if definition and int(definition.get("itemType") or 0) in {2, 16}:
+                        targets[item_hash] = definition
+                        items_by_character.setdefault(str(character_id), set()).add(item_hash)
+        wanted: dict[str, set[int]] = {"socket_types": set(), "categories": set()}
+        for definition in targets.values():
+            hashes = referenced_definition_hashes(definition)
+            wanted["socket_types"] |= hashes["socket_types"]
+            wanted["categories"] |= hashes["categories"]
+        categories = self.definitions.setdefault("DestinySocketCategoryDefinition", {})
+        socket_types = await self._safe_resolve_many(
+            "DestinySocketTypeDefinition", wanted["socket_types"], local_only=True
+        )
+        categories.update(
+            await self._safe_resolve_many(
+                "DestinySocketCategoryDefinition",
+                wanted["categories"] - set(categories),
+                local_only=True,
+            )
+        )
+        category_names = {
+            key: str((value.get("displayProperties") or {}).get("name") or "").strip() or None
+            for key, value in categories.items()
+        }
+        skip = {
+            item_hash: cosmetic_socket_indexes(definition, socket_types, categories)
+            for item_hash, definition in targets.items()
+        }
+        first_pass = {
+            item_hash: socket_plug_set_refs(definition, skip[item_hash])
+            for item_hash, definition in targets.items()
+        }
+        set_hashes = {ref.plug_set_hash for refs in first_pass.values() for ref in refs}
+        manifest_sets = await self._safe_resolve_many(
+            "DestinyPlugSetDefinition", set_hashes, local_only=True
+        )
+        self._plug_set_refs = {
+            item_hash: socket_plug_set_refs(
+                definition, skip[item_hash], category_names, manifest_sets
+            )
+            for item_hash, definition in targets.items()
+        }
+
+        def wanted_for(item_hashes: set[int], source: str) -> set[int]:
+            return {
+                ref.plug_set_hash
+                for item_hash in item_hashes
+                for ref in self._plug_set_refs.get(item_hash, [])
+                if source in ref.sources
+            }
+
+        every_item = set(targets)
+        scopes: list[tuple[str, str | None, set[int]]] = [
+            ("profile", None, wanted_for(every_item, "profile_plug_set"))
+        ]
+        scopes.extend(
+            ("character", character_id, wanted_for(item_hashes, "character_plug_set"))
+            for character_id, item_hashes in items_by_character.items()
+        )
+        plug_needed: set[int] = set()
+        for scope, character_id, set_wanted in scopes:
+            raw_sets = returned_sets(profile, scope, character_id)  # type: ignore[arg-type]
+            for set_hash in set_wanted & set(raw_sets or {}):
+                plug_needed |= flagged_and_sample_hashes((raw_sets or {})[set_hash])
+        plug_definitions = {
+            key: item_definitions[key] for key in plug_needed if key in item_definitions
+        }
+        plug_definitions.update(
+            await self._safe_resolve_many(
+                "DestinyInventoryItemDefinition",
+                plug_needed - set(plug_definitions),
+                local_only=True,
+            )
+        )
+        for scope, character_id, set_wanted in scopes:
+            collection = build_collection(
+                profile,
+                scope,  # type: ignore[arg-type]
+                character_id,
+                set_wanted,
+                manifest_sets,
+                plug_definitions,
+            )
+            if scope == "profile":
+                self._profile_plug_sets = collection
+            else:
+                self._character_plug_sets[str(character_id)] = collection
+        for table in ("DestinyPlugSetDefinition", "DestinySocketTypeDefinition"):
             self.resolver.release_table(table)
 
     async def _resolve_item_slot_buckets(self) -> None:
@@ -1036,6 +1160,7 @@ class GuardianNormalizer:
             emblem_background_url=_bungie_asset(raw.get("emblemBackgroundPath")),
             subclass=subclass,
             equipped_gear=equipped,
+            plug_sets=self._character_plug_sets.get(character_id, PlugSetCollection()),
             quests=self._normalize_quests(character_id, profile),
             milestones=self._normalize_milestones(character_id, profile),
             progressions=self._normalize_character_progressions(character_id, profile),
@@ -1093,6 +1218,17 @@ class GuardianNormalizer:
             "is_enabled": enabled if isinstance(enabled, bool) else None,
             "is_visible": visible if isinstance(visible, bool) else None,
         }
+        fail_indexes = [
+            value
+            for value in socket.get("enableFailIndexes") or []
+            if isinstance(value, int) and not isinstance(value, bool)
+        ]
+        if fail_indexes:
+            # Indexes into this plug's own `plug.enabledRules`; unresolved ones stay None.
+            base["enable_fail_indexes"] = fail_indexes
+            base["enable_fail_reasons"] = resolve_reasons(
+                fail_indexes, plug_definition or None, "enabledRules"
+            )
         if not plug_definition:
             base["evidence"] = PlugEvidence(
                 description="definition_unavailable",
@@ -1338,6 +1474,9 @@ class GuardianNormalizer:
             bucket_name=bucket_name,
             equipment_slot=slot_name,
             **self._socket_configuration_fields(item_hash, location),
+            plug_set_sockets=(
+                list(self._plug_set_refs.get(item_hash, [])) if location == "equipped" else []
+            ),
             equipment_slot_state=slot_state,  # type: ignore[arg-type]
             quantity=max(0, int(raw.get("quantity", 1))),
             power=power,

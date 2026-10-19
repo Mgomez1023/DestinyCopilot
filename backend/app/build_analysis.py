@@ -11,6 +11,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.character_selection import CharacterClass, GuardianCharacterResolver
+from app.configuration_evidence import configuration_section
 from app.mechanics_evidence import effect_status, equipped_mechanics_section
 from app.models import (
     COSMETIC_PLUG_MARKERS,
@@ -1106,6 +1107,9 @@ class BuildAnalysisService:
         }
         bound_plug_mechanics(result)
         result["equipped_mechanics"] = equipped_mechanics_section(character)
+        result["configuration_evidence"] = configuration_section(
+            character, self.context.profile_plug_sets
+        )
         return result
 
     def find_build_alternatives(self, request: FindBuildAlternativesRequest) -> dict[str, Any]:

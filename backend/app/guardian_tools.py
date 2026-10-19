@@ -19,6 +19,7 @@ from app.character_selection import (
     GuardianToolError,
     resolve_current_character,
 )
+from app.configuration_evidence import configuration_section
 from app.content_progression import ContentProgressionResolver
 from app.mechanics_evidence import equipped_mechanics_section
 from app.models import (
@@ -921,6 +922,10 @@ class GuardianToolService:
             "equipped_plug_effects": equipped_plug_effects(character),
             # Manifest socket structure joined with the equipped plugs, ranked and capped.
             "equipped_mechanics": equipped_mechanics_section(character),
+            # Bungie-reported profile/character plug-set evidence, separate from equipped state.
+            "configuration_evidence": configuration_section(
+                character, self.context.profile_plug_sets
+            ),
             # Weapon/armor perks and unclassified sockets; cosmetics are not build-affecting.
             "other_build_affecting_sockets": list(
                 dict.fromkeys(plug.name for plug in [*role_groups["perks"], *role_groups["other"]])

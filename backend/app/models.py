@@ -148,6 +148,8 @@ _PLUG_EVIDENCE_FIELDS = (
     "energy_type",
     "unnamed",
     "evidence",
+    "enable_fail_indexes",
+    "enable_fail_reasons",
 )
 
 
@@ -169,6 +171,10 @@ class SocketedPlugSummary(BaseModel):
     energy_type: str | None = None
     unnamed: bool = False
     evidence: PlugEvidence | None = None
+    # M5B: why Bungie reports this equipped plug as not enabled (indexes into the plug's own
+    # `plug.enabledRules`), with the Manifest message when it resolves. Empty when enabled.
+    enable_fail_indexes: list[int] = Field(default_factory=list)
+    enable_fail_reasons: list[str | None] = Field(default_factory=list)
 
     @model_serializer(mode="wrap")
     def _omit_unset_plug_evidence(self, handler: Any) -> dict[str, Any]:
@@ -222,6 +228,103 @@ class SocketConfigSummary(BaseModel):
         }
 
 
+PlugSetScope = Literal["profile", "character"]
+# not_collected: normalized before plug-set evidence existed. not_returned: the response held no
+# plug-set data (component not requested, withheld, or absent). returned: Bungie sent data;
+# an individual set may still be missing from it, and a returned set may be empty.
+PlugSetCollectionStatus = Literal["not_collected", "not_returned", "returned"]
+RuleReasons = list[str | None]
+
+
+class PlugSetEntry(BaseModel):
+    """One plug Bungie reported inside a plug set, with its reported insertion state."""
+
+    plug_item_hash: int
+    can_insert: bool | None = None
+    enabled: bool | None = None
+    insert_fail_indexes: list[int] = Field(default_factory=list)
+    enable_fail_indexes: list[int] = Field(default_factory=list)
+    # Manifest messages for the indexes above, in order; None keeps an unresolved index unresolved.
+    insert_fail_reasons: RuleReasons = Field(default_factory=list)
+    enable_fail_reasons: RuleReasons = Field(default_factory=list)
+    # Kept only for entries that are not simply insertable, so the cache stays compact.
+    name: str | None = None
+
+    @model_serializer(mode="wrap")
+    def _omit_empty(self, handler: Any) -> dict[str, Any]:
+        data = handler(self)
+        return {
+            key: value
+            for key, value in data.items()
+            if key == "plug_item_hash" or value not in (None, [])
+        }
+
+
+class PlugSetEvidence(BaseModel):
+    """What Bungie reported for one plug set in one scope."""
+
+    plug_set_hash: int
+    scope: PlugSetScope
+    character_id: str | None = None
+    # Returned entries that are anything but plainly insertable (a restriction, a disabled plug,
+    # failure indexes, or an unreported flag), in full. `clear_plug_hashes` holds plugs Bungie
+    # reported with canInsert and enabled both true and no failure indexes. Together they are
+    # capped; `omitted_entries` counts the rest. Both empty with `omitted_entries == 0` and
+    # `listed == 0` is a returned, empty set.
+    entries: list[PlugSetEntry] = Field(default_factory=list)
+    clear_plug_hashes: list[int] = Field(default_factory=list)
+    listed: int = Field(default=0, ge=0)
+    omitted_entries: int = Field(default=0, ge=0)
+    # The Manifest set this one joins to: option count, and how many returned plugs it does not
+    # contain (a data inconsistency, never silently dropped).
+    manifest_options: int | None = None
+    manifest_status: Literal["resolved", "unresolved"] = "unresolved"
+    unmatched_entries: int = Field(default=0, ge=0)
+    sample: list[str] = Field(default_factory=list)
+
+    @model_serializer(mode="wrap")
+    def _omit_empty(self, handler: Any) -> dict[str, Any]:
+        data = handler(self)
+        keep = {"plug_set_hash", "scope", "listed", "manifest_status"}
+        return {
+            key: value for key, value in data.items() if key in keep or value not in (None, [], 0)
+        }
+
+
+class PlugSetCollection(BaseModel):
+    """Plug-set evidence for one scope, retaining only sets that equipped sockets reference."""
+
+    status: PlugSetCollectionStatus = "not_collected"
+    source: Literal["GetProfile:ItemSockets"] = "GetProfile:ItemSockets"
+    minted_at: str | None = None
+    sets: list[PlugSetEvidence] = Field(default_factory=list)
+    # Referenced by an equipped socket but absent from returned data: unknown, not empty.
+    missing_set_hashes: list[int] = Field(default_factory=list)
+
+    def get(self, plug_set_hash: int) -> PlugSetEvidence | None:
+        return next((value for value in self.sets if value.plug_set_hash == plug_set_hash), None)
+
+    @model_serializer(mode="wrap")
+    def _omit_empty(self, handler: Any) -> dict[str, Any]:
+        data = handler(self)
+        return {
+            key: value
+            for key, value in data.items()
+            if key in {"status", "source"} or value not in (None, [])
+        }
+
+
+class PlugSetSocketRef(BaseModel):
+    """A socket whose plugs come (at least partly) from profile or character plug sets."""
+
+    socket_index: int
+    category: str | None = None
+    # Names of every source flag the socket declares; they combine and are not exclusive.
+    sources: list[str] = Field(default_factory=list)
+    plug_set_hash: int
+    manifest_options: int | None = None
+
+
 SocketConfigStatus = Literal["verified", "partial", "no_sockets_declared"]
 EquipmentSlotState = Literal["known", "not_equippable", "unresolved", "not_collected"]
 _LOCATION_BUCKET_LOCATIONS = ("equipped", "character")
@@ -247,6 +350,8 @@ class ItemSummary(BaseModel):
     # Manifest socket structure for equipped weapons and Exotic armor only; unset elsewhere.
     socket_configuration: list[SocketConfigSummary] = Field(default_factory=list)
     socket_configuration_status: SocketConfigStatus | None = None
+    # M5B: sockets of an equipped subclass or armor piece fed by profile/character plug sets.
+    plug_set_sockets: list[PlugSetSocketRef] = Field(default_factory=list)
     quantity: int = Field(default=1, ge=0)
     power: int | None = Field(default=None, ge=0)
     damage_type: str | None = None
@@ -285,6 +390,8 @@ class ItemSummary(BaseModel):
             data.pop("socket_configuration", None)
         if data.get("socket_configuration_status") is None:
             data.pop("socket_configuration_status", None)
+        if not data.get("plug_set_sockets"):
+            data.pop("plug_set_sockets", None)
         return data
 
     def gear_slot(self) -> str | None:
@@ -503,6 +610,8 @@ class CharacterSummary(BaseModel):
     emblem_background_url: str | None = None
     subclass: ItemSummary | None = None
     equipped_gear: list[ItemSummary] = Field(default_factory=list)
+    # M5B: character-scoped plug sets referenced by this character's equipped sockets.
+    plug_sets: PlugSetCollection = Field(default_factory=PlugSetCollection)
     quests: list[QuestSummary] = Field(default_factory=list)
     milestones: list[MilestoneSummary] = Field(default_factory=list)
     progressions: list[ProgressionSummary] = Field(default_factory=list)
@@ -533,6 +642,8 @@ class GuardianContext(BaseModel):
     collectibles: CollectionProgressSummary = Field(default_factory=CollectionProgressSummary)
     records: RecordProgressSummary = Field(default_factory=RecordProgressSummary)
     crafting: CraftingProgressSummary = Field(default_factory=CraftingProgressSummary)
+    # M5B: profile-scoped plug sets referenced by any character's equipped sockets.
+    profile_plug_sets: PlugSetCollection = Field(default_factory=PlugSetCollection)
     data_availability: DataAvailability
     data_scope: list[str] = Field(default_factory=list)
 
