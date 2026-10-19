@@ -101,7 +101,10 @@ def item(
         item_subtype=subtype,
         tier=tier,
         class_restriction=class_restriction,  # type: ignore[arg-type]
-        bucket_name=bucket,
+        # Bungie reports a vaulted copy in the vault bucket ("General"); the slot is the
+        # definition's, so both are modeled.
+        bucket_name="General" if location in {"vault", "profile"} and bucket else bucket,
+        equipment_slot=bucket,
         damage_type=damage_type,
         location=location,  # type: ignore[arg-type]
         character_id=character_id,

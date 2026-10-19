@@ -503,5 +503,5 @@ async def test_record_context_and_place_survive_slice_round_trip() -> None:
     assert {value.place for value in restored.recent_activities} >= {"The Moon"}
 
 
-def test_cache_schema_version_tracks_quest_reward_fields() -> None:
-    assert CACHE_SCHEMA_VERSION == 4
+def test_cache_schema_version_tracks_plug_evidence_and_equipment_slot_fields() -> None:
+    assert CACHE_SCHEMA_VERSION == 5

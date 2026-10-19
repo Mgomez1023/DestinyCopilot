@@ -27,7 +27,9 @@ from app.models import (
 )
 
 logger = logging.getLogger(__name__)
-CACHE_SCHEMA_VERSION = 4
+# 5: equipped-plug mechanics evidence (M1) and Manifest equipment slots (M2). Entries cached
+# under 4 lack both; they are discarded and refetched rather than read as complete.
+CACHE_SCHEMA_VERSION = 5
 
 
 class GuardianSlice(StrEnum):

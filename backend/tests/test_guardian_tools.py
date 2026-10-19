@@ -66,7 +66,14 @@ def item(
         item_subtype=subtype,
         tier=tier,
         class_restriction=class_restriction,  # type: ignore[arg-type]
-        bucket_name="Energy Weapons" if item_type == "Weapon" else "Helmet",
+        bucket_name=(
+            "General"
+            if location in {"vault", "profile"}
+            else "Energy Weapons"
+            if item_type == "Weapon"
+            else "Helmet"
+        ),
+        equipment_slot="Energy Weapons" if item_type == "Weapon" else "Helmet",
         power=2000 if item_type in {"Weapon", "Armor"} else None,
         location=location,
         character_id=character_id,

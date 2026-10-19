@@ -331,8 +331,14 @@ class DefinitionResolver:
         return definition
 
     async def resolve_many(
-        self, entity_type: str, entity_hashes: set[int]
+        self, entity_type: str, entity_hashes: set[int], *, local_only: bool = False
     ) -> dict[int, dict[str, Any]]:
+        """Resolve definitions from the cache, then the local database.
+
+        `local_only` skips the per-definition Bungie fallback for optional enrichment: a
+        hash the local database does not hold stays unresolved instead of costing a request.
+        """
+
         if not entity_hashes:
             return {}
         await self._get_manifest()
@@ -369,7 +375,9 @@ class DefinitionResolver:
 
         fallback_hits = 0
         fallback_skipped = 0
-        if database_failed and len(missing) > _MAX_DEGRADED_FALLBACKS:
+        if local_only:
+            fallback_skipped = len(missing)
+        elif database_failed and len(missing) > _MAX_DEGRADED_FALLBACKS:
             fallback_skipped = len(missing)
             logger.warning(
                 "Manifest single-definition fallback skipped component=%s definitions=%d",

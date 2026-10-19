@@ -12,7 +12,9 @@ from app.bungie.client import BUNGIE_ROOT_URL, BungieAPIError, BungieClient
 from app.bungie.item_values import item_type_name, reward_hashes, reward_summary
 from app.bungie.manifest import DefinitionResolver
 from app.content_progression import terminal_record_hashes
+from app.equipment_identity import definition_bucket_hash, equipment_slot
 from app.models import (
+    COSMETIC_PLUG_MARKERS,
     AvailableActivitySummary,
     CharacterSummary,
     CollectionProgressSummary,
@@ -25,18 +27,38 @@ from app.models import (
     ItemSummary,
     MilestoneSummary,
     ObjectiveSummary,
+    PlugEvidence,
+    PlugStatEffect,
     ProgressionSummary,
     QuestSummary,
     RecentActivitySummary,
     RecordObjectiveSummary,
     RecordProgressSummary,
     RecordSummary,
+    SandboxPerkSummary,
     SocketedPlugSummary,
     TitleProgressSummary,
     TitleRecordProgressSummary,
 )
 
 logger = logging.getLogger(__name__)
+
+# Equipped-plug evidence bounds. Text is kept whole enough to quote, never unbounded.
+MAX_PLUG_SANDBOX_PERKS = 4
+MAX_PLUG_STAT_EFFECTS = 6
+MAX_PLUG_EFFECT_TEXT = 500
+UNNAMED_PLUG = "Unnamed plug"
+# DestinyEnergyType; unknown values stay unnamed rather than guessed.
+ENERGY_TYPE_NAMES = {
+    0: "Any",
+    1: "Arc",
+    2: "Solar",
+    3: "Void",
+    4: "Ghost",
+    5: "Subclass",
+    6: "Stasis",
+    7: "Strand",
+}
 
 PLATFORM_NAMES = {
     1: "Xbox",
@@ -216,6 +238,41 @@ def _retained_record_candidates(
         )
     )
     return candidates[:limit], len(candidates)
+
+
+def _raw_text(definition: dict[str, Any], field: str) -> str:
+    """A display field exactly as the Manifest holds it: stripped, empty when blank.
+
+    `_display` substitutes "Unknown" for a blank name, which would hide a blank-name plug.
+    """
+
+    value = (definition.get("displayProperties") or {}).get(field)
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _hash_list(entries: Any, key: str) -> list[int]:
+    """Distinct positive integer hashes under `key`, in order; malformed entries are skipped."""
+
+    found: list[int] = []
+    for entry in entries if isinstance(entries, list) else []:
+        with suppress(TypeError, ValueError, AttributeError):
+            value = int(entry.get(key) or 0)
+            if value and value not in found:
+                found.append(value)
+    return found
+
+
+def _socket_category_hashes(item_definition: dict[str, Any]) -> list[int]:
+    categories = (item_definition.get("sockets") or {}).get("socketCategories")
+    return _hash_list(categories, "socketCategoryHash")
+
+
+def _plug_perk_hashes(plug_definition: dict[str, Any]) -> list[int]:
+    return _hash_list(plug_definition.get("perks"), "perkHash")
+
+
+def _plug_stat_hashes(plug_definition: dict[str, Any]) -> list[int]:
+    return _hash_list(plug_definition.get("investmentStats"), "statTypeHash")
 
 
 def _collect_hashes(value: Any, key_name: str) -> set[int]:
@@ -423,6 +480,8 @@ class GuardianNormalizer:
         self._context_nodes: dict[int, dict[str, Any]] = {}
         self._title_nodes_truncated = False
         self._title_groups_truncated = False
+        # entity type -> (hashes requested, hashes resolved) for equipped-plug enrichment.
+        self._plug_lookups: dict[str, tuple[int, int]] = {}
 
     async def normalize(
         self,
@@ -598,6 +657,9 @@ class GuardianNormalizer:
             self.definitions[entity_type] = await self._safe_resolve_many(entity_type, hashes)
             self.resolver.release_table(entity_type)
 
+        await self._resolve_plug_evidence_definitions(profile)
+        await self._resolve_item_slot_buckets()
+
         # Quest and bounty rewards are declared as item hashes in value.itemValue; their
         # names need one more batched item lookup for hashes not already resolved.
         item_definitions = self.definitions.setdefault("DestinyInventoryItemDefinition", {})
@@ -650,6 +712,70 @@ class GuardianNormalizer:
             if (parent := _first_parent_hash(record_definitions.get(value[1], {})))
         }
         self._context_nodes = await self._resolve_context_nodes(near_record_parents)
+
+    async def _resolve_item_slot_buckets(self) -> None:
+        """Resolve the buckets item *definitions* belong to; they name the equipment slots.
+
+        The bucket on a raw inventory row is where that copy sits (the vault's "General"), so
+        the slot has to come from the definition. There are only a few dozen such buckets.
+        """
+
+        item_definitions = self.definitions.get("DestinyInventoryItemDefinition", {})
+        wanted = {definition_bucket_hash(value) for value in item_definitions.values()}
+        wanted.discard(None)
+        known = self.definitions.setdefault("DestinyInventoryBucketDefinition", {})
+        missing = {value for value in wanted if value not in known}
+        if missing:
+            resolved = await self._safe_resolve_many(
+                "DestinyInventoryBucketDefinition", missing, local_only=True
+            )
+            known.update(resolved)
+            self.resolver.release_table("DestinyInventoryBucketDefinition")
+
+    async def _resolve_plug_evidence_definitions(self, profile: dict[str, Any]) -> None:
+        """Batch-resolve the definitions equipped plugs link to, from the local Manifest only.
+
+        Sandbox perks hold most of the effect text for mods, fragments and aspects; the stat
+        definitions name each plug's investment stat deltas; socket categories name the
+        columns. Only equipped gear is covered, so the lookup stays small.
+        """
+
+        item_definitions = self.definitions.get("DestinyInventoryItemDefinition", {})
+        socket_components = _item_component_data(profile, "sockets")
+        perk_hashes: set[int] = set()
+        stat_hashes: set[int] = set()
+        category_hashes: set[int] = set()
+        for location, _, raw in self._raw_inventory_items(profile, include_equipped=True):
+            if location != "equipped":
+                continue
+            with suppress(TypeError, ValueError):
+                item_definition = item_definitions.get(int(raw.get("itemHash", 0)), {})
+                category_hashes.update(_socket_category_hashes(item_definition))
+            instance_id = raw.get("itemInstanceId")
+            sockets = (
+                (socket_components.get(instance_id) or {}).get("sockets", []) if instance_id else []
+            )
+            for socket in sockets or []:
+                with suppress(TypeError, ValueError):
+                    plug_definition = item_definitions.get(int(socket.get("plugHash") or 0))
+                    if plug_definition:
+                        perk_hashes.update(_plug_perk_hashes(plug_definition))
+                        stat_hashes.update(_plug_stat_hashes(plug_definition))
+        known_stats = self.definitions.setdefault("DestinyStatDefinition", {})
+        lookups: tuple[tuple[str, set[int]], ...] = (
+            ("DestinySandboxPerkDefinition", perk_hashes),
+            ("DestinyStatDefinition", stat_hashes - set(known_stats)),
+            ("DestinySocketCategoryDefinition", category_hashes),
+        )
+        for entity_type, hashes in lookups:
+            resolved = await self._safe_resolve_many(entity_type, hashes, local_only=True)
+            self.definitions.setdefault(entity_type, {}).update(resolved)
+            self._plug_lookups[entity_type] = (len(hashes), len(resolved))
+            self.resolver.release_table(entity_type)
+        logger.info(
+            "Equipped plug evidence lookups %s",
+            {key: f"{found}/{asked}" for key, (asked, found) in self._plug_lookups.items()},
+        )
 
     async def _resolve_context_nodes(self, start_hashes: set[int]) -> dict[int, dict[str, Any]]:
         """Resolve bounded presentation-node ancestry, one batched lookup per level."""
@@ -731,11 +857,19 @@ class GuardianNormalizer:
         return resolved, record_hashes, bool(pending)
 
     async def _safe_resolve_many(
-        self, entity_type: str, entity_hashes: set[int]
+        self, entity_type: str, entity_hashes: set[int], *, local_only: bool = False
     ) -> dict[int, dict[str, Any]]:
         if not entity_hashes:
             return {}
         try:
+            if local_only:
+                try:
+                    return await self.resolver.resolve_many(
+                        entity_type, entity_hashes, local_only=True
+                    )
+                except TypeError:
+                    # A resolver without the option (a test double) has no network fallback.
+                    pass
             return await self.resolver.resolve_many(entity_type, entity_hashes)
         except Exception as exc:
             logger.warning(
@@ -804,6 +938,124 @@ class GuardianNormalizer:
             ),
         )
 
+    def _socket_category_names(self, item_definition: dict[str, Any]) -> dict[int, str]:
+        """Socket index -> category name (such as WEAPON PERKS) from the item definition."""
+
+        names: dict[int, str] = {}
+        categories = (item_definition.get("sockets") or {}).get("socketCategories")
+        for category in categories if isinstance(categories, list) else []:
+            label = self._resolved_name(
+                "DestinySocketCategoryDefinition", category.get("socketCategoryHash")
+            )
+            if not label:
+                continue
+            for index in category.get("socketIndexes") or []:
+                if isinstance(index, int):
+                    names[index] = label
+        return names
+
+    def _plug_evidence(
+        self,
+        plug_definition: dict[str, Any],
+        socket: dict[str, Any],
+        socket_index: int,
+        category_names: dict[int, str],
+    ) -> dict[str, Any]:
+        """Mechanics evidence for one equipped plug, all read from local Manifest definitions.
+
+        Missing and absent stay distinct: see `PlugEvidence`. Nothing here calls the network.
+        """
+
+        category = str((plug_definition.get("plug") or {}).get("plugCategoryIdentifier") or "")
+        if any(marker in category.casefold() for marker in COSMETIC_PLUG_MARKERS):
+            return {}  # Cosmetics never affect a build, so no evidence is collected for them.
+        enabled, visible = socket.get("isEnabled"), socket.get("isVisible")
+        base: dict[str, Any] = {
+            "socket_index": socket_index,
+            "socket_category": category_names.get(socket_index),
+            "is_enabled": enabled if isinstance(enabled, bool) else None,
+            "is_visible": visible if isinstance(visible, bool) else None,
+        }
+        if not plug_definition:
+            base["evidence"] = PlugEvidence(
+                description="definition_unavailable",
+                sandbox_perks="definition_unavailable",
+                stat_effects="definition_unavailable",
+            )
+            return base
+
+        description_state = (
+            "present" if _raw_text(plug_definition, "description") else "empty_in_manifest"
+        )
+
+        linked = _plug_perk_hashes(plug_definition)
+        perks: list[SandboxPerkSummary] = []
+        resolved_any = False
+        for perk_hash in linked:
+            perk_definition = self._definition("DestinySandboxPerkDefinition", perk_hash)
+            if not perk_definition:
+                continue
+            resolved_any = True
+            perk_name = _raw_text(perk_definition, "name")
+            perk_text = _raw_text(perk_definition, "description")
+            displayable = perk_definition.get("isDisplayable")
+            if not perk_name and not perk_text and displayable is not True:
+                continue  # A blank, non-displayable link carries no evidence.
+            perks.append(
+                SandboxPerkSummary(
+                    perk_hash=perk_hash,
+                    name=perk_name or None,
+                    description=perk_text[:MAX_PLUG_EFFECT_TEXT] or None,
+                    is_displayable=displayable if isinstance(displayable, bool) else None,
+                )
+            )
+        perks = perks[:MAX_PLUG_SANDBOX_PERKS]
+        if not linked:
+            sandbox_state = "none_declared"
+        elif not resolved_any:
+            sandbox_state = "unresolved"
+        elif any(value.description for value in perks):
+            sandbox_state = "present"
+        else:
+            sandbox_state = "declared_without_text"
+
+        stat_effects: list[PlugStatEffect] = []
+        for entry in plug_definition.get("investmentStats") or []:
+            with suppress(TypeError, ValueError, AttributeError):
+                value = int(entry.get("value") or 0)
+                if value:
+                    stat_effects.append(
+                        PlugStatEffect(
+                            name=self._definition_name(
+                                "DestinyStatDefinition", entry.get("statTypeHash"), "Unknown stat"
+                            )
+                            or "Unknown stat",
+                            value=value,
+                            conditional=bool(entry.get("isConditionallyActive")),
+                        )
+                    )
+        stat_effects = stat_effects[:MAX_PLUG_STAT_EFFECTS]
+
+        energy = (plug_definition.get("plug") or {}).get("energyCost") or {}
+        cost = _optional_nonnegative(energy.get("energyCost")) if isinstance(energy, dict) else None
+        energy_type = ENERGY_TYPE_NAMES.get(energy.get("energyType")) if cost else None
+        if not (linked or stat_effects or cost) and _raw_text(plug_definition, "name").startswith(
+            "Empty "
+        ):
+            return {}  # An empty socket placeholder is not an effect.
+        base.update(
+            sandbox_perks=perks,
+            stat_effects=stat_effects,
+            energy_cost=cost or None,
+            energy_type=energy_type,
+            evidence=PlugEvidence(
+                description=description_state,
+                sandbox_perks=sandbox_state,
+                stat_effects="present" if stat_effects else "none_declared",
+            ),
+        )
+        return base
+
     def _definition_name(self, entity_type: str, value: Any, fallback: str) -> str:
         definition = self._definition(entity_type, value)
         return _display(definition)[0] if definition else fallback
@@ -869,6 +1121,15 @@ class GuardianNormalizer:
             "DestinyInventoryBucketDefinition", raw.get("bucketHash")
         )
         bucket_name = _display(bucket_definition)[0] if bucket_definition else None
+        slot_name: str | None = None
+        slot_state = "not_collected"
+        if item_type_value in {2, 3} or location == "equipped":
+            slot_name, slot_state = equipment_slot(
+                definition,
+                self._definition(
+                    "DestinyInventoryBucketDefinition", definition_bucket_hash(definition)
+                ),
+            )
 
         instance_id = str(raw["itemInstanceId"]) if raw.get("itemInstanceId") else None
         instances = _item_component_data(profile, "instances")
@@ -897,21 +1158,30 @@ class GuardianNormalizer:
 
         socketed_plugs: list[str] = []
         socketed_plug_details: list[SocketedPlugSummary] = []
+        collect_evidence = include_details and location == "equipped"
+        category_names = self._socket_category_names(definition) if collect_evidence else {}
         socket_components = _item_component_data(profile, "sockets")
         socket_data_available = bool(instance_id and instance_id in socket_components)
         sockets = (
             (socket_components.get(instance_id, {}) or {}).get("sockets", []) if instance_id else []
         )
-        for socket in sockets if include_details else []:
+        for socket_index, socket in enumerate(sockets if include_details else []):
             plug_hash = socket.get("plugHash")
             if not plug_hash:
                 continue
             plug_name = self._definition_name(
                 "DestinyInventoryItemDefinition", plug_hash, "Unknown plug"
             )
-            if plug_name not in socketed_plugs:
-                socketed_plugs.append(plug_name)
             plug_definition = self._definition("DestinyInventoryItemDefinition", plug_hash)
+            # A definition with a blank display name (for example an armor archetype
+            # package) is real but unnamed: keep it visible without an empty-string name.
+            unnamed = bool(plug_definition) and (
+                self._resolved_name("DestinyInventoryItemDefinition", plug_hash) is None
+            )
+            if unnamed:
+                plug_name = UNNAMED_PLUG
+            elif plug_name not in socketed_plugs:
+                socketed_plugs.append(plug_name)
             _, plug_description, _ = _display(plug_definition)
             plug_block = plug_definition.get("plug") or {}
             plug_type_value = int(plug_definition.get("itemType", 0))
@@ -929,6 +1199,12 @@ class GuardianNormalizer:
                     # though every itemType 19 plug maps to the generic "Mod" type.
                     plug_type=plug_definition.get("itemTypeDisplayName") or None,
                     category_identifier=plug_block.get("plugCategoryIdentifier") or None,
+                    unnamed=unnamed,
+                    **(
+                        self._plug_evidence(plug_definition, socket, socket_index, category_names)
+                        if collect_evidence
+                        else {}
+                    ),
                 )
             )
 
@@ -943,6 +1219,8 @@ class GuardianNormalizer:
             class_restriction=class_restriction,
             icon_url=icon,
             bucket_name=bucket_name,
+            equipment_slot=slot_name,
+            equipment_slot_state=slot_state,  # type: ignore[arg-type]
             quantity=max(0, int(raw.get("quantity", 1))),
             power=power,
             damage_type=damage_type,

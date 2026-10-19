@@ -9,6 +9,7 @@ from app.build_analysis import (
     BuildAnalysisService,
     FindBuildAlternativesRequest,
     class_compatibility,
+    equipped_plug_effects,
     plug_groups,
 )
 from app.character_selection import (
@@ -214,7 +215,10 @@ GUARDIAN_TOOL_DEFINITIONS: list[dict[str, Any]] = [
             **_character_selector(optional=True),
             "item_type": _nullable_string("Item type filter such as Weapon or Armor, or null."),
             "subtype": _nullable_string("Subtype filter such as Auto Rifle, or null."),
-            "bucket": _nullable_string("Bucket-name filter, or null."),
+            "bucket": _nullable_string(
+                "Equipment-slot filter such as Helmet or Energy Weapons, or null. Vaulted items "
+                "are matched by their definition slot, not by the vault."
+            ),
             "equipped_only": {
                 "type": "boolean",
                 "description": "Whether to return only equipped items.",
@@ -359,7 +363,8 @@ class GuardianToolService:
             "name": value.name,
             "item_type": value.item_type,
             "subtype": value.item_subtype,
-            "bucket": value.bucket_name,
+            # The equipment slot from the item's definition, not where this copy is stored.
+            "bucket": value.gear_slot(),
             "location": value.location,
             "character_id": value.character_id,
             "equipped": value.is_equipped,
@@ -369,6 +374,8 @@ class GuardianToolService:
             "item_hash": value.item_hash,
             "instance_id": value.instance_id,
         }
+        if value.item_type in {"Weapon", "Armor"} and value.slot_status() != "known":
+            result["slot_status"] = value.slot_status()
         if details:
             result["stats"] = {stat.name: stat.value for stat in value.stats}
             result["perks_and_sockets"] = value.socketed_plugs[:16]
@@ -809,7 +816,7 @@ class GuardianToolService:
             if matches(item.name, request.query)
             and matches(item.item_type, request.item_type)
             and matches(item.item_subtype, request.subtype)
-            and matches(item.bucket_name, request.bucket)
+            and matches(item.gear_slot(), request.bucket)
             and (not request.equipped_only or item.is_equipped)
             and (selected is None or item.character_id == selected.character_id or is_shared(item))
         ]
@@ -867,6 +874,8 @@ class GuardianToolService:
             "armor": loadout["armor"],
             "armor_stats": loadout["armor_stats"],
             "mods": groups["mods"],
+            # Retrieved Manifest effect text for build-affecting equipped plugs, bounded.
+            "equipped_plug_effects": equipped_plug_effects(character),
             # Weapon/armor perks and unclassified sockets; cosmetics are not build-affecting.
             "other_build_affecting_sockets": list(
                 dict.fromkeys(plug.name for plug in [*role_groups["perks"], *role_groups["other"]])

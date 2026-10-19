@@ -16,12 +16,18 @@ from app.bungie.item_values import MAX_REWARD_NAMES, item_type_name, reward_hash
 from app.bungie.manifest import DefinitionResolver
 from app.config import Settings
 from app.core_knowledge import normalize_text
+from app.equipment_identity import (
+    definition_bucket_hash,
+    equipment_slot,
+    is_engram_variant,
+)
 
 logger = logging.getLogger(__name__)
 
 BUNGIE_ROOT_URL = "https://www.bungie.net"
 KNOWLEDGE_INDEX_SCHEMA_VERSION = 5
 MAX_CLOSE_ALTERNATIVES = 3
+MAX_IDENTITY_VARIANTS = 6
 
 INDEXED_DEFINITION_TYPES: tuple[str, ...] = (
     "DestinyInventoryItemDefinition",
@@ -865,6 +871,62 @@ class ManifestKnowledgeProvider:
             "source_hash": collectible.get("sourceHash") or None,
         }
 
+    async def _item_identities(
+        self, definitions: dict[int, dict[str, Any]], selected_hash: int
+    ) -> list[dict[str, Any]]:
+        """Slot, class and variant flags for item definitions, read only from the Manifest."""
+
+        bucket_hashes = {
+            value for value in map(definition_bucket_hash, definitions.values()) if value
+        }
+        buckets = (
+            await self.resolver.resolve_many("DestinyInventoryBucketDefinition", bucket_hashes)
+            if bucket_hashes
+            else {}
+        )
+        identities: list[dict[str, Any]] = []
+        for entity_hash, definition in sorted(
+            definitions.items(), key=lambda pair: (pair[0] != selected_hash, pair[0])
+        ):
+            slot, state = equipment_slot(
+                definition, buckets.get(definition_bucket_hash(definition) or 0)
+            )
+            class_type = definition.get("classType")
+            identities.append(
+                {
+                    "hash": entity_hash,
+                    "selected": entity_hash == selected_hash,
+                    "equipment_slot": slot,
+                    "slot_status": state,
+                    "class_restriction": CLASS_TYPE_NAMES.get(class_type)
+                    if isinstance(class_type, int)
+                    else None,
+                    "equippable": bool(definition.get("equippable")),
+                    "engram_dummy": is_engram_variant(definition),
+                    "has_collectible": bool(definition.get("collectibleHash")),
+                }
+            )
+        return identities
+
+    @staticmethod
+    def _compact_identity(identity: dict[str, Any], reference: dict[str, Any]) -> dict[str, Any]:
+        """One variant record: only what differs from the selected definition, or is notable."""
+
+        record: dict[str, Any] = {"hash": identity["hash"]}
+        if identity["selected"]:
+            record["selected"] = True
+        for key in ("equipment_slot", "class_restriction"):
+            if identity[key] != reference[key]:
+                record[key] = identity[key]
+        if identity["slot_status"] not in ("known", reference["slot_status"]):
+            record["slot_status"] = identity["slot_status"]
+        if not identity["equippable"]:
+            record["equippable"] = False
+        for flag in ("engram_dummy", "has_collectible"):
+            if identity[flag]:
+                record[flag] = True
+        return record
+
     async def get_item_details(self, value: str) -> dict[str, Any]:
         resolved = await self._resolve_entry(value, "DestinyInventoryItemDefinition")
         if resolved is None:
@@ -903,6 +965,23 @@ class ManifestKnowledgeProvider:
             if raw.get("value") is not None
         ][:20]
         collectible = await self._collectible_source(definition)
+        same_name = [
+            candidate.entity_hash
+            for candidate in self.exact_entries(entry.name, "DestinyInventoryItemDefinition")
+        ]
+        variant_hashes = sorted(set(same_name) | {entry.entity_hash})[:MAX_IDENTITY_VARIANTS]
+        if entry.entity_hash not in variant_hashes:
+            variant_hashes = [entry.entity_hash, *variant_hashes[: MAX_IDENTITY_VARIANTS - 1]]
+        variant_definitions = (
+            await self.resolver.resolve_many(
+                "DestinyInventoryItemDefinition", set(variant_hashes) - {entry.entity_hash}
+            )
+            if len(variant_hashes) > 1
+            else {}
+        )
+        variant_definitions[entry.entity_hash] = definition
+        identities = await self._item_identities(variant_definitions, entry.entity_hash)
+        selected_identity = next(value for value in identities if value["selected"])
         class_type = int(definition.get("classType", 3) or 0)
         damage_type_hashes = _unique_hashes(list(definition.get("damageTypeHashes", []) or []))
         category_hashes = _unique_hashes(list(definition.get("itemCategoryHashes", []) or []))
@@ -919,6 +998,9 @@ class ManifestKnowledgeProvider:
                 "subtype": definition.get("itemTypeDisplayName") or None,
                 "rarity": (definition.get("inventory") or {}).get("tierTypeName") or None,
                 "equippable": bool(definition.get("equippable")),
+                # From the item's definition; where a copy is stored never changes it.
+                "equipment_slot": selected_identity["equipment_slot"],
+                "slot_status": selected_identity["slot_status"],
                 "class_restriction": {
                     "code": class_type,
                     "name": CLASS_TYPE_NAMES.get(class_type, "Unknown class restriction"),
@@ -945,11 +1027,32 @@ class ManifestKnowledgeProvider:
                 ),
             },
             "resolution": resolved.resolution,
+            **self._variant_report(identities),
             "limitations": [
                 *self._resolution_limitations(resolved.resolution, "item"),
                 "Manifest item stats and sockets are generic definition data; random rolls and "
                 "owned-instance state require Guardian inventory data.",
             ],
+        }
+
+    @staticmethod
+    def _variant_report(identities: list[dict[str, Any]]) -> dict[str, Any]:
+        """Same-name definitions, kept distinct; attributes that differ are named, not merged."""
+
+        if len(identities) < 2:
+            return {}
+        differing = [
+            key
+            for key in ("equipment_slot", "class_restriction", "equippable")
+            if len({value[key] for value in identities}) > 1
+        ]
+        reference = next(value for value in identities if value["selected"])
+        return {
+            "same_name_variants": [
+                ManifestKnowledgeProvider._compact_identity(value, reference)
+                for value in identities
+            ],
+            "variants_differ_in": differing,
         }
 
     async def get_activity_details(self, value: str) -> dict[str, Any]:

@@ -116,7 +116,8 @@ def weapon(name: str, location: str, character_id: str | None, equipped: bool = 
         item_subtype=subtype,
         tier=tier,
         class_restriction="Any",
-        bucket_name=bucket,
+        bucket_name="General" if location == "vault" else bucket,
+        equipment_slot=bucket,
         damage_type=damage,
         power=2010,
         is_equipped=equipped,
@@ -156,7 +157,8 @@ def armor(
         item_subtype=exotic_bucket,
         tier="Exotic" if exotic else "Legendary",
         class_restriction=owner_class,  # type: ignore[arg-type]
-        bucket_name=exotic_bucket,
+        bucket_name="General" if location == "vault" else exotic_bucket,
+        equipment_slot=exotic_bucket,
         power=2010,
         is_equipped=equipped,
         instance_data_available=True,
@@ -188,6 +190,7 @@ def subclass(class_name: str, element: str, character_id: str) -> ItemSummary:
         tier="Common",
         class_restriction=class_name,  # type: ignore[arg-type]
         bucket_name="Subclass",
+        equipment_slot="Subclass",
         damage_type=element,
         is_equipped=True,
         socket_data_available=True,

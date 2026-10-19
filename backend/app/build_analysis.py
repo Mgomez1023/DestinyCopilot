@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from collections import Counter
 from collections.abc import Sequence
@@ -10,7 +11,14 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.character_selection import CharacterClass, GuardianCharacterResolver
-from app.models import CharacterSummary, ChatTurn, GuardianContext, ItemSummary, SocketedPlugSummary
+from app.models import (
+    COSMETIC_PLUG_MARKERS,
+    CharacterSummary,
+    ChatTurn,
+    GuardianContext,
+    ItemSummary,
+    SocketedPlugSummary,
+)
 from app.session_preferences import SessionPreferenceContext
 
 MAX_LOCKED_ITEMS = 8
@@ -518,7 +526,7 @@ def forced_alternatives_relevance(
         _normalized(value)
         for item in owned
         if item.item_type in {"Weapon", "Armor"}
-        for value in (item.item_subtype, item.bucket_name)
+        for value in (item.item_subtype, item.gear_slot())
         if _normalized(value)
     }
     text = _normalized(message)
@@ -580,7 +588,6 @@ _PERK_SEGMENTS = frozenset(
         "catalysts",
     }
 )
-_COSMETIC_MARKERS = ("shader", "skins", "ornament", "memento", "tracker", "holofoil")
 _PLUG_GROUP_KEYS: dict[PlugRole, str] = {
     "ability": "abilities",
     "aspect": "aspects",
@@ -603,7 +610,7 @@ def classify_plug(category_identifier: str | None, item_type: str | None = None)
     category = (category_identifier or "").casefold()
     if not category:
         return "mod" if (item_type or "").casefold() == "mod" else "other"
-    if any(marker in category for marker in _COSMETIC_MARKERS):
+    if any(marker in category for marker in COSMETIC_PLUG_MARKERS):
         return "cosmetic"
     segments = set(category.split("."))
     if "aspects" in segments:
@@ -621,6 +628,105 @@ def classify_plug(category_identifier: str | None, item_type: str | None = None)
     return "other"
 
 
+MAX_SANDBOX_EFFECTS = 2
+MAX_SANDBOX_EFFECT_CHARS = 200
+MAX_MECHANICS_CHARS = 4000
+MAX_PLUG_EFFECT_ENTRIES = 30
+MECHANICS_KEYS = (
+    "sandbox_effects",
+    "stats",
+    "energy_cost",
+    "energy_type",
+    "socket",
+    "enabled",
+    "visible",
+    "unnamed",
+)
+# Stat-only weapon parts: the last plugs to spend the response budget on.
+_GENERIC_PART_CATEGORIES = frozenset(
+    {
+        "barrels", "magazines", "magazines_gl", "grips", "stocks", "scopes", "batteries",
+        "bowstrings", "arrows", "blades", "guards", "hafts", "rails", "bolts", "tubes",
+    }
+)  # fmt: skip
+# Roles whose plugs change how a build plays; cosmetics and unclassified sockets do not.
+_BUILD_AFFECTING_ROLES = frozenset({"ability", "aspect", "fragment", "perk", "mod"})
+
+
+# A sandbox perk that only restates a stat delta ("-10 Grenade ▼") adds nothing to the text.
+_STAT_ECHO = re.compile(r"^[+\-\u2212]\s?\d+\s+[\w ]+?\s*[\u25b2\u25bc]?$")
+
+
+def _clip(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "\u2026"
+
+
+def _same_text(left: str, right: str) -> bool:
+    a, b = _normalized(left), _normalized(right)
+    return bool(a) and bool(b) and (a == b or a in b or b in a)
+
+
+def effect_status(value: SocketedPlugSummary) -> str | None:
+    """Whether effect text exists, is verifiably absent, or was not retrieved.
+
+    None means the plug was normalized without equipped-plug evidence (a cosmetic, an empty
+    socket placeholder, or a context cached before this evidence existed).
+    """
+
+    evidence = value.evidence
+    if evidence is None:
+        return None
+    if value.description or any(perk.description for perk in value.sandbox_perks):
+        return "present"
+    if evidence.description == "definition_unavailable" or evidence.sandbox_perks in {
+        "unresolved",
+        "definition_unavailable",
+    }:
+        return "not_retrieved"
+    return "none_in_manifest"
+
+
+def _plug_mechanics(value: SocketedPlugSummary) -> dict[str, Any]:
+    """Compact mechanics evidence for one equipped plug; empty when none was collected."""
+
+    status = effect_status(value)
+    if status is None:
+        return {}
+    result: dict[str, Any] = {"effect_status": status}
+    description = value.description or ""
+    effects: list[str] = []
+    for perk in value.sandbox_perks:
+        text = (perk.description or "").strip()
+        if (
+            text
+            and not _STAT_ECHO.match(text)
+            and not _same_text(text, description)
+            and not any(_same_text(text, seen) for seen in effects)
+        ):
+            effects.append(_clip(text, MAX_SANDBOX_EFFECT_CHARS))
+    if effects:
+        result["sandbox_effects"] = effects[:MAX_SANDBOX_EFFECTS]
+    if value.stat_effects:
+        result["stats"] = {
+            (f"{stat.name} (conditional)" if stat.conditional else stat.name): stat.value
+            for stat in value.stat_effects
+        }
+    if value.energy_cost:
+        result["energy_cost"] = value.energy_cost
+        if value.energy_type:
+            result["energy_type"] = value.energy_type
+    if value.socket_category or value.socket_index is not None:
+        label = value.socket_category or "socket"
+        result["socket"] = label if value.socket_index is None else f"{label} #{value.socket_index}"
+    if value.is_enabled is False:
+        result["enabled"] = False
+    if value.is_visible is False:
+        result["visible"] = False
+    if value.unnamed:
+        result["unnamed"] = True
+    return result
+
+
 def _plug(value: SocketedPlugSummary) -> dict[str, Any]:
     return {
         "name": value.name,
@@ -628,7 +734,125 @@ def _plug(value: SocketedPlugSummary) -> dict[str, Any]:
         "type": value.plug_type or value.item_type,
         "role": classify_plug(value.category_identifier, value.item_type),
         "category": value.category_identifier,
+        **_plug_mechanics(value),
     }
+
+
+def _walk_plugs(node: Any) -> list[dict[str, Any]]:
+    """Plug dictionaries in a tool result, in output order."""
+
+    found: list[dict[str, Any]] = []
+    if isinstance(node, dict):
+        if "role" in node and "category" in node and "name" in node:
+            found.append(node)
+        else:
+            for child in node.values():
+                found.extend(_walk_plugs(child))
+    elif isinstance(node, list):
+        for child in node:
+            found.extend(_walk_plugs(child))
+    return found
+
+
+def bound_plug_mechanics(
+    result: dict[str, Any], *, max_chars: int = MAX_MECHANICS_CHARS
+) -> dict[str, Any]:
+    """Keep each plug's mechanics once, within a total character budget.
+
+    Plugs repeat across an analysis (weapon sockets, exotic lists, mod groups), so only the
+    first occurrence carries the added fields; later ones keep `effect_status`. Everything
+    the data layer holds stays in the context; only this response is bounded.
+    """
+
+    seen: set[tuple[str, str]] = set()
+    used = omitted = carried = 0
+    for plug in _walk_plugs(result):
+        extras = {key: plug[key] for key in MECHANICS_KEYS if key in plug}
+        if not extras:
+            continue
+        identity = (str(plug.get("name")), str(plug.get("category")))
+        size = len(json.dumps(extras, ensure_ascii=False))
+        if identity in seen or used + size > max_chars:
+            for key in extras:
+                del plug[key]
+            if identity not in seen:
+                omitted += 1
+            seen.add(identity)
+            continue
+        seen.add(identity)
+        used += size
+        carried += 1
+    if omitted:
+        result["mechanics_budget"] = {
+            "plugs_with_mechanics": carried,
+            "plugs_omitted": omitted,
+            "max_chars": max_chars,
+        }
+    return result
+
+
+def equipped_plug_effects(
+    character: CharacterSummary,
+    *,
+    max_entries: int = MAX_PLUG_EFFECT_ENTRIES,
+    max_chars: int = MAX_MECHANICS_CHARS,
+) -> dict[str, Any]:
+    """Build-affecting equipped plugs with their retrieved effect text, once each.
+
+    Order: subclass, armor, then weapons, so the budget falls on weapon perks last. Plugs
+    that carry nothing beyond a name are skipped; an entry whose effect is `none_in_manifest`
+    or `not_retrieved` is kept so the model sees the gap instead of inventing one.
+    """
+
+    candidates: list[tuple[tuple[int, int, int], dict[str, Any]]] = []
+    for item in character.equipped_gear:
+        item_rank = (
+            0
+            if item.item_type == "Subclass"
+            else 1
+            if item.tier == "Exotic"
+            else 2
+            if item.item_type == "Armor"
+            else 3
+        )
+        for plug in item.socketed_plug_details:
+            role = classify_plug(plug.category_identifier, plug.item_type)
+            if role not in _BUILD_AFFECTING_ROLES or effect_status(plug) is None:
+                continue
+            mechanics = _plug_mechanics(plug)
+            entry = {
+                "on": item.name,
+                "name": plug.name,
+                "role": role,
+                "description": _clip(plug.description, MAX_SANDBOX_EFFECT_CHARS)
+                if plug.description
+                else None,
+                **mechanics,
+            }
+            # Aspects, fragments, mods and traits before plain abilities; plugs that carry
+            # a sandbox effect before stat-only weapon parts.
+            rank = (
+                item_rank,
+                1 if role == "ability" else 0,
+                1 if (plug.category_identifier or "") in _GENERIC_PART_CATEGORIES else 0,
+            )
+            candidates.append((rank, entry))
+    candidates.sort(key=lambda value: value[0])
+    entries: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    used = omitted = 0
+    for _, entry in candidates:
+        identity = (entry["name"], entry["role"])
+        if identity in seen:
+            continue
+        size = len(json.dumps(entry, ensure_ascii=False))
+        if len(entries) >= max_entries or used + size > max_chars:
+            omitted += 1
+            continue
+        seen.add(identity)
+        used += size
+        entries.append(entry)
+    return {"plugs": entries, "omitted": omitted}
 
 
 def plug_groups(plugs: list[SocketedPlugSummary]) -> dict[str, list[SocketedPlugSummary]]:
@@ -662,7 +886,7 @@ def _item(value: ItemSummary, *, copy_number: int | None = None) -> dict[str, An
         "name": value.name,
         "item_type": value.item_type,
         "subtype": value.item_subtype,
-        "slot": value.bucket_name,
+        "slot": value.gear_slot(),
         "rarity": value.tier,
         "class_restriction": value.class_restriction,
         "damage_type": value.damage_type,
@@ -697,6 +921,9 @@ def _item(value: ItemSummary, *, copy_number: int | None = None) -> dict[str, An
             ),
         },
     }
+    if value.slot_status() != "known":
+        # Not a verified Manifest slot: say why instead of passing a storage bucket off as one.
+        result["slot_status"] = value.slot_status()
     if copy_number is not None:
         result["copy_number"] = copy_number
     return result
@@ -833,7 +1060,7 @@ class BuildAnalysisService:
             plug for item in armor for plug in _plug_groups(item.socketed_plug_details)["mods"]
         ][:MAX_SOCKETED_PLUGS]
 
-        return {
+        result = {
             "character_class": character.class_name,
             "goal": request.goal,
             "activity": request.activity,
@@ -867,14 +1094,14 @@ class BuildAnalysisService:
                     dict.fromkeys(item.damage_type for item in weapons if item.damage_type)
                 ),
                 "weapon_slots": list(
-                    dict.fromkeys(item.bucket_name for item in weapons if item.bucket_name)
+                    dict.fromkeys(item.gear_slot() for item in weapons if item.gear_slot())
                 ),
             },
             "supported_dimensions": [
                 value
                 for value, supported in (
                     ("armor_stats", bool(armor_stats)),
-                    ("weapon_slot_coverage", any(item.bucket_name for item in weapons)),
+                    ("weapon_slot_coverage", any(item.gear_slot() for item in weapons)),
                     ("elemental_coverage", any(item.damage_type for item in weapons)),
                     ("owned_rolls", len(missing_roll_data) < len(weapons)),
                     ("exotic_compatibility", True),
@@ -896,6 +1123,7 @@ class BuildAnalysisService:
             "limitations": limitations[:8],
             "scoring": "No universal numeric or tier score is produced.",
         }
+        return bound_plug_mechanics(result)
 
     def find_build_alternatives(self, request: FindBuildAlternativesRequest) -> dict[str, Any]:
         character = self.characters.resolve_one(
@@ -920,7 +1148,7 @@ class BuildAnalysisService:
             item
             for item in character.equipped_gear
             if _normalized(item.name) in locked
-            and _matches(item.bucket_name, request.slot)
+            and _matches(item.gear_slot(), request.slot)
             and _matches(item.item_type, request.item_type)
         ]
 
@@ -948,7 +1176,7 @@ class BuildAnalysisService:
                 item
                 for item in scoped
                 if item.item_type in {"Weapon", "Armor"}
-                and _matches(item.bucket_name, request.slot)
+                and _matches(item.gear_slot(), request.slot)
                 and _matches(item.item_type, request.item_type)
                 and _matches(item.item_subtype, request.subtype)
                 and _matches(item.damage_type, request.damage_type)
@@ -1004,6 +1232,20 @@ class BuildAnalysisService:
             limitations.append(
                 "Owned entries with unresolved Manifest identity or type were excluded from the "
                 "candidate shortlist."
+            )
+        slot_unverified = (
+            sum(
+                item.item_type in {"Weapon", "Armor"} and item.gear_slot() is None
+                for item in scoped
+            )
+            if request.slot
+            else 0
+        )
+        if slot_unverified:
+            limitations.append(
+                f"{slot_unverified} owned weapon/armor item(s) have no verified equipment slot "
+                "(unresolved definition, or data cached before slots were recorded), so a slot "
+                "filter cannot include them. Refreshing Guardian data restores the slot."
             )
         if locked_equipped and request.slot:
             limitations.append(
@@ -1065,6 +1307,7 @@ class BuildAnalysisService:
             "candidates": candidates,
             "total_matching_owned_copies": len(filtered),
             "excluded_other_class_count": excluded_other_class,
+            "items_without_verified_slot": slot_unverified,
             "returned": len(candidates),
             "limit": request.limit,
             "truncated": len(filtered) > request.limit,

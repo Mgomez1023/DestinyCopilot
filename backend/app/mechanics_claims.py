@@ -281,13 +281,15 @@ class EntityEvidence:
 
 _EQUIPPED_KEYS = frozenset(
     {"equipped_weapons", "equipped_armor", "equipped_exotics", "subclass", "armor_mods",
-     "weapons", "armor", "mods"}
+     "weapons", "armor", "mods", "equipped_plug_effects"}
 )  # fmt: skip
 _NAME_LIST_KEYS = frozenset(
     {"perks_and_sockets", "socketed_plug_names", "mods", "fragments", "aspects", "abilities",
      "other_build_affecting_sockets"}
 )  # fmt: skip
 _TEXT_KEYS = ("description", "progress_description")
+# Lists of short effect strings (M1 plug evidence: Bungie sandbox-perk summaries).
+_TEXT_LIST_KEYS = ("sandbox_effects",)
 # An item's effect often lives in a plug it carries (an Exotic's intrinsic trait), so the
 # plug's text also counts as retrieved text for the item.
 _CARRIED_KEYS = ("default_socket_plugs", "intrinsic_perks", "socketed_plugs")
@@ -392,7 +394,12 @@ class MechanicsEvidenceLedger:
                 entity.add_text(text, source)
         item_type = node.get("item_type")
         if item_type == "Armor":
-            slot = node.get("slot") or node.get("bucket") or node.get("subtype")
+            slot = (
+                node.get("equipment_slot")
+                or node.get("slot")
+                or node.get("bucket")
+                or node.get("subtype")
+            )
             if isinstance(slot, str) and slot.casefold() in ARMOR_SLOTS:
                 entity.slot = ARMOR_SLOTS[slot.casefold()]
         restriction = node.get("class_restriction")
@@ -400,6 +407,11 @@ class MechanicsEvidenceLedger:
             restriction = restriction.get("name")
         if isinstance(restriction, str) and restriction.casefold() in CLASS_NAMES:
             entity.class_restriction = restriction.casefold()
+        for list_key in _TEXT_LIST_KEYS:
+            values = node.get(list_key)
+            for text in values if isinstance(values, list) else []:
+                if isinstance(text, str) and text.strip():
+                    entity.add_text(text, source)
         for carried_key in _CARRIED_KEYS:
             carried = node.get(carried_key)
             for plug in carried if isinstance(carried, list) else []:
