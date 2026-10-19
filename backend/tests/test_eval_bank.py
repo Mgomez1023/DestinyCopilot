@@ -59,7 +59,14 @@ def test_bank_size_ids_and_subsets() -> None:
     assert 80 <= len(BANK) <= 150
     assert len({value.id for value in BANK}) == len(BANK)
     assert 20 <= len(REPRESENTATIVE) <= 30
-    assert set(SUBSETS) == {"golden", "representative", "conversations", "acceptance", "full"}
+    assert set(SUBSETS) == {
+        "golden",
+        "representative",
+        "conversations",
+        "acceptance",
+        "mechanics",
+        "full",
+    }
     assert len(SUBSETS["acceptance"]) == 7
     assert len(SUBSETS["conversations"]) == 3
     assert all(len(value.turns) >= 3 for value in SUBSETS["conversations"])

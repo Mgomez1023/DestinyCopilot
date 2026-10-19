@@ -29,7 +29,9 @@ from app.session_preferences import (
 )
 
 PlanningKind = Literal["new_request", "continuation", "character_switch", "none"]
-TurnKind = Literal["standalone", "alternatives", "constraint", "character_only", "other"]
+TurnKind = Literal[
+    "standalone", "alternatives", "feedback", "constraint", "character_only", "other"
+]
 
 _I = r"(?:i|we)"
 _TIME_UNIT = r"(?:minutes?|mins?|hours?|hrs?)"
@@ -125,6 +127,21 @@ _ALTERNATIVES = re.compile(
     r"\bany\s+(?:other|alternatives)\b",
     re.IGNORECASE,
 )
+# Feedback on what was suggested: declining it, or taking a declined option back.
+REJECTION_PATTERN = re.compile(
+    r"\b(?:don'?t|do not|didn'?t|would rather not|rather not)\b[^.?!]{0,25}"
+    r"\b(?:want|feel like|wanna|like|care for|care about)\b|"
+    r"\b(?:not|no)\s+(?:that|this|it|those|them)\b|\bno thanks\b|\bpass on\b|"
+    r"\bskip\s+(?:that|this|it|those|them)\b|\b(?:nah|nope)\b|"
+    r"\bsounds?\s+(?:boring|bad|tedious)\b|\bnot interested\b|\b(?:sick|tired) of\b|"
+    r"\bdone with\b|\banything but\b",
+    re.IGNORECASE,
+)
+REVERSAL_PATTERN = re.compile(
+    r"\b(?:fine|okay|ok|actually|after all|changed my mind|let'?s|i'?ll|i will|go with|"
+    r"bring back|sure)\b",
+    re.IGNORECASE,
+)
 MAX_FOLLOWUP_WORDS = 14
 MAX_SWITCH_WORDS = 10
 _NON_CHARACTER_FIELDS: frozenset[PreferenceField] = frozenset(
@@ -185,6 +202,10 @@ def _turn_kind(message: str) -> TurnKind:
         return "constraint"
     if updates == {"character"} and words <= MAX_SWITCH_WORDS:
         return "character_only"
+    if words <= MAX_FOLLOWUP_WORDS and (
+        REJECTION_PATTERN.search(message) or REVERSAL_PATTERN.search(message)
+    ):
+        return "feedback"
     return "other"
 
 
@@ -200,6 +221,8 @@ class PlanningIntent:
     added: list[str] = field(default_factory=list)
     cleared: list[str] = field(default_factory=list)
     stale_constraints_dropped: bool = False
+    # Turns (both roles) of the current planning segment, oldest first, excluding this message.
+    segment_history: list[ChatTurn] = field(default_factory=list)
 
     def trace(self, *, context_rebuilt: bool) -> dict[str, object]:
         return {
@@ -237,9 +260,8 @@ def classify_planning_intent(
     kept on the returned preferences untouched.
     """
 
-    users = [
-        turn.content for turn in history[-MAX_PREFERENCE_HISTORY_TURNS:] if turn.role == "user"
-    ]
+    window = list(history[-MAX_PREFERENCE_HISTORY_TURNS:])
+    users = [turn.content for turn in window if turn.role == "user"]
     state: Literal["idle", "pending", "active"] = "idle"
     segment_start = 0
     for index, text in enumerate(users):
@@ -248,6 +270,8 @@ def classify_planning_intent(
             if state == "idle":
                 segment_start = index
             state = "active"  # constraints stated just before the ask join this plan
+        elif kind == "feedback":
+            continue  # reacting to a suggestion neither starts nor ends a planning exchange
         elif kind in ("alternatives", "constraint"):
             if state == "idle":
                 segment_start, state = index, "pending"
@@ -260,13 +284,27 @@ def classify_planning_intent(
     kind: PlanningKind = "none"
     if signal == "standalone":
         kind = "continuation" if state == "active" else "new_request"
-    elif signal in ("alternatives", "constraint") and state in ("active", "pending"):
+    elif (
+        signal == "feedback"
+        and state == "active"
+        or signal in ("alternatives", "constraint")
+        and state in ("active", "pending")
+    ):
         kind = "continuation"
     elif signal == "character_only" and state == "active" and character_switched:
         kind = "character_switch"
 
     is_planning = kind != "none"
     prior_turns = users[segment_start:] if state != "idle" else []
+    segment_history: list[ChatTurn] = []
+    if state != "idle":
+        seen = 0
+        for position, turn in enumerate(window):
+            if turn.role == "user":
+                if seen == segment_start:
+                    segment_history = window[position:]
+                    break
+                seen += 1
     before = replay_preferences(prior_turns)
     after = replay_preferences([*prior_turns, message])
     # Character is P0-owned: keep exactly what conversation scope derived.
@@ -305,4 +343,5 @@ def classify_planning_intent(
         added=added,
         cleared=cleared,
         stale_constraints_dropped=is_planning and dropped,
+        segment_history=segment_history if is_planning else [],
     )

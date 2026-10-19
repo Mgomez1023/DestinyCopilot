@@ -74,6 +74,7 @@ GROUNDING_SAFETY_VIOLATION_CODES = frozenset(
         "locked_item_replaced",
         "near_completion_only",
         "raw_build_identifier",
+        "rejected_candidate_recommended",
         # Re-asking a preference the user already stated ignores explicit constraints.
         "reasked_known_activity_mode",
         "reasked_known_character",

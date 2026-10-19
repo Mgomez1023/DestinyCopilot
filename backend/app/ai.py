@@ -48,8 +48,13 @@ from app.live_knowledge import (
     unavailable_live_message,
     volatile_topic,
 )
+from app.mechanics_claims import (
+    MechanicsEvidenceLedger,
+    detect_mechanics_claims,
+)
 from app.models import ChatRequest, ChatResponse, ChatSource, ChatTurn, GuardianContext
 from app.ownership_evidence import record_ownership_evidence
+from app.planning_alternatives import apply_alternatives, derive_alternatives
 from app.planning_intent import classify_planning_intent, is_standalone_planning
 from app.response_quality import (
     BuildResponseValidationContext,
@@ -523,9 +528,19 @@ class RecommendationService:
             if session_planning
             else None
         )
+        alternatives = None
+        if planning_context is not None:
+            alternatives = derive_alternatives(
+                planning_intent.segment_history,
+                request.message,
+                planning_context.candidates,
+                character_switched=planning_continuation,
+            )
+            planning_context = apply_alternatives(planning_context, alternatives)
         current_character = resolve_current_character(context)
         core_grounding = self._core_grounding(request.message, planning_context)
         quality_validator = ResponseQualityValidator()
+        mechanics_ledger = MechanicsEvidenceLedger()
         trace: dict[str, Any] = {
             "trace_id": trace_id,
             "user_message_length": len(request.message),
@@ -584,15 +599,23 @@ class RecommendationService:
                 ),
                 "requested_character_scope": character_scope,
             },
-            "planning_intent": planning_intent.trace(
-                context_rebuilt=bool(planning_continuation and conversation_scope.switched)
-            ),
+            "planning_intent": {
+                **planning_intent.trace(
+                    context_rebuilt=bool(planning_continuation and conversation_scope.switched)
+                ),
+                "alternatives": (
+                    alternatives.trace(candidates_remaining=len(planning_context.candidates))
+                    if alternatives is not None and planning_context is not None
+                    else None
+                ),
+            },
             "planning_correction": {
                 "attempted": False,
                 "violation_codes": [],
                 "succeeded": None,
             },
             "answer": "not_generated",
+            "mechanics_claims": None,
             "tool_trace": [],
             "character_selections": [],
             "ownership_validation": {"passes": [], "fallback_due_to_ownership": False},
@@ -737,6 +760,7 @@ class RecommendationService:
                         trace["emitted_status_categories"] = list(stream_status.emitted_categories)
                     trace["grounding"]["web_research"] = True
                     trace["web_research"]["occurred"] = True
+                    mechanics_ledger.note_web_research()
                     trace["web_research_occurred"] = True
                     self._record_knowledge_category(trace, "web")
                 trace["web_research"]["source_count"] = len(web_sources)
@@ -922,6 +946,9 @@ class RecommendationService:
                         allow_identifiers=bool(DEBUG_IDENTIFIER_PATTERN.search(request.message)),
                     )
                     self._record_destination_conflicts(core_grounding, message)
+                    trace["mechanics_claims"] = self._mechanics_claim_trace(
+                        message, mechanics_ledger
+                    )
                     if final_forced:
                         trace["tool_loop"]["final_answer_succeeded"] = True
                         trace["tool_loop"]["final_answer_source"] = "model"
@@ -982,6 +1009,16 @@ class RecommendationService:
                                 character_scope,
                                 preference_context,
                             )
+                            if alternatives is not None:
+                                planning_context = apply_alternatives(
+                                    planning_context,
+                                    derive_alternatives(
+                                        planning_intent.segment_history,
+                                        request.message,
+                                        planning_context.candidates,
+                                        character_switched=planning_continuation,
+                                    ),
+                                )
                             # The core block was built once for this turn and is re-attached,
                             # not rebuilt, when refreshed planning context changes routing.
                             turn_instructions = self._with_core_facts(
@@ -1006,6 +1043,7 @@ class RecommendationService:
                     result = await self._execute_tool_call(
                         guardian_tools, call.name, call.arguments
                     )
+                    self._record_mechanics_evidence(mechanics_ledger, call.name, category, result)
                     self._update_build_validation_context(
                         build_validation_context,
                         trace,
@@ -2276,6 +2314,50 @@ class RecommendationService:
             truncation="disabled",
             store=False,
         )
+
+    @staticmethod
+    def _record_mechanics_evidence(
+        ledger: MechanicsEvidenceLedger, tool_name: str, category: str, result: Any
+    ) -> None:
+        """Observation only: reads a tool result into the trace-only mechanics ledger."""
+
+        try:
+            ledger.record(tool_name, category, result)
+        except Exception:
+            logger.warning("Mechanics evidence ledger could not record a tool result")
+
+    def _mechanics_claim_trace(
+        self, answer: str, ledger: MechanicsEvidenceLedger
+    ) -> dict[str, Any]:
+        """Trace-only mechanics-claim summary; it never alters or blocks the answer."""
+
+        try:
+            report = detect_mechanics_claims(
+                answer, ledger, entity_resolver=self._manifest_name_resolver()
+            )
+            return report.to_trace()
+        except Exception:
+            logger.warning("Mechanics claim detection failed; trace field omitted")
+            return {"mode": "trace_only", "error": "detector_failed"}
+
+    def _manifest_name_resolver(self) -> Callable[[str], bool] | None:
+        """Local index lookup: does the Manifest know this exact item name? No I/O."""
+
+        providers = getattr(self.knowledge, "providers", None) or []
+        indexed = [value for value in providers if hasattr(value, "exact_entries")]
+        if not indexed:
+            return None
+
+        def known(name: str) -> bool:
+            try:
+                return any(
+                    provider.exact_entries(name, "DestinyInventoryItemDefinition")
+                    for provider in indexed
+                )
+            except Exception:
+                return True  # An unavailable index must never read as "unknown item".
+
+        return known
 
     @staticmethod
     def _record_knowledge_category(trace: dict[str, Any], category: str) -> None:

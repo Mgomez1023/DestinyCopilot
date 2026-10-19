@@ -16,6 +16,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from evals.judge import judge
+from evals.mechanics import mechanics_baseline
 from evals.profiles import PROFILES, profile_facts
 from evals.properties import evaluate_properties
 from evals.report import record, summary_markdown, usage_stats
@@ -27,8 +28,8 @@ from evals.scenarios import SUBSETS
 async def run(arguments: argparse.Namespace) -> int:
     scenarios = list(SUBSETS[arguments.subset])
     if arguments.ids:
-        wanted = set(arguments.ids.split(","))
-        scenarios = [value for value in SUBSETS["full"] if value.id in wanted]
+        pool = {value.id: value for subset in SUBSETS.values() for value in subset}
+        scenarios = [pool[value] for value in arguments.ids.split(",") if value in pool]
     if arguments.repeat > 1:
         from dataclasses import replace
 
@@ -105,6 +106,7 @@ async def run(arguments: argparse.Namespace) -> int:
                 "meta": meta,
                 "aggregate": aggregate(cards),
                 "usage": usage_stats(records),
+                "mechanics_baseline": mechanics_baseline(records),
                 "scenarios": records,
             },
             ensure_ascii=False,

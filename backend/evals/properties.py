@@ -602,6 +602,20 @@ def conversation_isolation(obs: Observation, facts: ProfileFacts) -> PropertyRes
     return _ok(name)
 
 
+def mechanics_trace(obs: Observation, facts: ProfileFacts) -> PropertyResult:
+    """Informational only: reports the trace-only mechanics-claim summary; never fails."""
+
+    name = "mechanics_claims_trace"
+    summary = obs.final.trace.get("mechanics_claims")
+    if not isinstance(summary, dict) or "claims_total" not in summary:
+        return _skip(name)
+    return _ok(
+        name,
+        f"{summary['claims_total']} claims, {summary['needs_attention']} need attention "
+        f"{summary.get('by_status')}",
+    )
+
+
 PROPERTIES: tuple[Callable[[Observation, ProfileFacts], PropertyResult], ...] = (
     conversation_isolation,
     ownership_claims,
@@ -625,6 +639,7 @@ PROPERTIES: tuple[Callable[[Observation, ProfileFacts], PropertyResult], ...] = 
     follow_up_questions,
     not_repeating_prompt,
     planning_focus,
+    mechanics_trace,
 )
 
 

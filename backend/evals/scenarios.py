@@ -8,6 +8,7 @@ Not a Cartesian product: each scenario targets an intersection that has product 
 from typing import Any
 
 from evals.golden import BUILD_TOOLS, GOLDEN, PLANNING_TOOLS
+from evals.mechanics import MECHANICS_SCENARIOS
 from evals.model import Expectations, Scenario
 
 MANIFEST_TOOLS = ("search_destiny_entities", "get_item_details", "get_activity_details")
@@ -1317,6 +1318,8 @@ SUBSETS: dict[str, tuple[Scenario, ...]] = {
     "representative": REPRESENTATIVE,
     "conversations": CONVERSATIONS,
     "acceptance": ACCEPTANCE,
+    # Mechanics grounding baseline (M0); separate so the main bank keeps its size limits.
+    "mechanics": MECHANICS_SCENARIOS,
     "full": BANK,
 }
 

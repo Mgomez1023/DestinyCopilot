@@ -95,6 +95,11 @@ class SessionPlanningContext(BaseModel):
     explicitly_known_completion_facts: list[str] = Field(default_factory=list, max_length=6)
     explicitly_unknown_completion_facts: list[str] = Field(default_factory=list, max_length=6)
     data_limitations: list[str] = Field(default_factory=list, max_length=8)
+    # Set when the user rejected suggestions or asked for another option; see
+    # planning_alternatives. Excluded candidates are already removed from `candidates`.
+    excluded_by_user: list[str] = Field(default_factory=list, max_length=12)
+    already_recommended: list[str] = Field(default_factory=list, max_length=3)
+    alternative_guidance: str | None = None
 
 
 class PlanningViolation(BaseModel):
@@ -470,6 +475,20 @@ def build_session_planning_context(
     )
 
 
+_AVOID_SENTENCE_MARKERS = (
+    "instead of",
+    "other than",
+    "besides",
+    "rather than",
+    "aside from",
+    "apart from",
+    "without",
+    "skipping",
+    "set aside",
+    "already",
+)
+
+
 class PlanningAnswerValidator:
     _recommendation_markers = (
         "recommend",
@@ -744,6 +763,24 @@ class PlanningAnswerValidator:
                         correction=f"Honor the user's explicit exclusion of {exclusion}.",
                     )
                 )
+        avoided = [*context.excluded_by_user, *context.already_recommended]
+        for name in avoided:
+            alias = _normalize(re.sub(r"^(?:the|a|an)\s+", "", name, flags=re.I))
+            if len(alias) >= 4 and any(
+                alias in _normalize(sentence)
+                and not any(marker in sentence for marker in _AVOID_SENTENCE_MARKERS)
+                for sentence in recommendation_sentences
+            ):
+                violations.append(
+                    PlanningViolation(
+                        code="rejected_candidate_recommended",
+                        correction=(
+                            "The user rejected or already received that option; recommend a "
+                            "different candidate from the planning context instead."
+                        ),
+                    )
+                )
+                break
         mode_conflicts = {
             "pve": ("pvp", "crucible", "trials", "iron banner"),
             "pvp": ("pve", "strike", "nightfall", "dungeon", "raid", "campaign"),
@@ -867,6 +904,20 @@ class PlanningAnswerValidator:
             if context.requested_character_scope
             else "the selected character"
         )
+        if context.alternative_guidance:
+            set_aside = [*context.excluded_by_user, *context.already_recommended]
+            aside = f"I've set aside {', '.join(set_aside[:3])}. " if set_aside else ""
+            if context.candidates:
+                options = ", ".join(value.name for value in context.candidates[:3])
+                return (
+                    f"{aside}Other grounded options I can see for {scope} are {options}. "
+                    "I couldn't check a fuller plan against your constraints, so tell me which "
+                    "one to build out."
+                )
+            return (
+                f"{aside}I don't see another grounded option for {scope} in the account data "
+                "I have. If you tell me what kind of session you want, I can look for a match."
+            )
         if len(context.named_content) >= 2:
             choices = " and ".join(value.content for value in context.named_content[:2])
             return (

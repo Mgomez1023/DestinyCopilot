@@ -57,6 +57,7 @@ def record(obs: Observation, results: list[PropertyResult], card: ScoreCard) -> 
                 "answer_kind": trace.get("answer"),
                 "build_analysis": trace.get("build_analysis"),
                 "required_live_topic": trace.get("required_live_topic"),
+                "mechanics_claims": trace.get("mechanics_claims"),
             }
         )
     return {

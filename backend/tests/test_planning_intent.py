@@ -331,3 +331,14 @@ def test_service_rebuilds_planning_for_the_new_character_after_a_planning_switch
     assert trace["planning_intent"]["character_switch_continuation"] is True
     assert trace["planning_intent"]["context_rebuilt"] is True
     assert trace["conversation_scope"]["active"] == "Hunter"
+
+
+@pytest.mark.parametrize(
+    "message", ["Not that one.", "Nah, pass.", "Actually, the first one is fine."]
+)
+def test_feedback_on_a_suggestion_continues_an_active_plan_only(message: str) -> None:
+    planned = exchange("What should I do next?")
+
+    assert classify(planned, message).kind == "continuation"
+    assert classify(exchange("How does Sunshot work?"), message).is_planning is False
+    assert classify([], message).is_planning is False
