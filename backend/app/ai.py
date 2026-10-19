@@ -69,6 +69,7 @@ from app.response_quality import (
 from app.session_planning import (
     SessionPlanningContext,
     build_session_planning_context,
+    requirement_trace,
 )
 from app.session_preferences import (
     SessionPreferenceDerivation,
@@ -541,6 +542,7 @@ class RecommendationService:
         core_grounding = self._core_grounding(request.message, planning_context)
         quality_validator = ResponseQualityValidator()
         mechanics_ledger = MechanicsEvidenceLedger()
+        self._record_planning_requirements(mechanics_ledger, planning_context)
         trace: dict[str, Any] = {
             "trace_id": trace_id,
             "user_message_length": len(request.message),
@@ -598,6 +600,7 @@ class RecommendationService:
                     len(planning_context.named_content) if planning_context else 0
                 ),
                 "requested_character_scope": character_scope,
+                "requirements": requirement_trace(planning_context),
             },
             "planning_intent": {
                 **planning_intent.trace(
@@ -1033,6 +1036,10 @@ class RecommendationService:
                                     current_character,
                                 ),
                                 core_grounding,
+                            )
+                            self._record_planning_requirements(mechanics_ledger, planning_context)
+                            trace["planning_context"]["requirements"] = requirement_trace(
+                                planning_context
                             )
                             trace["planning_context"]["candidate_count"] = len(
                                 planning_context.candidates
@@ -2325,6 +2332,19 @@ class RecommendationService:
             ledger.record(tool_name, category, result)
         except Exception:
             logger.warning("Mechanics evidence ledger could not record a tool result")
+
+    @staticmethod
+    def _record_planning_requirements(
+        ledger: MechanicsEvidenceLedger, planning_context: SessionPlanningContext | None
+    ) -> None:
+        """Observation only: lets the trace-only ledger see requirements shown to the model."""
+
+        if planning_context is None:
+            return
+        try:
+            ledger.record_planning(planning_context)
+        except Exception:
+            logger.warning("Mechanics evidence ledger could not record planning requirements")
 
     def _mechanics_claim_trace(
         self, answer: str, ledger: MechanicsEvidenceLedger

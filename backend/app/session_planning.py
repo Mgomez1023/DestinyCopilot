@@ -2,7 +2,7 @@ import re
 from collections import Counter
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_serializer
 
 from app.content_progression import (
     CompletionScope,
@@ -10,7 +10,20 @@ from app.content_progression import (
     ContentStatus,
     EvidenceState,
 )
-from app.models import CharacterSummary, GuardianContext, ObjectiveSummary
+from app.models import (
+    CharacterSummary,
+    GuardianContext,
+    ObjectiveRequirement,
+    ObjectiveSummary,
+)
+from app.objective_requirements import is_restrictive
+from app.requirement_fit import (
+    REQUIREMENT_BASIS,
+    LoadoutEvidence,
+    PlanningRequirement,
+    loadout_evidence,
+    planning_requirement,
+)
 from app.session_preferences import PrimaryGoal, SessionPreferenceContext
 
 CandidateClassification = Literal[
@@ -26,6 +39,8 @@ MAX_CANDIDATE_DESCRIPTION = 160
 MAX_CONTEXT_PATH = 6
 MAX_RECENT_ACTIVITIES = 6
 MAX_PROGRESSIONS = 6
+MAX_REQUIREMENTS_PER_CANDIDATE = 2
+MAX_REQUIREMENT_CHARS = 2400
 
 
 class PlanningObjective(BaseModel):
@@ -76,6 +91,19 @@ class PlanningCandidate(BaseModel):
     recent_occurrences: int = Field(default=0, ge=0)
     overlap_signals: list[str] = Field(default_factory=list, max_length=3)
     external_significance_needed: bool = True
+    # M4B: compact structured objective requirements with an equipped-loadout comparison.
+    requirements: list[PlanningRequirement] = Field(
+        default_factory=list, max_length=MAX_REQUIREMENTS_PER_CANDIDATE
+    )
+    requirements_consistency: Literal["differs_in_specificity", "conflicting"] | None = None
+
+    @model_serializer(mode="wrap")
+    def _omit_empty_requirements(self, handler):  # type: ignore[no-untyped-def]
+        data = handler(self)
+        for key in ("requirements", "requirements_consistency"):
+            if not data.get(key):
+                data.pop(key, None)
+        return data
 
 
 class SessionPlanningContext(BaseModel):
@@ -100,6 +128,17 @@ class SessionPlanningContext(BaseModel):
     excluded_by_user: list[str] = Field(default_factory=list, max_length=12)
     already_recommended: list[str] = Field(default_factory=list, max_length=3)
     alternative_guidance: str | None = None
+    # M4B: how to read candidate `requirements`, present only when some candidate has any.
+    requirement_basis: str | None = None
+    requirements_omitted: int = Field(default=0, ge=0)
+
+    @model_serializer(mode="wrap")
+    def _omit_empty_requirement_fields(self, handler):  # type: ignore[no-untyped-def]
+        data = handler(self)
+        for key in ("requirement_basis", "requirements_omitted"):
+            if not data.get(key):
+                data.pop(key, None)
+        return data
 
 
 class PlanningViolation(BaseModel):
@@ -145,6 +184,91 @@ def _objectives(values: list[ObjectiveSummary]) -> list[PlanningObjective]:
         )
         for value in values[:MAX_OBJECTIVES_PER_CANDIDATE]
     ]
+
+
+def _candidate_requirements(
+    described: list[ObjectiveRequirement], objectives: list[ObjectiveSummary]
+) -> list[ObjectiveRequirement]:
+    """Requirements worth showing: restrictive ones, and any that could not be established.
+
+    A clean generic "defeat" says nothing the description does not, so it is left out. Text
+    from the description and from objective definitions stays separate; duplicates by content
+    are dropped, never merged.
+    """
+
+    found: list[ObjectiveRequirement] = []
+    seen: set[tuple[str, ...]] = set()
+    for requirement in [*described, *(v.requirement for v in objectives if v.requirement)]:
+        if requirement.parse_status == "verified" and not is_restrictive(requirement):
+            continue
+        key = (
+            requirement.source_kind,
+            requirement.element,
+            requirement.completion_action,
+            requirement.parse_status,
+            *requirement.modifiers,
+        )
+        if key not in seen:
+            seen.add(key)
+            found.append(requirement)
+    return found
+
+
+def requirement_trace(context: SessionPlanningContext | None) -> dict[str, object]:
+    """Counts only, for the turn trace: candidates with requirements and comparison outcomes."""
+
+    if context is None:
+        return {"candidates_with_requirements": 0}
+    fits = Counter(
+        value.fit.status for candidate in context.candidates for value in candidate.requirements
+    )
+    return {
+        "candidates_with_requirements": sum(
+            bool(value.requirements) for value in context.candidates
+        ),
+        "fit": dict(sorted(fits.items())),
+        "omitted": context.requirements_omitted,
+    }
+
+
+def _attach_requirements(
+    candidates: dict[str, PlanningCandidate],
+    pending: dict[str, tuple[list[ObjectiveRequirement], str | None]],
+    loadout: LoadoutEvidence | None,
+) -> tuple[str | None, int]:
+    """Attach bounded requirement evidence to candidates; return (basis, omitted count).
+
+    Candidates are visited in order and the total serialized size is capped, so later
+    candidates lose requirement detail first. Nothing here changes which candidates exist, their
+    order, or any other field.
+    """
+
+    if loadout is None:
+        return None, 0
+    used = len(REQUIREMENT_BASIS)
+    omitted = 0
+    attached = False
+    for key, candidate in candidates.items():
+        requirements, consistency = pending.get(key, ([], None))
+        if not requirements:
+            continue
+        kept: list[PlanningRequirement] = []
+        for requirement in requirements:
+            if len(kept) >= MAX_REQUIREMENTS_PER_CANDIDATE:
+                omitted += 1
+                continue
+            entry = planning_requirement(requirement, loadout)
+            size = len(entry.model_dump_json())
+            if used + size > MAX_REQUIREMENT_CHARS:
+                omitted += 1
+                continue
+            used += size
+            kept.append(entry)
+        if kept:
+            candidate.requirements = kept
+            candidate.requirements_consistency = consistency  # type: ignore[assignment]
+            attached = True
+    return (REQUIREMENT_BASIS if attached else None), omitted
 
 
 def _classification(
@@ -270,6 +394,8 @@ def build_session_planning_context(
         _normalize(value.name) for value in (character.recent_activities if character else [])
     )
     candidates: dict[str, PlanningCandidate] = {}
+    # M4B: structured requirements by candidate key; compared after candidates are settled.
+    pending_requirements: dict[str, tuple[list[ObjectiveRequirement], str | None]] = {}
 
     def add_candidate(candidate: PlanningCandidate) -> None:
         key = _normalize(candidate.name)
@@ -335,6 +461,15 @@ def build_session_planning_context(
     for quest in active_quests[:6]:
         key = _normalize(quest.name)
         is_named_content = key in requested_content_keys
+        pending_requirements.setdefault(
+            key,
+            (
+                _candidate_requirements(quest.requirements, quest.objectives),
+                quest.requirements_consistency
+                if quest.requirements_consistency in ("differs_in_specificity", "conflicting")
+                else None,
+            ),
+        )
         add_candidate(
             PlanningCandidate(
                 name=quest.name,
@@ -356,6 +491,9 @@ def build_session_planning_context(
     if character:
         for milestone in character.milestones[:4]:
             key = _normalize(milestone.name)
+            pending_requirements.setdefault(
+                key, (_candidate_requirements([], milestone.objectives), None)
+            )
             add_candidate(
                 PlanningCandidate(
                     name=milestone.name,
@@ -374,6 +512,9 @@ def build_session_planning_context(
             )
         for activity in [value for value in character.available_activities if value.is_visible][:6]:
             key = _normalize(activity.name)
+            pending_requirements.setdefault(
+                key, (_candidate_requirements([], activity.objectives), None)
+            )
             add_candidate(
                 PlanningCandidate(
                     name=activity.name,
@@ -429,6 +570,10 @@ def build_session_planning_context(
         notable_progression = []
         recent_activities = []
 
+    requirement_basis, requirements_omitted = _attach_requirements(
+        candidates, pending_requirements, loadout_evidence(character) if character else None
+    )
+
     known_completion = [
         f"Campaign completed: {value.content}"
         for value in content_evidence
@@ -472,6 +617,8 @@ def build_session_planning_context(
         explicitly_known_completion_facts=known_completion,
         explicitly_unknown_completion_facts=unknown_completion,
         data_limitations=limitations[:8],
+        requirement_basis=requirement_basis,
+        requirements_omitted=requirements_omitted,
     )
 
 

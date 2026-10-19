@@ -668,10 +668,7 @@ def test_objectives_in_the_quest_tool_carry_their_requirement() -> None:
     assert objective["requirement"]["raw_requirement"] == "Arc weapon final blows"
 
 
-def test_planning_candidates_and_other_tools_are_untouched_by_m4a() -> None:
-    from app.session_planning import PlanningCandidate
-
-    assert "requirements" not in PlanningCandidate.model_fields
+def test_build_tools_do_not_carry_requirements() -> None:
     result = GuardianToolService(build_context()).execute(
         "get_build_details", {"character_id": None, "character_class": None}
     )

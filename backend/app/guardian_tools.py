@@ -28,7 +28,13 @@ from app.models import (
     ProgressionSummary,
     SocketedPlugSummary,
 )
-from app.objective_requirements import compact_requirement
+from app.objective_requirements import compact_requirement, is_restrictive
+from app.requirement_fit import (
+    REQUIREMENT_BASIS,
+    LoadoutEvidence,
+    compare_requirement,
+    loadout_evidence,
+)
 
 __all__ = ["CharacterNotFoundError", "GuardianToolError", "GuardianToolService"]
 
@@ -463,25 +469,28 @@ class GuardianToolService:
         }
 
     @staticmethod
-    def _requirement_fields(quest: Any) -> dict[str, Any]:
+    def _requirement_fields(quest: Any, loadout: LoadoutEvidence) -> dict[str, Any]:
         """Structured requirements parsed from Manifest text, only when there are any.
 
         The original sentence is repeated only where it is not already in this result: a
-        verified requirement from the quest's own description is that description.
+        verified requirement from the quest's own description is that description. Each
+        restrictive or unestablished requirement is compared with this quest's character's
+        equipped loadout (M4B); a clean generic requirement has nothing to compare.
         """
 
         if not quest.requirements:
             return {}
-        fields: dict[str, Any] = {
-            "requirements": [
-                compact_requirement(
-                    value,
-                    include_raw=value.parse_status != "verified"
-                    or value.source.hash != quest.quest_hash,
-                )
-                for value in quest.requirements
-            ]
-        }
+        entries: list[dict[str, Any]] = []
+        for value in quest.requirements:
+            entry = compact_requirement(
+                value,
+                include_raw=value.parse_status != "verified"
+                or value.source.hash != quest.quest_hash,
+            )
+            if value.parse_status != "verified" or is_restrictive(value):
+                entry["fit"] = compare_requirement(value, loadout).model_dump(mode="json")
+            entries.append(entry)
+        fields: dict[str, Any] = {"requirements": entries}
         if quest.requirements_consistency:
             fields["requirements_consistency"] = quest.requirements_consistency
         return fields
@@ -493,6 +502,7 @@ class GuardianToolService:
     ) -> dict[str, Any]:
         quests: list[dict[str, Any]] = []
         for character in self._characters(character_id, character_class, scoped_default=True):
+            loadout = loadout_evidence(character)
             for quest in character.quests:
                 if quest.completed and quest.redeemed:
                     continue
@@ -513,7 +523,7 @@ class GuardianToolService:
                         "reward_names": list(quest.reward_names),
                         "reward_total": quest.reward_total,
                         "rewards_unresolved": quest.rewards_unresolved,
-                        **self._requirement_fields(quest),
+                        **self._requirement_fields(quest, loadout),
                     }
                 )
         quests.sort(
@@ -531,6 +541,12 @@ class GuardianToolService:
             "count": len(quests),
             "truncated": len(quests) > limit,
         }
+        if any(
+            "fit" in requirement
+            for value in quests[:limit]
+            for requirement in value.get("requirements", [])
+        ):
+            result["requirement_fit_basis"] = REQUIREMENT_BASIS
         if any(value["reward_total"] for value in quests[:limit]):
             result["limitations"] = [
                 "reward_names are labels declared in the Manifest quest or bounty definition "

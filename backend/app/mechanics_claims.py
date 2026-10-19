@@ -27,7 +27,9 @@ from typing import Any, Literal
 
 from app.core_knowledge import normalize_text
 
-ClaimCategory = Literal["item_effect", "identity", "damage_source", "configuration"]
+ClaimCategory = Literal[
+    "item_effect", "identity", "damage_source", "configuration", "objective_requirement"
+]
 ClaimStatus = Literal[
     # The entity's effect text was retrieved and the claim shares its content words.
     "supported",
@@ -46,9 +48,20 @@ ClaimStatus = Literal[
     # A statement about what is equipped now, backed by Guardian socket data.
     "equipped_configuration",
     "equipped_claim_without_evidence",
+    # M4B: a bonus-progress multiplier or amount that no retrieved objective text states.
+    "bonus_claim_without_evidence",
+    # M4B: a named weapon used to satisfy an objective with no Guardian ownership evidence.
+    "weapon_without_ownership_evidence",
 ]
 MissingEvidence = Literal[
-    "effect_text", "slot", "class", "objective_text", "socket_options", "entity_resolution"
+    "effect_text",
+    "slot",
+    "class",
+    "objective_text",
+    "socket_options",
+    "entity_resolution",
+    "bonus_text",
+    "ownership",
 ]
 
 # Statuses counted as "needs attention" in the summary. This is a measurement, not a verdict.
@@ -59,6 +72,8 @@ UNSUPPORTED_STATUSES: frozenset[str] = frozenset(
         "contradicted_by_evidence",
         "config_change_without_legality",
         "equipped_claim_without_evidence",
+        "bonus_claim_without_evidence",
+        "weapon_without_ownership_evidence",
     }
 )
 KNOWN_LIMITATIONS = (
@@ -78,6 +93,7 @@ MAX_TRACED_CLAIMS = 16
 MIN_ENTITY_KEY_LENGTH = 4
 OVERLAP_MIN_SHARED_WORDS = 2
 MAX_WALK_DEPTH = 7
+MAX_REQUIREMENTS_PER_ENTITY = 4
 
 ARMOR_SLOTS: dict[str, str] = {
     "helmet": "helmet",
@@ -237,6 +253,21 @@ _WEAPON_CLAIM = re.compile(
     r"\b(?:final blows?|kills?|damage)\b[^.!?]{0,30}\bwith (?:a |your )?(?:weapon|gun)s?\b",
     re.I,
 )
+_SOURCE_KINDS = frozenset({"ability", "weapon"})
+_ELEMENT_SOURCE_MENTION = re.compile(
+    r"\b(arc|solar|void|stasis|strand)\s+(?:weapons?|abilit(?:y|ies)|grenades?|melee|supers?|"
+    r"damage)\b",
+    re.I,
+)
+_BONUS_MULTIPLIER = re.compile(
+    r"\b(?:\d+(?:\.\d+)?\s?x|doubl\w*|tripl\w*|twice|\d+\s?(?:%|percent)|\d+\s+times)",
+    re.I,
+)
+_PROGRESS_WORD = re.compile(r"\bprogress\b", re.I)
+_REQUIREMENT_VOCAB = re.compile(
+    r"\b(?:final blows?|kills?|objective|progress|bounty|quest|counts?|complete|satisf\w+)\b",
+    re.I,
+)
 _ABILITY_CLAIM = re.compile(
     r"\b(?:grenade|melee|ability|abilities|super|rift|barricade|class ability)\b"
     r"[^.!?]{0,30}\b(?:final blows?|kills?|damage)\b",
@@ -270,6 +301,9 @@ class EntityEvidence:
     # Manifest socket structure by column ("barrels", "frames"): the configurability the build
     # tools reported for this item's sockets. Observation only.
     socket_classes: dict[str, str] = field(default_factory=dict)
+    item_type: str | None = None
+    # M4B: structured objective requirements retrieved for this entity (compact dicts).
+    requirements: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def has_text(self) -> bool:
@@ -400,6 +434,9 @@ class MechanicsEvidenceLedger:
             if isinstance(text, str) and text.strip():
                 entity.add_text(text, source)
         item_type = node.get("item_type")
+        if isinstance(item_type, str) and item_type in {"Weapon", "Armor"}:
+            entity.item_type = item_type
+        self._record_requirements(entity, node.get("requirements"))
         if item_type == "Armor":
             slot = (
                 node.get("equipment_slot")
@@ -435,6 +472,44 @@ class MechanicsEvidenceLedger:
             entity.equipped = True
             if item_type not in {"Armor", "Weapon"}:
                 self.equipped_plugs.add(_key(name))
+
+    @staticmethod
+    def _record_requirements(entity: EntityEvidence, values: Any) -> None:
+        for value in values if isinstance(values, list) else []:
+            if (
+                isinstance(value, dict)
+                and "parse_status" in value
+                and value not in entity.requirements
+                and len(entity.requirements) < MAX_REQUIREMENTS_PER_ENTITY
+            ):
+                entity.requirements.append(value)
+                for bonus in value.get("bonus_conditions") or []:
+                    if isinstance(bonus, str):
+                        entity.add_text(bonus, "requirements")
+
+    def record_planning(self, planning_context: Any, source: str = "planning") -> None:
+        """Register the structured requirements the application put in planning context.
+
+        Candidates are named after the quests and activities they came from, so a requirement
+        here is evidence about that entity exactly as a tool result would be. Observation only.
+        """
+
+        try:
+            candidates = planning_context.model_dump(mode="json").get("candidates") or []
+        except Exception:  # noqa: BLE001
+            return
+        for candidate in candidates:
+            name = candidate.get("name") if isinstance(candidate, dict) else None
+            if not isinstance(name, str):
+                continue
+            entity = self._touch(name)
+            if entity is None:
+                continue
+            entity.sources.add(f"{source}:requirements")
+            description = candidate.get("description")
+            if isinstance(description, str) and description.strip():
+                entity.add_text(description, f"{source}:requirements")
+            self._record_requirements(entity, candidate.get("requirements"))
 
     def summary(self) -> dict[str, Any]:
         with_text = sum(value.has_text for value in self.entities.values())
@@ -668,9 +743,32 @@ def detect_mechanics_claims(
         for entity in mentions:
             for claim in _identity_claims(sentence, entity, index):
                 add(claim)
-            damage = _damage_source_claim(sentence, entity, index)
+            damage = _damage_source_claim(
+                sentence,
+                entity,
+                index,
+                shared=len({_required_source(value) for value in mentions} - {None}) > 1,
+            )
             if damage is not None:
                 add(damage)
+            for claim in _requirement_claims(sentence, entity, index):
+                add(claim)
+            if (
+                entity.item_type == "Weapon"
+                and not any(value.startswith("guardian:") for value in entity.sources)
+                and _REQUIREMENT_VOCAB.search(sentence)
+                and not _NEGATED_ENTITY.search(sentence)
+            ):
+                add(
+                    MechanicsClaim(
+                        "objective_requirement",
+                        entity.name,
+                        "weapon_without_ownership_evidence",
+                        tuple(sorted(entity.sources)),
+                        ("ownership",),
+                        index,
+                    )
+                )
 
         if proposes_change or not _is_mechanic_sentence(sentence):
             continue
@@ -746,6 +844,44 @@ def detect_mechanics_claims(
     )
 
 
+def _requirement_claims(
+    sentence: str, entity: EntityEvidence, index: int
+) -> Iterable[MechanicsClaim]:
+    """Objective-requirement claims (M4B): element and bonus progress.
+
+    Trace only. Each check needs structured requirement evidence retrieved this turn.
+    """
+
+    sources = tuple(sorted(entity.sources))
+    reliable = [value for value in entity.requirements if value.get("parse_status") == "verified"]
+    elements = {value.get("element") for value in reliable if value.get("element")}
+    if len(elements) == 1:
+        required = str(next(iter(elements))).casefold()
+        mentioned = {value.casefold() for value in _ELEMENT_SOURCE_MENTION.findall(sentence)}
+        if (
+            mentioned
+            and required not in mentioned
+            and not re.search(rf"\b{re.escape(required)}\b", sentence, re.I)
+        ):
+            yield MechanicsClaim(
+                "objective_requirement", entity.name, "contradicted_by_evidence", sources, (), index
+            )
+    figure = _BONUS_MULTIPLIER.search(sentence)
+    if (
+        figure is not None
+        and _PROGRESS_WORD.search(sentence)
+        and figure.group(0).casefold() not in " ".join(entity.texts).casefold()
+    ):
+        yield MechanicsClaim(
+            "objective_requirement",
+            entity.name,
+            "bonus_claim_without_evidence",
+            sources,
+            ("bonus_text",),
+            index,
+        )
+
+
 def _identity_claims(sentence: str, entity: EntityEvidence, index: int) -> Iterable[MechanicsClaim]:
     slots = _slot_in(sentence)
     classes = _classes_in(sentence)
@@ -776,16 +912,42 @@ def _identity_claims(sentence: str, entity: EntityEvidence, index: int) -> Itera
             yield MechanicsClaim("identity", entity.name, "supported", sources, (), index)
 
 
-def _damage_source_claim(
-    sentence: str, entity: EntityEvidence, index: int
-) -> MechanicsClaim | None:
-    """Ability-versus-weapon final-blow requirement stated in retrieved objective text."""
+def _required_source(entity: EntityEvidence) -> str | None:
+    """The single damage source an entity's retrieved objective text or requirement states."""
 
     text = " ".join(entity.texts)
     required_ability = bool(_ABILITY_SOURCE.search(text))
     required_weapon = bool(_WEAPON_SOURCE.search(text))
+    # Structured requirements (M4A/M4B) state the source even when the sentence was not
+    # repeated in the result. Only a clean, single-source requirement is used.
+    structured = {
+        value.get("source_kind")
+        for value in entity.requirements
+        if value.get("parse_status") == "verified" and value.get("source_kind") in _SOURCE_KINDS
+    }
+    if structured:
+        required_ability = structured == {"ability"}
+        required_weapon = structured == {"weapon"}
     if required_ability == required_weapon:
         return None
+    return "ability" if required_ability else "weapon"
+
+
+def _damage_source_claim(
+    sentence: str, entity: EntityEvidence, index: int, *, shared: bool = False
+) -> MechanicsClaim | None:
+    """Ability-versus-weapon final-blow requirement stated in retrieved objective text.
+
+    `shared` is set when the sentence names several entities that require different sources:
+    a sentence like "do A with abilities, or B with weapons" then cannot be attributed to
+    either, so no claim is made.
+    """
+
+    required = _required_source(entity)
+    if required is None or shared:
+        return None
+    required_ability = required == "ability"
+    required_weapon = required == "weapon"
     sources = tuple(sorted(entity.sources))
     says_weapon = bool(_WEAPON_CLAIM.search(sentence)) and not _ABILITY_CLAIM.search(sentence)
     says_ability = bool(_ABILITY_CLAIM.search(sentence)) and not _WEAPON_CLAIM.search(sentence)
