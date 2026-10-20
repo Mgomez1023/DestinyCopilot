@@ -56,6 +56,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         level=getattr(logging, settings.log_level.upper(), logging.INFO),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    # httpx logs every outbound request URL at INFO, and Bungie URLs embed membership and
+    # character IDs. Keep the library quiet below WARNING whatever the app log level is.
+    for noisy in ("httpx", "httpcore"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
 
     @asynccontextmanager
     async def lifespan(application: FastAPI):

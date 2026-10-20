@@ -1,4 +1,5 @@
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +11,20 @@ logger = logging.getLogger(__name__)
 
 BUNGIE_PLATFORM_URL = "https://www.bungie.net/Platform"
 BUNGIE_ROOT_URL = "https://www.bungie.net"
+
+
+_ID_SEGMENT = re.compile(r"(?<=/)\d{3,}(?=/|$)")
+
+
+def loggable_path(path: str) -> str:
+    """Request path with membership and character IDs masked, for logs.
+
+    Short numeric segments (membership type) and the endpoint names stay, so the
+    failing endpoint is still identifiable. Public Manifest entity hashes are masked
+    too; the entity type remains.
+    """
+
+    return _ID_SEGMENT.sub("{id}", path)
 
 
 class BungieAPIError(RuntimeError):
@@ -44,13 +59,13 @@ class BungieClient:
             payload = response.json()
         except (httpx.HTTPError, ValueError) as exc:
             status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
-            logger.warning("Bungie request failed path=%s status=%s", path, status)
+            logger.warning("Bungie request failed path=%s status=%s", loggable_path(path), status)
             raise BungieAPIError("Bungie.net could not be reached.", status_code=status) from exc
 
         if payload.get("ErrorCode") != 1:
             error_status = payload.get("ErrorStatus", "UnknownError")
             message = payload.get("Message", "Bungie.net returned an error.")
-            logger.warning("Bungie API error path=%s error=%s", path, error_status)
+            logger.warning("Bungie API error path=%s error=%s", loggable_path(path), error_status)
             raise BungieAPIError(f"{error_status}: {message}")
         return payload.get("Response", {})
 

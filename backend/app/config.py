@@ -7,6 +7,9 @@ from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
+# Bundled static data ships inside the app package, so it is located from this file rather than
+# from ROOT_DIR, which is "/" when a host deploys only the backend directory.
+BUNDLED_DATA_DIR = Path(__file__).resolve().parent / "data"
 
 
 class Settings(BaseSettings):
@@ -41,8 +44,8 @@ class Settings(BaseSettings):
     # Load or build the Manifest search index in the background at startup so the first
     # user request does not pay for it. Requires a Bungie API key to fetch the Manifest.
     manifest_index_warmup: bool = True
-    guide_corpus_file: Path = Path("backend/app/data/destiny_guides.json")
-    core_knowledge_file: Path = Path("backend/app/data/core_knowledge.json")
+    guide_corpus_file: Path = BUNDLED_DATA_DIR / "destiny_guides.json"
+    core_knowledge_file: Path = BUNDLED_DATA_DIR / "core_knowledge.json"
     core_knowledge_enabled: bool = True
     guide_cache_dir: Path = Path(".cache/guides")
     guide_cache_stable_ttl_seconds: int = Field(default=60 * 60 * 24 * 30, ge=0)
