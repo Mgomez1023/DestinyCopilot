@@ -1,5 +1,6 @@
 import json
 import re
+import traceback
 from collections.abc import Awaitable, Callable, Iterable
 from typing import Literal
 
@@ -173,3 +174,34 @@ def safe_stream_error_message(error: Exception) -> str:
     ):
         return str(error)
     return "The Copilot could not complete that request. Please try again."
+
+
+_APP_FRAME = re.compile(r"[\\/]app[\\/](?P<module>.+)\.py$")
+
+
+def describe_chat_failure(error: BaseException) -> dict[str, str]:
+    """Safe, bounded diagnostics for a failed chat turn.
+
+    Carries only exception class names and the innermost application frame
+    (module:function:line). The exception message and traceback text are left out
+    because they can echo tool arguments, Bungie payloads, or model input. The one
+    exception is a plain RuntimeError raised by ``app/ai.py``: its messages are fixed
+    strings written in that module (response status, replay shape), so they identify
+    the failing step without carrying user data.
+    """
+
+    origin = "unknown"
+    raised_in_ai = False
+    for frame in reversed(traceback.extract_tb(error.__traceback__)):
+        match = _APP_FRAME.search(frame.filename)
+        if match and not match.group("module").startswith("routes"):
+            module = match.group("module").replace("\\", ".").replace("/", ".")
+            origin = f"{module}:{frame.name}:{frame.lineno}"
+            raised_in_ai = module == "ai"
+            break
+    details = {"error_type": type(error).__name__, "origin": origin}
+    if error.__cause__ is not None:
+        details["cause_type"] = type(error.__cause__).__name__
+    if raised_in_ai and type(error) is RuntimeError:
+        details["reason"] = str(error)[:160]
+    return details

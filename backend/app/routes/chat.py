@@ -12,6 +12,7 @@ from app.chat_stream import (
     ErrorStreamEvent,
     MessageDeltaStreamEvent,
     StreamStatusReporter,
+    describe_chat_failure,
     initial_guardian_status,
     response_events,
     safe_stream_error_message,
@@ -46,6 +47,7 @@ async def chat(
             body, guardian, refresh_guardian=refresh_callback
         )
     except RuntimeError as exc:
+        logger.warning("Chat failed %s", describe_chat_failure(exc))
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
@@ -93,7 +95,12 @@ async def chat_stream(
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                logger.warning("Streaming chat failed error_type=%s", type(exc).__name__)
+                logger.warning(
+                    "Streaming chat failed trace_id=%s stages=%s %s",
+                    reporter.trace_id,
+                    reporter.emitted_categories,
+                    describe_chat_failure(exc),
+                )
                 await queue.put(ErrorStreamEvent(message=safe_stream_error_message(exc)))
             finally:
                 await queue.put(None)
