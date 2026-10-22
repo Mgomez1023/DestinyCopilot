@@ -39,9 +39,8 @@ def test_heldout_is_a_separate_subset_of_fifteen_runnable_scenarios() -> None:
 
 def test_heldout_covers_multi_turn_and_unavailable_data() -> None:
     assert sum(len(value.turns) >= 2 for value in HELDOUT) >= 5
-    assert any(
-        "can't" in value.expect.mentions_any for value in HELDOUT if value.id.endswith("trials")
-    )
+    trials = next(value for value in HELDOUT if value.id.endswith("trials"))
+    assert trials.expect.by_turn[0].answers_any
     assert {value.expect.style for value in HELDOUT} >= {"fact", "planning", "build"}
     assert len(KNOWN_ISSUES) == 5
 

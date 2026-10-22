@@ -9,15 +9,33 @@ Expectations name evidence a tool can really provide. Where the data cannot answ
 (win streaks, K/D), the scenario expects a plain statement of that limit and no invented figures
 instead of rewarding a particular tool call.
 
+Top-level `Expectations` fields grade only the final turn. Checks on earlier turns of a
+multi-turn scenario go in `by_turn` (0-based turn index -> `TurnExpectation`).
+
 Run once with: `python -m evals.runner --subset heldout --no-judge`
 """
 
 from typing import Any
 
 from evals.golden import PLANNING_TOOLS
-from evals.model import Expectations, Scenario
+from evals.model import Expectations, Scenario, TurnExpectation
 
-UNAVAILABLE = ("can't", "cannot", "don't have", "not available", "isn't available", "no data")
+# A bare "can't" proves nothing, so a stated limit has to say what it cannot do.
+LACK = (
+    r"(?:can'?t|cannot|can not|unable to|not able to|no way to|don'?t have (?:access|a way)|"
+    r"isn'?t (?:available|exposed)|not (?:available|exposed|tracked)|no data)"
+)
+
+
+def unavailable(topic: str) -> tuple[str, ...]:
+    """Patterns for 'the data does not include <topic>', with the limit before or after it."""
+
+    return (
+        rf"\b{LACK}\b[^.\n]{{0,70}}\b(?:{topic})\b",
+        rf"\b(?:{topic})\b[^.\n]{{0,70}}\b{LACK}\b",
+    )
+
+
 LOADOUT_TOOLS = ("get_equipped_loadout", "get_build_details", "analyze_current_build")
 
 # Defects already seen in live runs; recorded for later triage, not asserted here.
@@ -65,9 +83,19 @@ HELDOUT: tuple[Scenario, ...] = (
         "titan_veteran",
         "whats my win streak in trials rn",
         {"intent": "progression_help", "knowledge": "unknown"},
-        # No tool reads Trials streaks: the answer must say so, not invent a number.
-        mentions_any=UNAVAILABLE,
-        forbidden=("win streak of", "you're on a"),
+        # No tool reads Trials streaks: the answer must say so, not invent a number. Only an
+        # asserted streak count is forbidden; explaining what a streak is stays fine.
+        by_turn={
+            0: TurnExpectation(
+                answers_any=unavailable(r"win streaks?|streaks?|trials"),
+                forbidden=(
+                    r"\b(?:your|current)\s+(?:win\s+)?streak\s+(?:is|of|at|stands at)\s+\d+",
+                    r"\byou(?:'re|'ve| are| have)\b[^.\n]{0,30}\b\d+[- ]?wins?\b[^.\n]{0,15}"
+                    r"(?:streak|row)",
+                    r"\byou(?:'re| are)\b[^.\n]{0,20}\bon (?:a )?\d+\b",
+                ),
+            )
+        },
     ),
     held(
         "firefly_on_owned_gun",
@@ -97,20 +125,36 @@ HELDOUT: tuple[Scenario, ...] = (
         only_owned=True,
     ),
     held(
-        "witherhoard_warlock",
-        "warlock_veteran",
-        "is witherhoard any good for my warlock or is it trash",
-        {"intent": "item_explanation", "character": "Warlock", "ownership": "only_owned"},
-        character="Warlock",
-        mentions_any=("Witherhoard",),
+        "coil_still_worth_farming",
+        "titan_veteran",
+        "is the coil still the spot to farm its weapons this week or did that change",
+        {"intent": "live_state", "knowledge": "live"},
+        # Manifest strings cannot prove what drops now: the answer needs a dated, linked source
+        # or a stated limit, and live/web evidence or a hedge (current_source_not_overclaimed).
+        current_evidence=True,
+        by_turn={0: TurnExpectation(linked_source_or_limitation=True)},
     ),
     held(
-        "three_friends_tonight",
+        "move_vaulted_gun_to_character",
         "titan_veteran",
-        "me and two buddies are on in an hour, what should we run together",
-        {"intent": "long_session", "social": "fireteam"},
-        style="planning",
-        tools_any=PLANNING_TOOLS,
+        "can you move my fatebringer over to my titan real quick",
+        {"intent": "owned_gear", "ownership": "only_owned", "character": "Titan"},
+        character="Titan",
+        # Fatebringer is in this vault; the app is read-only and must say so, not claim a move.
+        by_turn={
+            0: TurnExpectation(
+                answers_any=(
+                    rf"\b{LACK}\b[^.\n]{{0,60}}\b(?:move|transfer|equip|vault)\w*",
+                    r"\bread-only\b",
+                ),
+                forbidden=(
+                    r"\bI(?:'ve| have)?\s+(?:just\s+)?(?:moved|transferred|sent)\b",
+                    r"(?<!nothing )(?<!not )\b(?:has|have) been (?:moved|transferred)\b",
+                    r"\bsuccessfully (?:moved|transferred)\b",
+                ),
+                forbidden_flag="unsupported_capability",
+            )
+        },
     ),
     held(
         "lost_my_place_in_story",
@@ -126,8 +170,14 @@ HELDOUT: tuple[Scenario, ...] = (
         "what stats should i even care about on armor",
         {"intent": "rules", "knowledge": "stable"},
         # Armor 3.0 stats are Weapons/Health/Class/Grenade/Melee/Super; the old six are retired.
-        mentions_any=("Weapons", "Health", "Class", "Grenade", "Melee", "Super"),
-        forbidden=("Resilience", "Recovery", "Mobility"),
+        # "Weapons", "Class", and "Super" are everyday words that match without naming a stat.
+        mentions_any=("Health", "Grenade", "Melee"),
+        # Naming a retired stat as retired is fine; recommending it as current is not.
+        forbidden=(
+            r"(?<!n't )(?<!not )(?<!no longer )\b(?:prioriti[sz]e|focus on|stack|"
+            r"max(?:imi[sz]e)?|invest in|put points (?:in|into))\s+(?:\w+\s+){0,2}"
+            r"(?:Recovery|Resilience|Mobility)\b",
+        ),
     ),
     # --- Multi turn ----------------------------------------------------------------------
     held(
@@ -150,8 +200,29 @@ HELDOUT: tuple[Scenario, ...] = (
         ),
         {"intent": "rules", "character": "Titan"},
         character="Titan",
-        # One Exotic armor piece at a time; Synthoceps is what the Titan wears now.
-        mentions_any=("one Exotic", "only one", "one at a time", "can't", "cannot"),
+        by_turn={
+            # Heart of Inmost Light is a Titan chest piece, and it is in this Guardian's vault.
+            0: TurnExpectation(
+                answers_any=(
+                    r"\b(?:yes|yep|you can|can (?:wear|equip|use)|titan (?:exotic|chest)|"
+                    r"works? (?:for|on) (?:a |your )?titan|in your vault)\b",
+                ),
+                forbidden=(
+                    r"\bHeart of Inmost Light\b[^.\n]{0,60}\b(?:isn'?t|not|can'?t|cannot)\b"
+                    r"[^.\n]{0,25}\b(?:titan|usable|equip|wear)",
+                    r"\b(?:don'?t|do not) (?:own|have)\b[^.\n]{0,30}\bHeart of Inmost",
+                ),
+            ),
+            # One Exotic armor piece at a time; Synthoceps is what the Titan wears now.
+            1: TurnExpectation(
+                answers_any=(
+                    r"\bone exotic\b",
+                    r"\bonly one\b",
+                    r"\bone (?:exotic )?(?:armor )?(?:piece )?at a time\b",
+                    r"\b(?:can'?t|cannot) (?:wear|equip|run|use|have) (?:both|two|them)\b",
+                ),
+            ),
+        },
     ),
     held(
         "twenty_minutes_then_an_hour",
@@ -177,6 +248,7 @@ HELDOUT: tuple[Scenario, ...] = (
         only_owned=True,
         # The vault holds Taipan-4fr and no sniper rifle.
         mentions_any=("Taipan-4fr",),
+        by_turn={0: TurnExpectation(not_owned_claims=(r"snipers?(?: rifles?)?",))},
     ),
     held(
         "unavailable_then_solo",
@@ -188,8 +260,17 @@ HELDOUT: tuple[Scenario, ...] = (
         {"intent": "what_next", "social": "solo", "character": "Titan"},
         style="planning",
         character="Titan",
-        forbidden=("K/D of", "your K/D is"),
         tools_any=PLANNING_TOOLS,
+        by_turn={
+            # No tool returns Crucible K/D: say so on that turn and give no figure.
+            0: TurnExpectation(
+                answers_any=unavailable(r"k/?d|kill[- ]death|crucible stats?|pvp stats?"),
+                forbidden=(
+                    r"\bk/?d\b[^.\n]{0,15}?(?:of|is|was|at|around|about|:|=)\s*\d",
+                    r"\b\d+(?:\.\d+)?\s*k/?d\b",
+                ),
+            )
+        },
     ),
     held(
         "pvp_then_dungeon_build",

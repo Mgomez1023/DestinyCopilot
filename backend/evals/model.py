@@ -3,6 +3,8 @@
 from dataclasses import dataclass, field
 from typing import Literal
 
+from evals.rubric import Flag
+
 Style = Literal["fact", "planning", "build", "explain"]
 
 AXES: dict[str, tuple[str, ...]] = {
@@ -55,6 +57,25 @@ AXES: dict[str, tuple[str, ...]] = {
 
 
 @dataclass(frozen=True)
+class TurnExpectation:
+    """Checks for one conversation turn; every pattern is a case-insensitive regex.
+
+    The top-level `Expectations` fields (`mentions_any`, `forbidden`, `only_owned`, ...) grade
+    only the *final* turn. Use this for any turn, earlier ones especially.
+    """
+
+    # At least one pattern must match the turn's answer.
+    answers_any: tuple[str, ...] = ()
+    # No pattern may match (flagged as `forbidden_flag`).
+    forbidden: tuple[str, ...] = ()
+    forbidden_flag: Flag = "hallucinated_fact"
+    # Patterns naming things the account does not hold; the answer must not assert ownership.
+    not_owned_claims: tuple[str, ...] = ()
+    # A current-source answer must carry a dated link, or state that it could not be verified.
+    linked_source_or_limitation: bool = False
+
+
+@dataclass(frozen=True)
 class Expectations:
     """What a correct answer must (and must not) do; consumed by properties.py."""
 
@@ -83,6 +104,8 @@ class Expectations:
     turn_characters: tuple[str | None, ...] = ()
     leak_terms: tuple[str, ...] = ()
     leak_from_turn: int = 1
+    # Per-turn checks keyed by 0-based turn index (any turn, including the final one).
+    by_turn: dict[int, TurnExpectation] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

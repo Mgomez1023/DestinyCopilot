@@ -1022,6 +1022,73 @@ def conversation_isolation(obs: Observation, facts: ProfileFacts) -> PropertyRes
     return _ok(name)
 
 
+URL = re.compile(r"https?://\S+", re.I)
+DATED = re.compile(
+    r"\b(?:20\d{2}-\d{2}-\d{2}|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.? "
+    r"\d{1,2}|20\d{2})\b",
+    re.I,
+)
+OWNERSHIP_ASSERTION = (
+    r"\byou(?:'ve| have| own| already have| do have| got|'ve got)\b[^.?!]{{0,30}}\b{term}\b",
+    r"\byour\b[^.?!]{{0,25}}\b{term}\b",
+    r"\b{term}\b[^.?!]{{0,30}}\bin your (?:vault|inventory)\b",
+)
+OWNERSHIP_NEGATION = re.compile(
+    r"\b(?:no|not|none|nothing|without|neither|any|don'?t|doesn'?t|didn'?t|isn'?t|aren'?t|"
+    r"haven'?t|hasn'?t|can'?t)\b|n't\b|^\s*(?:if|whether)\b",
+    re.I,
+)
+
+
+def _asserts_ownership(answer: str, term: str) -> str | None:
+    """The first sentence that asserts the player holds `term`; questions and negations don't."""
+
+    for sentence in _sentences(_plain(answer)):
+        if sentence.endswith("?") or OWNERSHIP_NEGATION.search(sentence):
+            continue
+        for template in OWNERSHIP_ASSERTION:
+            if re.search(template.format(term=f"(?:{term})"), sentence, re.I):
+                return sentence
+    return None
+
+
+def turn_expectations(obs: Observation, facts: ProfileFacts) -> PropertyResult:
+    """Per-turn checks (`Expectations.by_turn`): earlier turns are graded, not only the last."""
+
+    name = "turn_expectations_met"
+    checks = obs.scenario.expect.by_turn
+    if not checks:
+        return _skip(name)
+    for index, check in sorted(checks.items()):
+        if index >= len(obs.turns):
+            continue
+        answer = _plain(obs.turns[index].answer)
+        label = f"turn {index + 1}"
+        for pattern in check.forbidden:
+            match = re.search(pattern, answer, re.I | re.M)
+            if match:
+                return _fail(name, check.forbidden_flag, f"{label} matched /{pattern}/: {match[0]}")
+        for term in check.not_owned_claims:
+            sentence = _asserts_ownership(answer, term)
+            if sentence:
+                return _fail(
+                    name, "ownership_hallucination", f"{label} claims '{term}' owned: {sentence}"
+                )
+        if check.answers_any and not any(
+            re.search(pattern, answer, re.I) for pattern in check.answers_any
+        ):
+            return _fail(name, None, f"{label} answers none of {list(check.answers_any)}")
+        if check.linked_source_or_limitation and not (
+            (URL.search(answer) and DATED.search(answer))
+            or HEDGE.search(answer)
+            or NOT_ESTABLISHED.search(answer)
+        ):
+            return _fail(
+                name, "stale_live_claim", f"{label} has neither a dated link nor a stated limit"
+            )
+    return _ok(name)
+
+
 def mechanics_trace(obs: Observation, facts: ProfileFacts) -> PropertyResult:
     """Informational only: reports the trace-only mechanics-claim summary; never fails."""
 
@@ -1038,6 +1105,7 @@ def mechanics_trace(obs: Observation, facts: ProfileFacts) -> PropertyResult:
 
 PROPERTIES: tuple[Callable[[Observation, ProfileFacts], PropertyResult], ...] = (
     conversation_isolation,
+    turn_expectations,
     ownership_claims,
     only_owned_recommendations,
     class_correct_armor,

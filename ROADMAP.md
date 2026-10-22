@@ -91,6 +91,7 @@ These are **observations from the latest real-model run**, not instructions to a
 - **2026-10-17–19:** Manifest normalization, Core Knowledge, guide retrieval, and tool orchestration expanded; extensive backend regression coverage established.
 - **2026-10-22 02:50 UTC:** Full 10-scenario eval: 7/10, 14.1/16; grounded serious failures in planning/build/Prismatic.
 - **2026-10-22 03:46 UTC:** Fresh full eval after stabilization: 9/10, 15.6/16 deterministic; manual review showed remaining recommendation-quality gaps.
+- **2026-10-21:** Held-out set revised before its first real-model run: per-turn expectations (`Expectations.by_turn`) now grade earlier turns, two false-positive forbidden patterns and trivially satisfied mention checks were tightened, and two scenarios were replaced by a source-freshness case and an unsupported-move case. Offline only; no real-model held-out run yet.
 - **Current decision:** **Do not automatically loop on the same golden prompts.** Create held-out scenarios next, then fix *generalizable beta-blocking* failures. No paid evals, commits, pushes, merges, or deployment without explicit instruction.
 
 ## Handoff ritual (any supervisor or coding agent)
