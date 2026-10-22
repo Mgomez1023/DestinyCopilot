@@ -136,6 +136,22 @@ GROUNDING_SAFETY_VIOLATION_CODES = frozenset(
 )
 
 
+def extreme_max_words(mode: "ResponseModeContext") -> int:
+    """Length beyond which an answer in this mode is verbose, unless detail was requested."""
+
+    if mode.focused_build:
+        return 220
+    return {
+        "direct_fact": 160,
+        "account_summary": 220,
+        "recommendation": 320,
+        "comparison": 320,
+        "build_advice": 380,
+        "walkthrough": 700,
+        "troubleshooting": 700,
+    }[mode.mode]
+
+
 def violation_group(code: str) -> ViolationGroup:
     if code in EVIDENCE_VIOLATION_CODES:
         return "evidence"
@@ -1325,17 +1341,7 @@ class ResponseQualityValidator:
                     ),
                 )
             )
-        extreme_max = {
-            "direct_fact": 160,
-            "account_summary": 220,
-            "recommendation": 320,
-            "comparison": 320,
-            "build_advice": 380,
-            "walkthrough": 700,
-            "troubleshooting": 700,
-        }[mode.mode]
-        if mode.focused_build:
-            extreme_max = 220
+        extreme_max = extreme_max_words(mode)
         word_count = len(re.findall(r"\b[\w'-]+\b", answer))
         if not mode.detailed_requested and word_count > extreme_max:
             violations.append(

@@ -1553,7 +1553,10 @@ def test_both_live_loot_followup_drafts_are_repaired_not_replaced() -> None:
         assert "Other grounded options" not in response.message
         assert "highest" not in response.message and "higher raw loot" not in response.message
         assert "Edge of Fate" in response.message or "Haunted Altars" in response.message
-        assert "Lightblade" not in response.message and "Vanguard Ops" not in response.message
+        # The excluded activities may still be mentioned as facts, but never recommended.
+        assert "excluded_candidate_recommended" not in _planning_codes(
+            response.message, turn["message"], earlier
+        )
 
 
 def test_repaired_loot_answer_says_what_is_not_established() -> None:

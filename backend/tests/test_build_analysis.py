@@ -1697,21 +1697,24 @@ async def test_grounding_violation_stays_blocked_with_accurate_wording(
 
 
 @pytest.mark.asyncio
-async def test_style_only_violation_after_correction_returns_corrected_text() -> None:
+async def test_a_second_question_is_dropped_locally_without_a_rewrite() -> None:
     draft = "Your Sunshot setup suits solo PvE. Want add-clear tips? Or boss tips?"
-    corrected = "Your Sunshot setup suits solo PvE. Want add-clear tips? Or boss damage tips?"
 
     answer, responses, trace = await _chat(
         "Is my Titan build good?",
-        [[ANALYZE_CALL], [_answer(draft, 1)], [_answer(corrected, 2)]],
+        [[ANALYZE_CALL], [_answer(draft, 1)]],
     )
 
-    assert answer.message == corrected
-    assert len(responses.requests) == 3
-    assert responses.requests[2]["tool_choice"] == "none"
-    assert trace["planning_correction"]["succeeded"] is False
-    assert trace["planning_correction"]["fallback"] == "style_only_accepted"
-    assert trace["planning_correction"]["remaining_violation_codes"] == ["too_many_followups"]
+    # Presentation only: the extra question goes, the answer stays, and no model round is spent.
+    assert answer.message == "Your Sunshot setup suits solo PvE. Want add-clear tips?"
+    assert len(responses.requests) == 2
+    assert trace["planning_correction"]["attempted"] is False
+    assert {
+        "validator": "too_many_followups",
+        "action": "drop_extra_questions",
+        "result": "applied",
+        "stage": "initial",
+    } in trace["local_repairs"]
 
 
 def test_build_fallback_wording_never_claims_retrieval_failed_for_grounding() -> None:

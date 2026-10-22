@@ -1222,15 +1222,9 @@ def test_streaming_content_progression_comparison_uses_safe_campaign_status() ->
     assert [event.stage for event in statuses[1:]] == ["comparison", "final"]
 
 
-def test_streaming_correction_never_emits_rejected_draft() -> None:
-    bad = "There are several things to consider, but run Nightfall next."
-    corrected = "Run Nightfall next because it fits your current goal and offers useful rewards."
-    streamed = ScriptedStreamingResponses(
-        [
-            FakeResponses.response([assistant_message(bad)]),
-            FakeResponses.response([assistant_message(corrected)]),
-        ]
-    )
+def test_streaming_a_style_only_draft_is_sent_once_without_a_rewrite() -> None:
+    draft = "There are several things to consider, but run Nightfall next."
+    streamed = ScriptedStreamingResponses([FakeResponses.response([assistant_message(draft)])])
     emitted: list[Any] = []
 
     async def emit(event: Any) -> None:
@@ -1245,23 +1239,16 @@ def test_streaming_correction_never_emits_rejected_draft() -> None:
             stream_status=StreamStatusReporter(emit),
         )
     )
-    client_events = response_events(response, "recommendation")
     streamed_text = "".join(
-        event.delta for event in client_events if event.event == "message_delta"
+        event.delta
+        for event in response_events(response, "recommendation")
+        if event.event == "message_delta"
     )
 
-    assert streamed_text == corrected
-    assert bad not in streamed_text
-    assert len(streamed.requests) == 2
-    assert streamed.requests[1]["tool_choice"] == "none"
-    replayed_message = next(
-        value
-        for value in streamed.requests[1]["input"]
-        if isinstance(value, dict) and value.get("type") == "message"
-    )
-    assert replayed_message["role"] == "assistant"
-    assert "parsed_content" not in replayed_message
-    assert service.latest_trace()["planning_correction"]["succeeded"] is True
+    # Presentation only, and nothing local to move: the draft is kept, with no second request.
+    assert streamed_text == draft
+    assert len(streamed.requests) == 1
+    assert service.latest_trace()["planning_correction"]["attempted"] is False
 
 
 def test_parallel_streaming_guardian_tools_emit_one_guardian_status() -> None:
@@ -2554,14 +2541,9 @@ def test_system_instructions_default_to_read_only_action_without_weakening_write
     assert "All tools remain read-only" in SYSTEM_INSTRUCTIONS
 
 
-def test_planning_style_only_failure_returns_corrected_recommendation() -> None:
+def test_planning_style_only_failure_is_repaired_locally_and_keeps_the_recommendation() -> None:
     draft = "Run the Nightfall on your Titan for Vanguard rank progress. Want loot? Or story?"
-    corrected = (
-        "Run the Nightfall on your Titan for Vanguard rank progress. Want more loot? Or more story?"
-    )
-    scripted = ScriptedWebResponses(
-        [[assistant_message(draft)], [assistant_message(corrected)]], [draft, corrected]
-    )
+    scripted = ScriptedWebResponses([[assistant_message(draft)]], [draft])
     service = RecommendationService(Settings(openai_api_key="test-key"))
     service.client = SimpleNamespace(responses=scripted)
 
@@ -2569,12 +2551,9 @@ def test_planning_style_only_failure_returns_corrected_recommendation() -> None:
         service.chat(ChatRequest(message="What should I do next?"), guardian_context())
     )
 
-    # Only a presentation issue remained, so the grounded recommendation is kept instead of
-    # being replaced by "I can't make a grounded next-step recommendation".
-    assert response.message == corrected
-    assert "can't make a grounded" not in response.message
-    assert len(scripted.requests) == 2
-    assert scripted.requests[1]["tool_choice"] == "none"
-    correction = service.latest_trace()["planning_correction"]
-    assert correction["fallback"] == "style_only_accepted"
-    assert correction["remaining_violation_codes"] == ["too_many_followups"]
+    # Only presentation was wrong: the second question is dropped, nothing is rewritten.
+    assert response.message == (
+        "Run the Nightfall on your Titan for Vanguard rank progress. Want loot?"
+    )
+    assert len(scripted.requests) == 1
+    assert service.latest_trace()["planning_correction"]["attempted"] is False

@@ -56,6 +56,16 @@ from app.live_knowledge import (
     unavailable_live_message,
     volatile_topic,
 )
+from app.local_repairs import (
+    LOCAL_STYLE_CODES,
+    dependents_of,
+    is_constraint_code,
+    locally_handled,
+    offending_sentences,
+    remove_flagged_sentences,
+    repair_style,
+    rewrite_damage,
+)
 from app.mechanics_claims import (
     MechanicsEvidenceLedger,
     detect_mechanics_claims,
@@ -75,7 +85,6 @@ from app.response_quality import (
     is_guidance_request,
     is_research_request,
     item_definition_lookup,
-    loses_cited_facts,
     remove_correction_narration,
     remove_unsupported_capability_offers,
     response_mode_context,
@@ -1115,6 +1124,12 @@ class RecommendationService:
                         await stream_status.emit("final")
                         trace["emitted_status_categories"] = list(stream_status.emitted_categories)
                     correction_output: list[Any] = []
+                    # Presentation findings were repaired locally where possible and never
+                    # justify a model rewrite; what is left is kept as the draft wrote it.
+                    kept_style = locally_handled((v.code for v in violations), message)
+                    for code in sorted(kept_style):
+                        self._record_repair(trace, "initial", code, "keep_draft", "no_rewrite")
+                    violations = [v for v in violations if v.code not in kept_style]
                     if violations:
                         trace["planning_correction"] = {
                             "attempted": True,
@@ -1138,29 +1153,100 @@ class RecommendationService:
                         corrected_message = remove_correction_narration(
                             self._extract_assistant_text(correction_response)
                         )
-                        if (
-                            corrected_message
-                            and build_fallback_kind(violations) == "style_only"
-                            and loses_cited_facts(message, corrected_message)
-                        ):
-                            # Only presentation was wrong. A rewrite that drops the draft's
-                            # source links or dates is worse than the draft, so keep the draft.
-                            trace["planning_correction"]["rewrite_discarded"] = "lost_citations"
-                            corrected_message = ""
+                        corrected_violations = violations
                         if corrected_message:
-                            corrected_message, corrected_violations = self._check_answer(
-                                quality_validator,
+                            damage = self._rewrite_damage_reason(
+                                message,
                                 corrected_message,
-                                "after_correction",
+                                violations,
+                                quality_validator,
                                 mode_context,
                                 request.message,
                                 planning_context,
                                 build_validation_context,
                                 read_only_validation_context,
-                                trace,
                             )
-                        else:
-                            corrected_violations = violations
+                            codes_text = ",".join(value.code for value in violations)
+                            if damage is None:
+                                self._record_repair(
+                                    trace, "after_correction", codes_text, "rewrite", "kept"
+                                )
+                                corrected_message, corrected_violations = self._check_answer(
+                                    quality_validator,
+                                    corrected_message,
+                                    "after_correction",
+                                    mode_context,
+                                    request.message,
+                                    planning_context,
+                                    build_validation_context,
+                                    read_only_validation_context,
+                                    trace,
+                                )
+                            else:
+                                # The rewrite is worse than the draft: keep the draft and
+                                # take out only the sentences the validators flagged. If the
+                                # draft cannot be repaired that way, the rewrite is still
+                                # better than a canned answer.
+                                local = self._remove_flagged(
+                                    message,
+                                    violations,
+                                    quality_validator,
+                                    mode_context,
+                                    request.message,
+                                    planning_context,
+                                    build_validation_context,
+                                    read_only_validation_context,
+                                )
+                                if local is None:
+                                    self._record_repair(
+                                        trace,
+                                        "after_correction",
+                                        codes_text,
+                                        "rewrite",
+                                        f"kept_despite_{damage}_no_local_repair",
+                                    )
+                                    corrected_message, corrected_violations = self._check_answer(
+                                        quality_validator,
+                                        corrected_message,
+                                        "after_correction",
+                                        mode_context,
+                                        request.message,
+                                        planning_context,
+                                        build_validation_context,
+                                        read_only_validation_context,
+                                        trace,
+                                    )
+                                else:
+                                    self._record_repair(
+                                        trace, "after_correction", codes_text, "rewrite", damage
+                                    )
+                                    self._record_repair(
+                                        trace,
+                                        "after_correction",
+                                        codes_text,
+                                        "remove_flagged_sentences",
+                                        "applied",
+                                    )
+                                    trace["planning_correction"]["rewrite_discarded"] = damage
+                                    correction_output = []
+                                    corrected_message, corrected_violations = self._check_answer(
+                                        quality_validator,
+                                        local,
+                                        "after_correction",
+                                        mode_context,
+                                        request.message,
+                                        planning_context,
+                                        build_validation_context,
+                                        read_only_validation_context,
+                                        trace,
+                                    )
+                        if corrected_message:
+                            kept_style = locally_handled(
+                                (v.code for v in corrected_violations), corrected_message
+                            )
+                            corrected_violations = [
+                                v for v in corrected_violations if v.code not in kept_style
+                            ]
                         if corrected_message and not corrected_violations:
                             message = corrected_message
                             trace["planning_correction"]["succeeded"] = True
@@ -1859,6 +1945,132 @@ class RecommendationService:
         )
 
     @staticmethod
+    def _record_repair(
+        trace: dict[str, Any], stage: str, validator: str, action: str, result: str
+    ) -> None:
+        """One validator decision: which finding, what was done about it, and the outcome."""
+
+        trace.setdefault("local_repairs", []).append(
+            {"stage": stage, "validator": validator, "action": action, "result": result}
+        )
+
+    @staticmethod
+    def _flagged_sentences(
+        text: str,
+        violations: list[Any],
+        quality_validator: ResponseQualityValidator,
+        mode_context: ResponseModeContext,
+        user_message: str,
+        planning_context: SessionPlanningContext | None,
+        build_context: BuildResponseValidationContext,
+        read_only_context: ReadOnlyActionValidationContext,
+    ) -> set[str]:
+        """Sentences that raise one of the findings when validated on their own."""
+
+        def sentence_codes(piece: str) -> list[str]:
+            return [
+                value.code
+                for value in quality_validator.validate(
+                    piece,
+                    mode_context,
+                    user_message,
+                    planning_context,
+                    build_context,
+                    read_only_context,
+                )
+            ]
+
+        return offending_sentences(text, {v.code for v in violations}, sentence_codes)
+
+    @staticmethod
+    def _remove_flagged(
+        message: str,
+        violations: list[Any],
+        quality_validator: ResponseQualityValidator,
+        mode_context: ResponseModeContext,
+        user_message: str,
+        planning_context: SessionPlanningContext | None,
+        build_context: BuildResponseValidationContext,
+        read_only_context: ReadOnlyActionValidationContext,
+    ) -> str | None:
+        """The draft without the sentences that raise the given findings, or None."""
+
+        flagged = RecommendationService._flagged_sentences(
+            message,
+            violations,
+            quality_validator,
+            mode_context,
+            user_message,
+            planning_context,
+            build_context,
+            read_only_context,
+        )
+        wanted = {v.code for v in violations}
+
+        def acceptable_pick(body: str) -> bool:
+            # A promoted backup becomes the recommendation, so it is checked as one.
+            checked = RecommendationService._flagged_sentences(
+                f"Recommended: {body}",
+                violations,
+                quality_validator,
+                mode_context,
+                user_message,
+                planning_context,
+                build_context,
+                read_only_context,
+            )
+            codes = {
+                value.code
+                for value in quality_validator.validate(
+                    f"Recommended: {body}",
+                    mode_context,
+                    user_message,
+                    planning_context,
+                    build_context,
+                    read_only_context,
+                )
+            }
+            return not checked and not (codes & wanted)
+
+        if not flagged:
+            return None
+        return remove_flagged_sentences(message, flagged, acceptable_pick)
+
+    @staticmethod
+    def _rewrite_damage_reason(
+        draft: str,
+        rewrite: str,
+        violations: list[Any],
+        quality_validator: ResponseQualityValidator,
+        mode_context: ResponseModeContext,
+        user_message: str,
+        planning_context: SessionPlanningContext | None,
+        build_context: BuildResponseValidationContext,
+        read_only_context: ReadOnlyActionValidationContext,
+    ) -> str | None:
+        """Why the rewrite is worse than the draft (see rewrite_damage), or None."""
+
+        flagged = RecommendationService._flagged_sentences(
+            draft,
+            violations,
+            quality_validator,
+            mode_context,
+            user_message,
+            planning_context,
+            build_context,
+            read_only_context,
+        )
+        names = {
+            *read_only_context.retrieved_item_names,
+            *(value.casefold() for value in read_only_context.account_quest_names),
+            *(
+                value.name.casefold()
+                for value in (planning_context.candidates if planning_context else [])
+            ),
+        }
+        return rewrite_damage(draft, rewrite, dependents_of(draft, flagged), names)
+
+    @staticmethod
     def _check_answer(
         quality_validator: ResponseQualityValidator,
         message: str,
@@ -1994,6 +2206,66 @@ class RecommendationService:
                     build_context,
                     read_only_context,
                 )
+        codes = {v.code for v in violations}
+        if codes & LOCAL_STYLE_CODES:
+            repaired, done = repair_style(
+                message,
+                codes,
+                mode=mode_context,
+                # Before any lookup an offer is work for the tool-enabled retry, not a cut.
+                permission_allowed=read_only_context.lookups_performed
+                or trace["initiative_retry"]["attempted"]
+                or "unsupported_capability" in codes,
+            )
+            for entry in done:
+                RecommendationService._record_repair(
+                    trace, stage, entry["validator"], entry["action"], entry["result"]
+                )
+            if repaired != message:
+                message = repaired
+                violations = quality_validator.validate(
+                    message,
+                    mode_context,
+                    user_message,
+                    planning_context,
+                    build_context,
+                    read_only_context,
+                )
+        constraint = {v.code for v in violations if is_constraint_code(v.code)}
+        if constraint:
+            repaired_text = RecommendationService._remove_flagged(
+                message,
+                [v for v in violations if v.code in constraint],
+                quality_validator,
+                mode_context,
+                user_message,
+                planning_context,
+                build_context,
+                read_only_context,
+            )
+            label = ",".join(sorted(constraint))
+            if repaired_text is None:
+                RecommendationService._record_repair(
+                    trace, stage, label, "remove_flagged_sentences", "no_recommendation_remains"
+                )
+            else:
+                after = quality_validator.validate(
+                    repaired_text,
+                    mode_context,
+                    user_message,
+                    planning_context,
+                    build_context,
+                    read_only_context,
+                )
+                if constraint & {v.code for v in after}:
+                    RecommendationService._record_repair(
+                        trace, stage, label, "remove_flagged_sentences", "constraint_remains"
+                    )
+                else:
+                    message, violations = repaired_text, after
+                    RecommendationService._record_repair(
+                        trace, stage, label, "remove_flagged_sentences", "applied"
+                    )
         if not build_context.is_build_request:
             return message, violations
         claims = quality_validator.ownership_claims(message, build_context)
