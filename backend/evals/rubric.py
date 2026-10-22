@@ -97,7 +97,7 @@ def deterministic_scores(
                 "invented_reward_or_mechanic",
                 "contradictory_claim",
             },
-            {"mentions_expected_fact", "no_forbidden_claims"},
+            {"mentions_expected_fact", "no_forbidden_claims", "turn_expectations_met"},
         ),
         "account_grounding": score(
             {"ownership_hallucination", "wrong_character", "unsupported_active_quest"},

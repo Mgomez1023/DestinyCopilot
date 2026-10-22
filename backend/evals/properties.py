@@ -1029,26 +1029,42 @@ DATED = re.compile(
     re.I,
 )
 OWNERSHIP_ASSERTION = (
-    r"\byou(?:'ve| have| own| already have| do have| got|'ve got)\b[^.?!]{{0,30}}\b{term}\b",
-    r"\byour\b[^.?!]{{0,25}}\b{term}\b",
-    r"\b{term}\b[^.?!]{{0,30}}\bin your (?:vault|inventory)\b",
+    r"\byou(?:'ve| have| own| already have| do have| got|'ve got)\b[^.?!]{{0,30}}"
+    r"\b(?P<term>{term})\b",
+    r"\byour\b[^.?!]{{0,25}}\b(?P<term>{term})\b",
+    r"\b(?P<term>{term})\b[^.?!]{{0,30}}\bin your (?:vault|inventory)\b",
 )
 OWNERSHIP_NEGATION = re.compile(
-    r"\b(?:no|not|none|nothing|without|neither|any|don'?t|doesn'?t|didn'?t|isn'?t|aren'?t|"
-    r"haven'?t|hasn'?t|can'?t)\b|n't\b|^\s*(?:if|whether)\b",
+    r"\b(?:no|not|none|nothing|never|without|neither|don'?t|doesn'?t|didn'?t|isn'?t|aren'?t|"
+    r"haven'?t|hasn'?t|can'?t)\b|n't\b",
     re.I,
 )
+CONDITIONAL_OPENING = re.compile(r"^\s*(?:if|whether)\b", re.I)
+NEGATION_WINDOW_WORDS = 4
 
 
 def _asserts_ownership(answer: str, term: str) -> str | None:
-    """The first sentence that asserts the player holds `term`; questions and negations don't."""
+    """The first sentence that asserts the player holds `term`.
+
+    Questions and conditionals don't assert anything. A negation only cancels the claim when it
+    sits in the claim itself ("you have no sniper") or within a few words before the item
+    ("there is no sniper in your vault"); a negation elsewhere in the sentence does not.
+    """
 
     for sentence in _sentences(_plain(answer)):
-        if sentence.endswith("?") or OWNERSHIP_NEGATION.search(sentence):
+        if sentence.endswith("?") or CONDITIONAL_OPENING.search(sentence):
             continue
         for template in OWNERSHIP_ASSERTION:
-            if re.search(template.format(term=f"(?:{term})"), sentence, re.I):
-                return sentence
+            for match in re.finditer(template.format(term=term), sentence, re.I):
+                term_start = match.start("term")
+                if template.startswith(r"\b(?P<term>"):
+                    # The item leads the clause, so the negation (if any) precedes it.
+                    words = sentence[:term_start].split()
+                    scope = " ".join(words[-NEGATION_WINDOW_WORDS:]) + " " + match.group(0)
+                else:
+                    scope = sentence[match.start() : term_start]
+                if not OWNERSHIP_NEGATION.search(scope):
+                    return sentence
     return None
 
 
@@ -1079,12 +1095,13 @@ def turn_expectations(obs: Observation, facts: ProfileFacts) -> PropertyResult:
         ):
             return _fail(name, None, f"{label} answers none of {list(check.answers_any)}")
         if check.linked_source_or_limitation and not (
-            (URL.search(answer) and DATED.search(answer))
+            obs.turns[index].sources
+            or URL.search(answer)
             or HEDGE.search(answer)
             or NOT_ESTABLISHED.search(answer)
         ):
             return _fail(
-                name, "stale_live_claim", f"{label} has neither a dated link nor a stated limit"
+                name, "stale_live_claim", f"{label} has neither a source nor a stated limit"
             )
     return _ok(name)
 

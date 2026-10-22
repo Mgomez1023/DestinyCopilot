@@ -28,6 +28,7 @@ def record(obs: Observation, results: list[PropertyResult], card: ScoreCard) -> 
                 "message": turn.message,
                 "answer": turn.answer,
                 "source": turn.source,
+                "sources": turn.sources,
                 "error": turn.error,
                 "latency_s": turn.latency_s,
                 "model_requests": turn.model_requests,

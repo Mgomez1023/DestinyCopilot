@@ -18,11 +18,21 @@ from evals.runtime import Observation, TurnRecord
 BY_ID = {value.id.removeprefix("heldout."): value for value in HELDOUT}
 
 
-def run(scenario: Scenario, *answers: str, profile: str | None = None, trace=None):  # noqa: ANN001, ANN201
+def run(  # noqa: ANN201
+    scenario: Scenario,
+    *answers: str,
+    profile: str | None = None,
+    trace=None,  # noqa: ANN001
+    sources: list[dict] | None = None,
+):
     context = PROFILES[profile or scenario.profile]()
     turns = [
         TurnRecord(
-            message=message, answer=answer, source="openai", trace=trace or {"grounding": {}}
+            message=message,
+            answer=answer,
+            source="openai",
+            trace=trace or {"grounding": {}},
+            sources=sources or [],
         )
         for message, answer in zip(scenario.turns, answers, strict=True)
     ]
@@ -345,27 +355,131 @@ def test_negated_move_claims_are_not_flagged() -> None:
     assert run(BY_ID["move_vaulted_gun_to_character"], answer)["turn_expectations_met"].passed
 
 
-def test_the_coil_case_needs_a_dated_link_or_a_stated_limit() -> None:
+WEB_SOURCE = [
+    {
+        "title": "This Week in Destiny",
+        "url": "https://www.bungie.net/7/en/News",
+        "domain": "bungie.net",
+    }
+]
+
+
+def test_the_coil_case_passes_on_a_returned_source() -> None:
     scenario = BY_ID["coil_still_worth_farming"]
     assert scenario.expect.current_evidence
     web = {"grounding": {"web_research": True}}
-    sourced = (
-        "Bungie's TWAB from Oct 14, 2026 lists the Coil rewards: https://www.bungie.net/7/en/News "
-    )
-    assert run(scenario, sourced, trace=web)["turn_expectations_met"].passed
-    limited = "I can't confirm what The Coil is dropping this week from the data I have."
-    assert run(scenario, limited)["turn_expectations_met"].passed
-    # A bare assertion with no link, date, or limitation fails both checks.
-    bare = "Yes, The Coil still drops its weapons this week."
-    results = run(scenario, bare)
+    answer = "The Coil is the Dreaming City arena and it still lists its weapon rewards."
+    result = run(scenario, answer, trace=web, sources=WEB_SOURCE)
+    assert result["turn_expectations_met"].passed
+    assert result["current_source_not_overclaimed"].passed
+
+
+def test_the_coil_case_fails_with_no_sources_and_no_hedge() -> None:
+    scenario = BY_ID["coil_still_worth_farming"]
+    results = run(scenario, "Yes, The Coil still drops its weapons this week.")
     assert not results["turn_expectations_met"].passed
     assert results["turn_expectations_met"].flag == "stale_live_claim"
     assert not results["current_source_not_overclaimed"].passed
-    # A link with no date does not count, and neither does a date with no link.
-    assert not run(scenario, "See https://example.com/coil for drops.")[
+
+
+def test_the_coil_case_passes_on_a_stated_limitation_without_sources() -> None:
+    scenario = BY_ID["coil_still_worth_farming"]
+    limited = "I can't confirm what The Coil is dropping this week from the data I have."
+    assert run(scenario, limited)["turn_expectations_met"].passed
+
+
+def test_a_url_in_the_text_counts_even_when_no_sources_were_returned() -> None:
+    scenario = BY_ID["coil_still_worth_farming"]
+    answer = "Bungie's weekly post covers it: https://www.bungie.net/7/en/News"
+    assert run(scenario, answer)["turn_expectations_met"].passed
+
+
+def test_a_date_alone_is_not_a_source() -> None:
+    scenario = BY_ID["coil_still_worth_farming"]
+    assert not run(scenario, "As of Oct 14, 2026 it drops weapons.")["turn_expectations_met"].passed
+
+
+def test_sources_are_graded_per_turn() -> None:
+    scenario = Scenario(
+        "t",
+        "titan_veteran",
+        ("a", "b"),
+        Expectations(by_turn={1: TurnExpectation(linked_source_or_limitation=True)}),
+    )
+    # Sources on the wrong turn's record do not help; here both turns share the list, so the
+    # point is only that the final turn is checked, not the first.
+    assert run(scenario, "Anything.", "It drops stuff.", sources=WEB_SOURCE)[
         "turn_expectations_met"
     ].passed
-    assert not run(scenario, "As of Oct 14, 2026 it drops weapons.")["turn_expectations_met"].passed
+    assert not run(scenario, "Anything.", "It drops stuff.")["turn_expectations_met"].passed
+
+
+# --- Ownership negation is local to the claim ------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "You already have a sniper rifle in your vault, no need to buy one.",
+        "Yes, you have a sniper rifle: any of your characters can pull it.",
+        "Good news, you own a sniper rifle and nothing else is missing.",
+        "You have a sniper in your vault. Don't buy another.",
+    ],
+)
+def test_a_negation_elsewhere_in_the_sentence_does_not_hide_an_ownership_claim(
+    answer: str,
+) -> None:
+    result = per_turn("sniper_then_fusion", answer, FILLER_TURN)
+    assert not result.passed
+    assert result.flag == "ownership_hallucination"
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "You have no sniper rifle in your vault.",
+        "You never owned a sniper rifle on this account.",
+        "There is no sniper rifle in your vault.",
+        "Sadly a sniper rifle isn't in your vault.",
+        "You don't have a sniper, but your Taipan-4fr covers long range.",
+    ],
+)
+def test_a_negation_next_to_the_claim_still_cancels_it(answer: str) -> None:
+    assert per_turn("sniper_then_fusion", answer, FILLER_TURN).passed
+
+
+# --- Soft score impact ------------------------------------------------------------------
+
+
+def _factual_score(scenario: Scenario, results: dict) -> int:
+    from evals.rubric import deterministic_scores
+
+    facts = profile_facts(PROFILES[scenario.profile]())
+    return deterministic_scores(list(results.values()), scenario.expect, "", facts)[
+        "factual_correctness"
+    ]
+
+
+def test_a_missed_turn_expectation_lowers_factual_correctness() -> None:
+    scenario = BY_ID["unavailable_then_solo"]
+    missed = run(scenario, "Sorry, I can't pull that up.", FILLER_TURN)
+    met = run(scenario, "I can't see your K/D.", FILLER_TURN)
+    assert not missed["turn_expectations_met"].passed
+    assert missed["turn_expectations_met"].flag is None
+    assert _factual_score(scenario, missed) == 1
+    assert _factual_score(scenario, met) == 2
+
+
+def test_only_held_out_scenarios_define_turn_expectations() -> None:
+    # The property is skipped (applies=False) elsewhere, so the new soft set entry cannot
+    # change any other scenario's score.
+    from evals.scenarios import BANK, SUBSETS
+
+    others = [
+        value for name, subset in SUBSETS.items() if name != "heldout" for value in (*subset, *BANK)
+    ]
+    assert others
+    assert all(not value.expect.by_turn for value in others)
 
 
 def test_scenarios_remain_frozen_values() -> None:

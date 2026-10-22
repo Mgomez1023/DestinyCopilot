@@ -96,6 +96,8 @@ class TurnRecord:
     instruction_chars: int = 0
     # Every assistant draft the model produced this turn, including ones the validator rejected.
     drafts: list[str] = field(default_factory=list)
+    # ChatResponse.sources as the player sees them: title, url, and domain per source.
+    sources: list[dict[str, Any]] = field(default_factory=list)
     core_block: str | None = None
     # Turn routing and planning context the model saw (instructions after the prefix).
     routing_context: str = ""
@@ -218,6 +220,7 @@ async def run_scenario(
                 )
                 record.answer = response.message
                 record.source = response.source
+                record.sources = [value.model_dump() for value in response.sources]
             except Exception as exc:  # noqa: BLE001 - recorded as a tool-loop failure
                 record.error = f"{type(exc).__name__}: {exc}"[:300]
             record.latency_s = round(time.perf_counter() - started, 2)
