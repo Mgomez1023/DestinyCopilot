@@ -246,6 +246,17 @@ def record_ownership_evidence(
             evidence.add(item.get("name"), source, equipped=equipped, character=owner)
             for plug in _plug_names(item):
                 evidence.add(plug, source, equipped=equipped, character=owner)
+    # A character-scoped search also names matches held by other characters, each with its owner.
+    others = result.get("other_character_matches")
+    for entry in others if isinstance(others, list) else []:
+        if isinstance(entry, dict):
+            owner = entry.get("character_class")
+            evidence.add(
+                entry.get("name"),
+                source,
+                equipped=entry.get("equipped") is True,
+                character=owner if isinstance(owner, str) else None,
+            )
     # Alternatives results name the character's currently equipped Exotics (not merely locked
     # items) so they can be preserved; that is direct evidence of what is equipped.
     preservation = result.get("preservation")

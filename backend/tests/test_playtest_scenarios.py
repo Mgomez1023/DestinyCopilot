@@ -593,14 +593,20 @@ def test_fixed_exotic_perk_change_is_not_offered_as_an_action() -> None:
         "I can't change gear for you, and Sunshot's barrel isn't something you can swap: "
         "its perks are fixed on the Exotic."
     )
+    # The definition is looked up first, so the fixed-perk statement rests on a result.
+    knowledge = StubKnowledge({"get_item_details": {"item": {"name": "Sunshot"}}})
     script = Script(
+        [call("get_item_details", "item-1", item_name_or_hash="Sunshot")],
         [assistant_message("Sure, I'll swap Sunshot's barrel to a range barrel for you.")],
         [assistant_message(honest)],
     )
 
-    response = run(service(script), "Can you change the barrel on my Sunshot?", titan_with())
+    response = run(
+        service(script, knowledge), "Can you change the barrel on my Sunshot?", titan_with()
+    )
 
     assert response.message == honest
+    assert knowledge.calls[0][0] == "get_item_details"
 
 
 # --- 9. Simple drop-source question: direct answer, no closing permission offer ---------
@@ -1563,7 +1569,9 @@ def test_repaired_loot_answer_says_what_is_not_established() -> None:
     assert len(script.requests) == 1 and trace["planning_claims_repaired"] is True
     assert "Backup: The Edge of Fate." in response.message
     assert "higher-tier" not in response.message
-    assert "Loot quality and solo clear time aren't established" in response.message
+    # Only a loot ranking was cut, so the note names only loot (no solo claim was removed).
+    assert "Loot quality isn't established by your data." in response.message
+    assert "solo clear time" not in response.message
 
 
 def test_stated_durations_need_support_from_the_player_or_their_runs() -> None:

@@ -951,6 +951,22 @@ class GuardianToolService:
             }
             if selected is not None:
                 result["matches_on_other_characters"] = len(in_scope) - len(candidates)
+                candidate_ids = {id(item) for item in candidates}
+                class_by_id = {
+                    character.character_id: character.class_name
+                    for character in self.context.characters
+                }
+                result["other_character_matches"] = [
+                    {
+                        "name": item.name,
+                        "character_class": class_by_id.get(item.character_id or ""),
+                        "location": item.location,
+                        "equipped": item.is_equipped,
+                        "matched_on": matched_fields(item),
+                    }
+                    for item in in_scope
+                    if id(item) not in candidate_ids
+                ][: request.limit]
             if not filtered and without:
                 result["search_note"] = (
                     f"No match. {without} of {len(searched_items)} searched items returned no "

@@ -45,6 +45,15 @@ MAX_REQUIREMENT_CHARS = 2400
 # Nightfall, Raid, Dungeon). A solo player is not offered them as a first choice.
 TEAM_ACTIVITY_TYPES = ("nightfall", "strike", "vanguard op", "raid", "dungeon", "gambit")
 
+# Appended to every correction request: the revised answer replaces the draft, so it must not
+# talk about the revision.
+REWRITE_RULE = (
+    "Rewrite the whole answer so it reads as if it had been right the first time: state the "
+    "corrected fact directly, and do not announce, label, or apologize for a correction (no "
+    "'quick correction', 'to clarify', 'don't mix them up'). Do not mention validation, tools, "
+    "providers, or internal reasoning."
+)
+
 
 def _has_term(label: str, term: str) -> bool:
     """The term as whole words in a normalized label; a plural "s" is allowed."""
@@ -1144,7 +1153,7 @@ class PlanningAnswerValidator:
         return (
             "Revise the previous recommendation once. Preserve grounded facts and source support, "
             "but correct these factual constraints: "
-            f"{constraints} Do not mention validation, tools, providers, or internal reasoning."
+            f"{constraints} {REWRITE_RULE}"
         )
 
     @staticmethod

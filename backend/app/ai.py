@@ -13,6 +13,7 @@ from uuid import uuid4
 from openai import AsyncOpenAI, OpenAIError
 from pydantic import ValidationError
 
+from app.absence_claims import collect_evidence_terms, replace_absent_values
 from app.build_analysis import (
     BuildRequestContext,
     derive_build_request_context,
@@ -43,6 +44,7 @@ from app.guardian_tools import (
     GuardianToolError,
     GuardianToolService,
 )
+from app.item_fact_claims import collect_item_names, remove_unverified_item_claims
 from app.live_knowledge import (
     LIVE_PROVIDER_CATEGORY,
     unavailable_live_data,
@@ -68,6 +70,7 @@ from app.response_quality import (
     is_guidance_request,
     is_research_request,
     item_definition_lookup,
+    remove_correction_narration,
     remove_unsupported_capability_offers,
     response_mode_context,
     response_mode_instruction,
@@ -1051,6 +1054,10 @@ class RecommendationService:
                             value.code for value in violations
                         }:
                             pending_forced_tool = "find_build_alternatives"
+                        elif "unverified_item_fact" in {value.code for value in violations} and (
+                            "get_item_details" in {v.get("name") for v in tool_definitions}
+                        ):
+                            pending_forced_tool = "get_item_details"
                         input_items.extend(self._normalize_replay_output_items(response_output))
                         input_items.append(
                             {
@@ -1088,7 +1095,9 @@ class RecommendationService:
                         correction_output = self._field(correction_response, "output", []) or []
                         self._log_response_metadata(correction_response, "planning_correction")
                         self._require_completed_response(correction_response)
-                        corrected_message = self._extract_assistant_text(correction_response)
+                        corrected_message = remove_correction_narration(
+                            self._extract_assistant_text(correction_response)
+                        )
                         if corrected_message:
                             corrected_message, corrected_violations = self._check_answer(
                                 quality_validator,
@@ -1146,7 +1155,10 @@ class RecommendationService:
                             elif fallback_kind == "grounding_safety":
                                 # The data was available; the draft made unsupported or
                                 # constraint-breaking claims. Block it without blaming retrieval.
-                                message = quality_validator.safe_build_grounding_answer()
+                                message = quality_validator.safe_build_grounding_answer(
+                                    build_validation_context,
+                                    [value.code for value in corrected_violations],
+                                )
                                 safe_fallback = True
                                 trace["planning_correction"]["fallback"] = "build_grounding"
                             else:
@@ -1198,8 +1210,10 @@ class RecommendationService:
                     # Presentation only: readable citations, and no offer of an ability the app
                     # lacks even if a correction left one in place.
                     message = remove_unsupported_capability_offers(
-                        clean_citation_artifacts(
-                            message, citation_spans([*response_output, *correction_output])
+                        remove_correction_narration(
+                            clean_citation_artifacts(
+                                message, citation_spans([*response_output, *correction_output])
+                            )
                         )
                     )
                     safe_message = self._enforce_power_safety(message)
@@ -1340,6 +1354,8 @@ class RecommendationService:
                         guardian_tools, call.name, call.arguments
                     )
                     self._record_mechanics_evidence(mechanics_ledger, call.name, category, result)
+                    collect_item_names(result, read_only_validation_context.retrieved_item_names)
+                    collect_evidence_terms(result, read_only_validation_context.evidence_terms)
                     self._update_build_validation_context(
                         build_validation_context,
                         trace,
@@ -1848,6 +1864,40 @@ class RecommendationService:
             if repaired is not None:
                 message = repaired
                 trace["planning_claims_repaired"] = True
+                violations = quality_validator.validate(
+                    message,
+                    mode_context,
+                    user_message,
+                    planning_context,
+                    build_context,
+                    read_only_context,
+                )
+        if "absence_reported_as_value" in {v.code for v in violations}:
+            # Deterministic and faithful: the sentence becomes a plain statement that the
+            # measure is unavailable, so no model round is needed to say what is already known.
+            repaired = replace_absent_values(message, read_only_context.evidence_terms)
+            if repaired is not None:
+                message = repaired
+                trace["absent_values_replaced"] = True
+                violations = quality_validator.validate(
+                    message,
+                    mode_context,
+                    user_message,
+                    planning_context,
+                    build_context,
+                    read_only_context,
+                )
+        if "unverified_item_fact" in {v.code for v in violations} and (
+            stage == "after_correction" or trace["initiative_retry"]["attempted"]
+        ):
+            # The lookup (or the one correction) did not settle it: keep the rest of the answer
+            # and drop only the definition facts nothing retrieved supports.
+            repaired = remove_unverified_item_claims(
+                message, read_only_context.retrieved_item_names
+            )
+            if repaired is not None:
+                message = repaired
+                trace["unverified_item_claims_removed"] = True
                 violations = quality_validator.validate(
                     message,
                     mode_context,

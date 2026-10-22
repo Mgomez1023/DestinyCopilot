@@ -4,7 +4,9 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from app.absence_claims import absent_measure_values
 from app.build_analysis import is_explicit_build_request, replaces_item
+from app.item_fact_claims import unverified_item_claims
 from app.ownership_evidence import (
     OwnershipClaim,
     OwnershipEvidence,
@@ -14,6 +16,7 @@ from app.ownership_evidence import (
     unsupported_claims,
 )
 from app.session_planning import (
+    REWRITE_RULE,
     PlanningAnswerValidator,
     PlanningViolation,
     SessionPlanningContext,
@@ -126,6 +129,8 @@ GROUNDING_SAFETY_VIOLATION_CODES = frozenset(
         "unrequested_timed_itinerary",
         "unsupported_ownership_claim",
         "unsupported_stat_threshold",
+        "unverified_item_fact",
+        "absence_reported_as_value",
     }
 )
 
@@ -147,6 +152,17 @@ def build_fallback_kind(violations: list[PlanningViolation]) -> BuildFallbackKin
     if "grounding_safety" in groups:
         return "grounding_safety"
     return "style_only"
+
+
+# What an unverified draft was missing, in plain words, for the keep-your-build fallback.
+_UNVERIFIED_BY_CODE = {
+    "unsupported_ownership_claim": "that you own a piece my draft relied on",
+    "locked_item_replaced": "a change that keeps the item you asked to keep",
+    "goal_item_replaced": "a change that keeps the item you asked to use",
+    "unsupported_stat_effect": "what a stat change would do",
+    "unsupported_stat_threshold": "the stat threshold my draft cited",
+    "incompatible_exotic_recommendation": "an Exotic your class can wear",
+}
 
 
 class ResponseModeContext(BaseModel):
@@ -260,6 +276,11 @@ class ReadOnlyActionValidationContext(BaseModel):
     account_quest_names: list[str] = Field(default_factory=list)
     # Owned items by name: (rarity tier, weapon subtype), as Guardian reports them.
     item_facts: dict[str, tuple[str | None, str | None]] = Field(default_factory=dict)
+    # Names (folded) that any tool returned this turn: the items a definition fact may be about.
+    retrieved_item_names: set[str] = Field(default_factory=set)
+    # Stemmed words of every key and text value the tools returned this turn: a measure none of
+    # them mention was never returned, so it cannot be stated as zero.
+    evidence_terms: set[str] = Field(default_factory=set)
     # The user asked how to unlock or obtain something, and whether this turn retrieved any
     # Manifest, Guide, Live, or web knowledge (Guardian data alone cannot supply the path).
     guidance_requested: bool = False
@@ -421,6 +442,8 @@ _ORPHAN_START = re.compile(
     re.IGNORECASE,
 )
 LOOT_LIMIT_NOTE = "Loot quality and solo clear time aren't established by your data."
+# Used when only a loot ranking was removed: the note names just the claim that was cut.
+LOOT_ONLY_LIMIT_NOTE = "Loot quality isn't established by your data."
 # A stated duration ("~15-30 minutes", "takes about 25 minutes") about an activity.
 _DURATION_CLAIM = re.compile(
     r"(?:\b(?:in|within|under|about|around|roughly|approximately|takes?|take)\s+)?(?:~\s*)?"
@@ -890,6 +913,58 @@ def _without_misstated_capability(sentence: str) -> str | None:
     if start is None:
         return sentence
     return _kept_before(sentence, start)
+
+
+# A revised answer must read as if it had been right the first time. These are the ways a draft
+# narrates the repair instead: a "Quick correction:" label, or a stand-alone sentence that only
+# talks about the correction.
+_CORRECTION_LABEL = re.compile(
+    r"^(?P<lead>\s*(?:[-*•]\s+)?)(?:\*\*)?(?:(?:quick|small|brief|minor|one)\s+)?"
+    r"(?:correction|clarification|clarifier|heads[- ]up)(?:\*\*)?\s*[:—–-]\s*(?:\*\*)?",
+    re.IGNORECASE,
+)
+_CORRECTION_ONLY_SENTENCE = re.compile(
+    r"^\s*(?:[-*•]\s+)?(?:just\s+|so\s+)?(?:(?:please\s+)?(?:don'?t|do not)\s+mix\s+"
+    r"(?:\w+\s+){0,2}up|to\s+(?:clarify|correct\s+(?:that|myself|this))|"
+    r"(?:sorry|apologies|my\s+mistake|I\s+misspoke|correcting\s+myself)|"
+    r"(?:to\s+)?keep\s+(?:them|those|these|the\s+two)\s+straight)\b[^.!?\n]{0,60}[.!?]?\s*$",
+    re.IGNORECASE,
+)
+
+
+def remove_correction_narration(answer: str) -> str:
+    """The answer without lines that narrate a correction instead of stating the fact.
+
+    A "Quick correction:" label is dropped and the fact after it kept; a sentence that only
+    talks about the correction ("Don't mix them up.") is dropped. Everything else is untouched,
+    and an answer that would be left with no content is returned as it was.
+    """
+
+    parts = _sentence_parts(answer)
+    replaced: list[str | None] = []
+    changed = False
+    for index in range(0, len(parts), 2):
+        sentence = parts[index]
+        plain = _plain(sentence)
+        if _CORRECTION_ONLY_SENTENCE.match(plain):
+            replaced.append(None)
+            changed = True
+            continue
+        label = _CORRECTION_LABEL.match(plain)
+        if label:
+            rest = sentence[label.end() :]
+            if len(re.findall(r"\w+", rest)) >= 3:
+                rest = rest[:1].upper() + rest[1:]
+                replaced.append(label.group("lead") + rest)
+            else:
+                replaced.append(None)
+            changed = True
+            continue
+        replaced.append(sentence)
+    if not changed:
+        return answer
+    text = _rejoin(parts, replaced).strip()
+    return text if len(re.findall(r"\w+", text)) >= 3 else answer
 
 
 def remove_unsupported_capability_offers(answer: str) -> str:
@@ -1506,6 +1581,38 @@ class ResponseQualityValidator:
                     correction="Correct the item description: " + "; ".join(wrong) + ".",
                 )
             )
+        unverified = (
+            []
+            if read_only.current_evidence_performed
+            else unverified_item_claims(answer, read_only.retrieved_item_names)
+        )
+        if unverified:
+            names = ", ".join(dict.fromkeys(name for name, _ in unverified))
+            kinds = ", ".join(dict.fromkeys(kind for _, kind in unverified))
+            violations.append(
+                PlanningViolation(
+                    code="unverified_item_fact",
+                    correction=(
+                        f"The draft states the {kinds} of {names}, but no tool returned that "
+                        "item this turn. Look the item up (get_item_details, or the player's "
+                        "inventory) and state only what the result shows; if it cannot be "
+                        "retrieved, drop the claim."
+                    ),
+                )
+            )
+        absent = absent_measure_values(answer, read_only.evidence_terms)
+        if absent:
+            measures = ", ".join(dict.fromkeys(metric for _, metric in absent))
+            violations.append(
+                PlanningViolation(
+                    code="absence_reported_as_value",
+                    correction=(
+                        f"Nothing returned this turn includes {measures}, yet the draft states "
+                        "a zero or none value for it. Missing data is not zero: say the "
+                        "measure is unavailable from the data."
+                    ),
+                )
+            )
         if read_only.current_source_requested and not read_only.current_evidence_performed:
             violations.append(
                 PlanningViolation(
@@ -1666,7 +1773,7 @@ class ResponseQualityValidator:
 
         parts = _sentence_parts(answer)
         replaced: list[str | None] = []
-        changed = removed_loot = False
+        changed = removed_loot = removed_solo = False
         for index in range(0, len(parts), 2):
             current: str | None = _plain(parts[index])
             touched = False
@@ -1677,9 +1784,9 @@ class ResponseQualityValidator:
                 and _SOLO_CLAIM.search(current)
                 and not _SOLO_HEDGED.search(current)
             ):
-                current, touched = _without_solo_claim(current), True
+                current, touched, removed_solo = _without_solo_claim(current), True, True
             if current is not None and unsupported_duration(current):
-                touched = True
+                touched = removed_solo = True
                 # The headline keeps its pick without the number; elsewhere the sentence goes.
                 current = (
                     re.sub(r"\s{2,}", " ", _DURATION_CLAIM.sub("", current, count=1))
@@ -1695,7 +1802,14 @@ class ResponseQualityValidator:
         if not text or _ORPHAN_START.match(text):
             return None
         if removed_loot:
-            text = f"{text}\n{LOOT_LIMIT_NOTE}"
+            # Say only what was cut, and not again when the answer already states the limit.
+            stated = any(
+                _LOOT_HEDGED.search(part)
+                and re.search(r"\b(?:loot|drops?|rewards?)\b", part, re.IGNORECASE)
+                for part in _SENTENCE_PARTS.split(_plain(text))[::2]
+            )
+            if not stated:
+                text = f"{text}\n{LOOT_LIMIT_NOTE if removed_solo else LOOT_ONLY_LIMIT_NOTE}"
         return text if contains_recommendation(_plain(text)) else None
 
     @staticmethod
@@ -1792,6 +1906,7 @@ class ResponseQualityValidator:
                 "account_data_requested",
                 "unresearched_guidance",
                 "unverified_current_source",
+                "unverified_item_fact",
             }
             or ("false_inventory_denial" in codes and not read_only.inventory_checked)
             or ("unsupported_replacement" in codes and not read_only.inventory_checked)
@@ -1816,8 +1931,7 @@ class ResponseQualityValidator:
             "establish it, say so in one sentence and give the most useful next step. "
             "If your draft already answers the "
             "request, keep that answer and only drop the offer or question; never replace it "
-            f"with a menu of options for the user to pick from. {corrections} Do not mention "
-            "validation, tools, providers, or internal reasoning."
+            f"with a menu of options for the user to pick from. {corrections} {REWRITE_RULE}"
         )
 
     @staticmethod
@@ -2203,13 +2317,48 @@ class ResponseQualityValidator:
         )
 
     @staticmethod
-    def safe_build_grounding_answer() -> str:
-        """Fallback for an unsupported or constraint-breaking draft; data was available."""
+    def safe_build_grounding_answer(
+        context: "BuildResponseValidationContext | None" = None,
+        remaining_codes: tuple[str, ...] | list[str] = (),
+    ) -> str:
+        """Fallback for an unsupported or constraint-breaking draft; data was available.
 
+        The build was read, so the answer keeps it, says what could not be verified, and offers
+        at most one owned, unequipped item to compare. Without a loadout it can only decline.
+        """
+
+        equipped = list(dict.fromkeys(context.equipped_item_names)) if context else []
+        if not equipped:
+            return (
+                "I couldn't put together a recommendation I could fully verify against your "
+                "gear and the constraints you gave, so I'd rather not guess. Narrowing it to "
+                "one slot or goal usually helps."
+            )
+        unverified = [
+            _UNVERIFIED_BY_CODE[code]
+            for code in dict.fromkeys(remaining_codes)
+            if code in _UNVERIFIED_BY_CODE
+        ]
+        what = unverified[0] if unverified else "a change that fits your constraints"
+        owned_other = [
+            name
+            for name in dict.fromkeys(context.owned_item_names)
+            if name not in equipped and name not in context.locked_item_names
+        ]
+        if owned_other:
+            check = (
+                f"One thing worth checking: {owned_other[0]} is in your inventory but not "
+                "equipped. I haven't compared it with what you're wearing, so I can't say it's "
+                "an upgrade."
+            )
+        else:
+            check = (
+                "If you name the slot or goal you want to improve, I can compare your owned "
+                "options for it."
+            )
         return (
-            "I couldn't put together a recommendation I could fully verify against your gear "
-            "and the constraints you gave, so I'd rather not guess. Narrowing it to one slot or "
-            "goal usually helps."
+            f"I'd keep your current build as it is ({', '.join(equipped[:4])}). I couldn't "
+            f"verify {what}, so I'm not recommending a change. {check}"
         )
 
     @staticmethod

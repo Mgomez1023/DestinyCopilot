@@ -390,7 +390,9 @@ def test_a_genuinely_unsupported_recommendation_still_falls_back() -> None:
         ]
     )
 
-    assert answer.message == VALIDATOR.safe_build_grounding_answer()
+    assert answer.message.startswith("I'd keep your current build as it is (")
+    assert "you own a piece my draft relied on" in answer.message
+    assert "Witherhoard" not in answer.message
     assert trace["planning_correction"]["fallback"] == "build_grounding"
     assert (
         "unsupported_ownership_claim" in trace["planning_correction"]["remaining_violation_codes"]

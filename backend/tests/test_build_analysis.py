@@ -1685,7 +1685,10 @@ async def test_grounding_violation_stays_blocked_with_accurate_wording(
         message, [[ANALYZE_CALL], [_answer(draft, 1)], [_answer(draft, 2)]]
     )
 
-    assert answer.message == ResponseQualityValidator.safe_build_grounding_answer()
+    # The fallback keeps the read build and names what could not be verified, not a bare refusal.
+    assert answer.message.startswith("I'd keep your current build as it is (")
+    assert "I couldn't verify" in answer.message
+    assert "I'd rather not guess" not in answer.message
     assert draft not in answer.message
     assert answer.sources == []
     assert responses.requests[2]["tool_choice"] == "none"
@@ -1713,6 +1716,23 @@ async def test_style_only_violation_after_correction_returns_corrected_text() ->
 
 def test_build_fallback_wording_never_claims_retrieval_failed_for_grounding() -> None:
     wording = ResponseQualityValidator.safe_build_grounding_answer().casefold()
+    context = BuildResponseValidationContext(
+        is_build_request=True,
+        equipped_item_names=["Alpha Gun", "Beta Plate"],
+        owned_item_names=["Alpha Gun", "Gamma Gun"],
+    )
+    kept = ResponseQualityValidator.safe_build_grounding_answer(
+        context, ["unsupported_ownership_claim"]
+    )
+    assert "Alpha Gun, Beta Plate" in kept
+    assert "you own a piece my draft relied on" in kept
+    assert "Gamma Gun is in your inventory but not equipped" in kept
+    assert "can't say it's an upgrade" in kept
+    assert "retrieve" not in kept.casefold()
+    bare = ResponseQualityValidator.safe_build_grounding_answer(
+        BuildResponseValidationContext(is_build_request=True, equipped_item_names=["Alpha Gun"])
+    )
+    assert "name the slot or goal" in bare
 
     assert "retrieve" not in wording
     assert "inspect" not in wording
