@@ -34,6 +34,13 @@ _STATES_ABSENCE = re.compile(
     r"established|no way to)\b",
     re.IGNORECASE,
 )
+# The sentence attributes the measure to the player: "your ...", "you have/you've got ...",
+# "you're on/at ...", or "<your character> has ...".
+_PLAYER_FRAMED = re.compile(
+    r"\byour\b|\byou(?:'ve| have| has)\b|\byou(?:'re| are) (?:currently )?(?:on|at)\b|"
+    r"\b(?:the|that) (?:Titan|Hunter|Warlock|Guardian|character) (?:has|have)\b",
+    re.IGNORECASE,
+)
 _NOT_MEASURES = frozenset(
     [
         "this",
@@ -135,7 +142,9 @@ def absent_measure_values(answer: str, terms: set[str]) -> list[tuple[str, str]]
     for sentence in re.split(r"(?<=[.!?])\s+|\n+", answer.replace("’", "'")):
         if not sentence.strip() or sentence.rstrip().endswith("?"):
             continue
-        if _STATES_ABSENCE.search(sentence):
+        # Only the player's own values can be missing data; "Duality has 0 champions" or
+        # "rockets have no falloff" are statements about the game, not about this account.
+        if not _PLAYER_FRAMED.search(sentence) or _STATES_ABSENCE.search(sentence):
             continue
         for pattern in _ZERO_VALUE_PATTERNS:
             match = pattern.search(sentence)

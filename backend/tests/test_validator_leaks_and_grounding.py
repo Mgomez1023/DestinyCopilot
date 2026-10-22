@@ -159,11 +159,39 @@ RECENT = {"recent_activities": [], "note": "No recent activities were returned."
         "Your win streak is 0.",
         "Your current streak stands at zero.",
         "You have 0 wins in a row.",
-        "Streak: 0",
+        "Your current Gambit win streak is 0.",
+        "You have 0 kills this season.",
+        "You've got zero banked engrams.",
+        "You're on a streak of 0.",
+        "The Titan has 0 kills this season.",
     ],
 )
 def test_a_zero_for_a_measure_no_tool_returned_is_flagged(answer: str) -> None:
     assert absent_measure_values(answer, _terms(RECENT))
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "Damage falloff is none for rockets.",
+        "Recoil direction is 0 on this roll, which is ideal.",
+        "Duality has 0 champions on Standard.",
+        "Heavy ammo cost is zero in this mode.",
+        "The Exotic class item has zero stat penalty.",
+        "Streak: 0",
+    ],
+)
+def test_general_game_facts_that_state_zero_are_not_player_values(answer: str) -> None:
+    terms = _terms({"activities": [{"name": "Standard", "type": "Dungeon"}], "quest": "x"})
+    assert absent_measure_values(answer, terms) == []
+    assert absent_measure_values(answer, _terms(RECENT)) == []
+    assert replace_absent_values(answer, terms) is None
+
+
+def test_a_game_fact_next_to_a_player_value_flags_only_the_player_sentence() -> None:
+    answer = "Duality has 0 champions on Standard. Your Gambit win streak is 0."
+    flagged = absent_measure_values(answer, _terms(RECENT))
+    assert [sentence for sentence, _ in flagged] == ["Your Gambit win streak is 0."]
 
 
 @pytest.mark.parametrize(
