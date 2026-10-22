@@ -164,8 +164,8 @@ def test_eval_runtime_reuses_the_production_service() -> None:
     assert issubclass(RecordingRecommendationService, RecommendationService)
     overridden = {
         name
-        for name in vars(RecordingRecommendationService)
-        if not name.startswith("__") and name != "current"
+        for name, value in vars(RecordingRecommendationService).items()
+        if not name.startswith("__") and callable(value)
     }
     assert overridden == {"_create_response", "_execute_tool_call"}
 

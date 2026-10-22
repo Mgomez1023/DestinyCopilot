@@ -5,6 +5,7 @@ from collections import Counter
 from statistics import mean, median
 from typing import Any
 
+from evals.pricing import estimate_cost
 from evals.properties import PropertyResult
 from evals.rubric import DIMENSIONS, MAX_SCORE, ScoreCard, aggregate
 from evals.runtime import Observation
@@ -33,7 +34,9 @@ def record(obs: Observation, results: list[PropertyResult], card: ScoreCard) -> 
                 "latency_s": turn.latency_s,
                 "model_requests": turn.model_requests,
                 "input_tokens": turn.input_tokens,
+                "cached_input_tokens": turn.cached_input_tokens,
                 "output_tokens": turn.output_tokens,
+                "web_search_calls": turn.web_search_calls,
                 "reasoning_tokens": turn.reasoning_tokens,
                 "instruction_chars": turn.instruction_chars,
                 "tool_calls": [
@@ -115,6 +118,8 @@ def usage_stats(records: list[dict[str, Any]]) -> dict[str, Any]:
         else 0,
         "total_input_tokens": sum(t["input_tokens"] for t in all_turns),
         "total_output_tokens": sum(t["output_tokens"] for t in all_turns),
+        "total_cached_input_tokens": sum(t.get("cached_input_tokens", 0) for t in all_turns),
+        "total_web_search_calls": sum(t.get("web_search_calls", 0) for t in all_turns),
         "core_bundle_attached_final_turns": sum(
             bool((t.get("core_knowledge") or {}).get("bundle_attached")) for t in finals
         ),
@@ -167,6 +172,27 @@ def usage_stats(records: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def cost_line(usage: dict[str, Any], prices: dict[str, Any]) -> str:
+    """Per-run token totals and an estimated cost; prices are configuration, not code."""
+
+    totals = {
+        "input_tokens": usage["total_input_tokens"],
+        "cached_input_tokens": usage["total_cached_input_tokens"],
+        "output_tokens": usage["total_output_tokens"],
+        "web_search_calls": usage["total_web_search_calls"],
+    }
+    text = (
+        f"**Run totals** {totals['input_tokens']} input ({totals['cached_input_tokens']} cached) · "
+        f"{totals['output_tokens']} output · {totals['web_search_calls']} web-search calls"
+    )
+    cost = estimate_cost(totals, prices)
+    if cost is None:
+        return text + " · est. cost: not estimated (set EVAL_PRICE_* to enable)"
+    return (
+        text + f" · **est. cost ~${cost:.2f}** (estimate from reported usage and configured prices)"
+    )
+
+
 def summary_markdown(
     meta: dict[str, Any], records: list[dict[str, Any]], cards: list[ScoreCard]
 ) -> str:
@@ -201,6 +227,7 @@ def summary_markdown(
         f"**Per turn** {usage['model_requests_per_turn']} model requests · "
         f"{usage['tool_calls_per_turn']} tool calls · {usage['input_tokens_per_turn']} input / "
         f"{usage['output_tokens_per_turn']} output tokens",
+        cost_line(usage, meta.get("prices") or {}),
         f"**Core knowledge** bundle on {usage['core_bundle_attached_final_turns']} final turns · "
         f"tool used on {usage['core_tool_used_final_turns']} · validator corrections "
         f"{usage['validator_corrections']} · fallbacks {usage['validator_fallbacks'] or 'none'}",

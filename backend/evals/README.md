@@ -25,6 +25,41 @@ Needs `OPENAI_API_KEY` (root `.env`) and the local Manifest SQLite under `.cache
 Manifest, guide, and core tools are offline; `--live-provider` reaches Bungie's public endpoints.
 Each run writes `results.json` and `summary.md` to `.cache/eval/runs/<timestamp>/`.
 
+## Cassettes, replay, and cost
+
+Every live run also writes `cassette.jsonl` next to `results.json`: for each model call, per
+scenario/turn/round, hashes of the request (model, instructions, input and tool-output items, tools,
+other options) and the full raw response. Request bodies, API keys, tokens, and headers are never
+recorded.
+
+`python -m evals.replay <run_dir> [--ids a,b]` runs the **current** production service against the
+same simulated profiles with a stub client that returns the recorded responses in order. No OpenAI,
+Bungie, or web request is made (web-search results are whatever the recorded responses held). If a
+request differs from the recording in any part, or was never recorded, that scenario stops there and
+is marked `needs_live`; it is never scored from a guess. Output is `results.json` and `summary.md`
+like the runner, plus a per-turn `unchanged` / `changed` / `needs_live` diff of final answers against
+the recorded run (with before/after text for `changed`).
+
+Workflow:
+
+1. **Post-processing changes** (validators, repairs, answer assembly, sentence-level edits): replay
+   the last full live run. It is free and deterministic. `changed` answers are the effect of the
+   change; read them.
+2. **Prompt, tool, retrieval, or profile changes** alter the requests, so replay reports
+   `needs_live` from the first affected turn. Use a targeted live check:
+   `python -m evals.runner --ids <id1>,<id2> --no-judge`.
+3. **Full live runs only at milestones** (before a beta decision, after a batch of changes whose
+   effect replay cannot show). Each one produces a new cassette for later replays.
+
+Replay shows what the current code does with the *recorded* model outputs; it does not show what the
+model would say to a changed request. Scores from a replay are deterministic-property scores only.
+
+Cost: `summary.md` shows run totals (input, cached input, output tokens, web-search calls) and an
+estimated USD cost. Prices are read from the environment or root `.env`, never from code:
+`EVAL_PRICE_INPUT_PER_1M`, `EVAL_PRICE_CACHED_INPUT_PER_1M`, `EVAL_PRICE_OUTPUT_PER_1M`, and
+optionally `EVAL_PRICE_WEB_SEARCH_PER_1K` (USD). Without input and output prices no estimate is
+shown. It is an estimate from reported usage, not a bill; check current pricing before relying on it.
+
 ## Pieces
 
 | File | Role |
@@ -37,6 +72,7 @@ Each run writes `results.json` and `summary.md` to `.cache/eval/runs/<timestamp>
 | `judge.py` | Optional LLM judge with the same evidence the product had |
 | `runtime.py` | Recording subclass of the production service; local Manifest resolver |
 | `report.py`, `runner.py` | JSON records, Markdown summary, CLI |
+| `cassette.py`, `replay.py`, `pricing.py` | Recorded model calls, offline replay, cost estimate |
 
 ## Rules
 
