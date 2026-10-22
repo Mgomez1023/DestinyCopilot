@@ -430,11 +430,11 @@ def test_volatile_query_cannot_be_satisfied_by_non_live_sources_or_model() -> No
         assert response.source == "local"
         assert "don't have a live weekly-rotation source" in response.message
         assert "Warlord's Ruin" not in response.message
-        assert fake.responses.requests == []
-        assert knowledge.calls == []
+        # The model may research, but nothing non-live and no web evidence can answer it.
+        assert fake.responses.requests
         trace = service.latest_trace()
-        assert trace["tools"] == []
-        assert trace["tool_trace"] == []
+        assert trace["grounding"]["live_provider"] is False
+        assert trace["grounding"]["web_research"] is False
         assert trace["answer"] == "unavailable_live_data"
         assert trace["live_data"]["requires_live_provider"] is True
         assert trace["live_data"]["disallowed_as_current_sources"] == [

@@ -428,6 +428,51 @@ UNSUPPORTED_POWER_PATTERN = re.compile(
     r"not high enough|must be|need(?:s)? to be|recommended power)\b",
     re.IGNORECASE | re.DOTALL,
 )
+SENTENCE_SPLIT = re.compile(r"((?<=[.!?])\s+|[\r\n]+)")
+
+
+def replace_flagged_sentences(
+    message: str, replacement_for: Callable[[str], str | None]
+) -> str | None:
+    """Replace each flagged sentence with a limitation, keeping every other sentence.
+
+    `replacement_for` returns the replacement text for a flagged sentence and None otherwise.
+    Repeated identical replacements appear once. Returns None when no sentence is flagged.
+    """
+
+    parts = SENTENCE_SPLIT.split(message)
+    rebuilt: list[str] = []
+    used: set[str] = set()
+    changed = False
+    for index, part in enumerate(parts):
+        if index % 2:  # separators
+            rebuilt.append(part)
+            continue
+        result = replacement_for(part) if part.strip() else None
+        if not result:
+            rebuilt.append(part)
+            continue
+        changed = True
+        rebuilt.append("" if result in used else result)
+        used.add(result)
+    if not changed:
+        return None
+    return re.sub(r"[ ]{2,}", " ", "".join(rebuilt)).strip()
+
+
+def retains_answer(original: str, rewritten: str) -> bool:
+    """Whether at least half of the original answer's sentences survive in the rewrite."""
+
+    sentences = [
+        part.strip() for index, part in enumerate(SENTENCE_SPLIT.split(original)) if not index % 2
+    ]
+    sentences = [value for value in sentences if value]
+    if not sentences:
+        return False
+    kept = sum(1 for value in sentences if value in rewritten)
+    return kept * 2 >= len(sentences)
+
+
 TIME_INTENT_PATTERN = re.compile(
     r"\b(?:\d+|an?|one|half an?)\s*(?:minutes?|mins?|hours?|hrs?)\b|\btime[- ]limited\b",
     re.IGNORECASE,
@@ -756,7 +801,10 @@ class RecommendationService:
         live_topic = volatile_topic(request.message)
         if live_topic:
             trace["required_live_topic"] = live_topic
-        if live_topic and not self._has_live_provider():
+        # Web research can establish current state with a dated source, so a live-state question
+        # only gets the canned limit up front when no model/web research is available.
+        live_research = bool(live_topic and self.client is not None)
+        if live_topic and not self._has_live_provider() and not live_research:
             live_result = unavailable_live_data(request.message, live_topic)
             trace["live_data"] = self._safe_live_trace(live_result)
             trace["answer"] = "unavailable_live_data"
@@ -819,6 +867,7 @@ class RecommendationService:
                 title_request_context,
                 current_character,
                 research_requested=research_requested,
+                live_state_research=live_research and not self._has_live_provider(),
             ),
             core_grounding,
         )
@@ -919,14 +968,18 @@ class RecommendationService:
                 self._log_response_metadata(response, phase)
                 self._require_completed_response(response)
                 if not function_calls:
-                    if live_topic and not trace["grounding"]["live_provider"]:
+                    if live_topic and not trace["grounding"]["live_provider"] and not web_sources:
+                        # Neither a live provider nor web research produced anything to answer
+                        # a current-state question from.
                         live_result = unavailable_live_data(request.message, live_topic)
                         trace["live_data"] = self._safe_live_trace(live_result)
                         trace["answer"] = "unavailable_live_data"
                         self._store_trace(trace_id, trace)
                         return ChatResponse(
                             source="local",
-                            message=unavailable_live_message(live_topic, provider_connected=True),
+                            message=unavailable_live_message(
+                                live_topic, provider_connected=self._has_live_provider()
+                            ),
                         )
                     message = self._extract_assistant_text(response)
                     if not message and final_forced:
@@ -1169,7 +1222,12 @@ class RecommendationService:
                     trace["web_research"]["source_count"] = len(
                         [source for source in sources if source in web_sources]
                     )
-                    if safe_message != message or safe_fallback:
+                    # A generated replacement answer relies on none of the retrieved sources.
+                    # A rewrite that only swapped out flagged sentences still rests on them, so
+                    # its citations stay while most of the original answer does.
+                    if safe_fallback or (
+                        safe_message != message and not retains_answer(message, safe_message)
+                    ):
                         sources = []
                     message = self._hide_internal_identifiers(
                         safe_message,
@@ -1263,6 +1321,8 @@ class RecommendationService:
                                     title_request_context,
                                     current_character,
                                     research_requested=research_requested,
+                                    live_state_research=live_research
+                                    and not self._has_live_provider(),
                                 ),
                                 core_grounding,
                             )
@@ -2274,8 +2334,17 @@ class RecommendationService:
         current_character: CurrentCharacter | None = None,
         *,
         research_requested: bool = False,
+        live_state_research: bool = False,
     ) -> str:
         routing: list[str] = [response_mode_instruction(mode_context)]
+        if live_state_research:
+            routing.append(
+                "This asks about current or rotating game state, which Manifest, guide, and "
+                "account data cannot establish. Use web research now. Answer from what the "
+                "source says, name the source, and give its date or say it is undated. If the "
+                "source does not establish the state right now, say what it does show and that "
+                "the current state is unconfirmed."
+            )
         if research_requested:
             routing.append(
                 "The user explicitly asked you to verify, confirm, or look this up. Run the "
@@ -2692,6 +2761,17 @@ class RecommendationService:
         if not UNSUPPORTED_POWER_PATTERN.search(message):
             return message
         logger.warning("Blocked an unsupported Power-level comparison in an AI response")
+        limit = (
+            "I can’t reliably compare the raw Power values returned by the current APIs, so your "
+            "Power eligibility is unknown."
+        )
+        # Replace only the offending sentence(s); the rest of the answer, and the sources it
+        # relies on, stay. A claim spread across sentences replaces the whole answer.
+        surgical = replace_flagged_sentences(
+            message, lambda sentence: limit if UNSUPPORTED_POWER_PATTERN.search(sentence) else None
+        )
+        if surgical is not None and not UNSUPPORTED_POWER_PATTERN.search(surgical):
+            return surgical
         return (
             "I can’t reliably compare the raw Power values returned by the current APIs. "
             "Their meanings may not be compatible with current activity requirements, so your "
@@ -2701,7 +2781,7 @@ class RecommendationService:
 
     @staticmethod
     def _enforce_campaign_completion_safety(message: str) -> str:
-        for sentence in re.split(r"(?<=[.!?])\s+|[\r\n]+", message):
+        def replacement(sentence: str) -> str | None:
             normalized = sentence.casefold()
             absence_inference = (
                 any(value in normalized for value in CAMPAIGN_MARKERS)
@@ -2769,7 +2849,10 @@ class RecommendationService:
                     "state before choosing between them; once that is known, I can recommend "
                     "the better next step."
                 )
-        return message
+            return None
+
+        # Only a flagged sentence is replaced; the rest of the answer and its sources stay.
+        return replace_flagged_sentences(message, replacement) or message
 
     @staticmethod
     def _enforce_campaign_comparison_safety(

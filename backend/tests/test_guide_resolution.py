@@ -10,7 +10,7 @@ from app.config import Settings
 from app.guide_knowledge import (
     GuideKnowledgeProvider,
     MemoryGuideCache,
-    shares_distinctive_token,
+    alias_covers,
 )
 from app.knowledge_models import GuideRecord
 
@@ -95,8 +95,47 @@ def test_partial_and_misspelled_names_still_resolve(query: str, subject: str) ->
 
 
 def test_generic_words_never_count_as_shared_subject_words() -> None:
-    assert not shares_distinctive_token("the dungeon guide", "The Dungeon Guide")
-    assert not shares_distinctive_token("some other dungeon", "Sunken Vault of Ibex dungeon")
-    assert shares_distinctive_token("sunken vaults", "Sunken Vault of Ibex")
-    assert shares_distinctive_token("quillfether", "Quillfeather")
-    assert not shares_distinctive_token("ibex", "ibis")
+    assert not alias_covers("the dungeon guide", "The Dungeon Guide")
+    assert not alias_covers("some other dungeon", "Sunken Vault of Ibex dungeon")
+    assert alias_covers("sunken vaults", "Sunken Vault of Ibex")
+    assert alias_covers("quillfether", "Quillfeather")
+    assert not alias_covers("ibex", "ibis")
+
+
+def test_names_sharing_one_distinctive_word_do_not_cover_each_other() -> None:
+    assert not alias_covers("Spire of the Watcher", "Spire of Stars")
+    assert not alias_covers("Spire of Stars", "Spire of the Watcher")
+    assert not alias_covers("Sunken Vault of Ibex", "Sunken Vault of Marrow")
+
+
+def test_a_variant_and_its_base_name_do_not_cover_each_other() -> None:
+    assert not alias_covers("Haunted Quillfeather Crossing", "Quillfeather Crossing")
+    assert not alias_covers("Quillfeather Crossing", "Haunted Quillfeather Crossing")
+    assert not alias_covers("how do I do the heroic Ibex", "Ibex")
+    assert alias_covers("Haunted Quillfeather", "Haunted Quillfeather Crossing")
+
+
+def test_questions_containing_a_whole_alias_or_a_partial_name_still_cover() -> None:
+    assert alias_covers("how do I finish the Sunken Vault of Ibex quest", "Sunken Vault of Ibex")
+    assert alias_covers("sunken vault", "Sunken Vault of Ibex")
+    assert alias_covers("hollow spire", "Hollow Spire of Marrow")
+
+
+def test_the_unqualified_name_does_not_resolve_a_variant_only_guide() -> None:
+    variant = RECORDS + [record("g4", "Haunted Gloam Hollow", ["Haunted Gloam"])]
+
+    class VariantSource(Source):
+        async def records(self) -> list[GuideRecord]:
+            return variant
+
+    guides = GuideKnowledgeProvider(
+        EmptyManifest(),  # type: ignore[arg-type]
+        Settings(),
+        source=VariantSource(),  # type: ignore[call-arg]
+        cache=MemoryGuideCache(),
+        now=lambda: datetime(2026, 9, 12, tzinfo=UTC),
+    )
+    assert asyncio.run(guides.get_guide("Gloam Hollow"))["found"] is False
+    assert asyncio.run(guides.get_guide("Haunted Gloam Hollow"))["found"] is True
+    assert asyncio.run(guides.get_guide("Haunted Ibex"))["found"] is False
+    assert asyncio.run(guides.get_guide("Ibex"))["found"] is True

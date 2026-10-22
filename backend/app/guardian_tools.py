@@ -226,7 +226,7 @@ GUARDIAN_TOOL_DEFINITIONS: list[dict[str, Any]] = [
         {
             "query": _nullable_string(
                 "Case-insensitive substring matched against an item's name, its subtype (such as "
-                "Hand Cannon), and the names of its socketed perks and plugs (such as Frenzy). "
+                "Hand Cannon), and the names of its socketed perks and plugs (such as Slideshot). "
                 "Perks can only be matched on items whose socket data was returned; the result's "
                 "searched_fields and socket_data_coverage say what a search could see. Or null."
             ),

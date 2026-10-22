@@ -154,6 +154,23 @@ GENERIC_TOKENS = frozenset(
         "steps",
     }
 )
+# Qualifiers that select a variant of an activity or item rather than a different subject.
+VARIANT_TOKENS = frozenset(
+    {
+        "haunted",
+        "heroic",
+        "legend",
+        "master",
+        "grandmaster",
+        "prestige",
+        "expert",
+        "contest",
+        "epic",
+        "classic",
+        "reprised",
+        "ultimate",
+    }
+)
 _TOKEN_MATCH_RATIO = 0.8
 
 
@@ -169,19 +186,32 @@ def _tokens_match(left: str, right: str) -> bool:
     )
 
 
-def shares_distinctive_token(query: str, candidate: str) -> bool:
-    """Whether the query and candidate share a subject word, tolerating small misspellings.
+def _covered(needles: list[str], haystack: list[str]) -> bool:
+    return bool(needles) and all(any(_tokens_match(x, y) for y in haystack) for x in needles)
 
-    Generic words ("dungeon", "guide", "the") never count, so two different subjects of the same
-    kind do not match each other.
+
+def _same_variant(query: str, alias: str) -> bool:
+    return {t for t in _distinctive_tokens(query) if t in VARIANT_TOKENS} == {
+        t for t in _distinctive_tokens(alias) if t in VARIANT_TOKENS
+    }
+
+
+def alias_covers(query: str, alias: str) -> bool:
+    """Whether a query and an alias name the same subject.
+
+    Every distinctive word of one side must appear (fuzzily, so misspellings pass) in the other:
+    a long question that contains the whole alias matches, and so does a partial name, but two
+    different names that share a single word do not. A difficulty or season qualifier must be on
+    both sides or neither, so a variant never resolves to its base activity or the reverse.
     """
 
-    candidate_tokens = _distinctive_tokens(candidate)
-    return any(
-        _tokens_match(token, other)
-        for token in _distinctive_tokens(query)
-        for other in candidate_tokens
-    )
+    query_tokens = _distinctive_tokens(query)
+    alias_tokens = _distinctive_tokens(alias)
+    if {t for t in query_tokens if t in VARIANT_TOKENS} != {
+        t for t in alias_tokens if t in VARIANT_TOKENS
+    }:
+        return False
+    return _covered(query_tokens, alias_tokens) or _covered(alias_tokens, query_tokens)
 
 
 def _strict_tool(name: str, description: str, properties: dict[str, Any]) -> dict[str, Any]:
@@ -428,17 +458,15 @@ class GuideKnowledgeProvider:
         )
 
     @staticmethod
-    def _identity_text(record: GuideRecord) -> str:
+    def _identity_names(record: GuideRecord) -> list[str]:
         """The names a guide goes by, without its summary prose."""
 
-        return " ".join(
-            [
-                record.title,
-                record.subject,
-                *record.aliases,
-                *(value.name for value in record.associated_entities),
-            ]
-        )
+        return [
+            record.title,
+            record.subject,
+            *record.aliases,
+            *(value.name for value in record.associated_entities),
+        ]
 
     @staticmethod
     def _score(query: str, record: GuideRecord) -> float:
@@ -473,13 +501,15 @@ class GuideKnowledgeProvider:
         contained = [
             (value, record)
             for value, record in aliases
-            if _normalized(value) and _normalized(value) in normalized_phrase
+            if _normalized(value)
+            and _normalized(value) in normalized_phrase
+            and _same_variant(phrase, value)
         ]
         if contained:
             matched_name, matched_record = max(contained, key=lambda value: len(value[0]))
         else:
-            # A similar-looking alias is only a candidate if it shares a subject word.
-            candidates = [value for value in aliases if shares_distinctive_token(phrase, value[0])]
+            # A similar-looking alias is only a candidate if the two names cover each other.
+            candidates = [value for value in aliases if alias_covers(phrase, value[0])]
             if not candidates:
                 return None
             matched_name, matched_record = max(
@@ -600,7 +630,7 @@ class GuideKnowledgeProvider:
             scored = [
                 value
                 for value in scored
-                if shares_distinctive_token(query, self._identity_text(value[0]))
+                if any(alias_covers(query, name) for name in self._identity_names(value[0]))
             ]
         scored.sort(key=lambda value: (value[1], value[0].title), reverse=True)
         return scored, canonical

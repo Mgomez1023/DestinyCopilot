@@ -373,7 +373,9 @@ def test_live_sensitive_metadata_never_bypasses_the_live_gate() -> None:
     assert trace["required_live_topic"] == "weekly_nightfall"
     assert trace["answer"] == "unavailable_live_data"
     assert answer.source == "local"
-    assert responses.requests == []
+    # The model ran (web research was possible) but found nothing, so the limit stands.
+    assert trace["grounding"]["web_research"] is False
+    assert trace["grounding"]["live_provider"] is False
 
 
 def test_core_provider_works_on_the_streaming_path() -> None:
