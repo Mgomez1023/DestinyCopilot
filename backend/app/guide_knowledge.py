@@ -39,6 +39,151 @@ def _normalized(value: str) -> str:
     return " ".join(re.findall(r"[a-z0-9]+", ascii_value.casefold()))
 
 
+# Words that name a kind of content or phrase a request rather than identify one subject. Two
+# different activities routinely share them, so matching on them alone resolves the wrong guide.
+GENERIC_TOKENS = frozenset(
+    {
+        "a",
+        "an",
+        "the",
+        "and",
+        "or",
+        "of",
+        "to",
+        "in",
+        "on",
+        "for",
+        "with",
+        "from",
+        "at",
+        "by",
+        "is",
+        "are",
+        "was",
+        "be",
+        "do",
+        "does",
+        "did",
+        "how",
+        "what",
+        "which",
+        "who",
+        "where",
+        "when",
+        "why",
+        "can",
+        "could",
+        "should",
+        "would",
+        "i",
+        "me",
+        "my",
+        "we",
+        "you",
+        "your",
+        "it",
+        "its",
+        "this",
+        "that",
+        "these",
+        "those",
+        "get",
+        "got",
+        "find",
+        "need",
+        "want",
+        "show",
+        "tell",
+        "give",
+        "walk",
+        "walkthrough",
+        "guide",
+        "guides",
+        "help",
+        "explain",
+        "through",
+        "about",
+        "please",
+        "complete",
+        "completing",
+        "finish",
+        "finishing",
+        "beat",
+        "beating",
+        "clear",
+        "clearing",
+        "run",
+        "running",
+        "play",
+        "playing",
+        "unlock",
+        "unlocking",
+        "farm",
+        "farming",
+        "solo",
+        "dungeon",
+        "dungeons",
+        "raid",
+        "raids",
+        "strike",
+        "strikes",
+        "mission",
+        "missions",
+        "quest",
+        "quests",
+        "activity",
+        "activities",
+        "encounter",
+        "encounters",
+        "boss",
+        "bosses",
+        "fight",
+        "fights",
+        "nightfall",
+        "exotic",
+        "exotics",
+        "weapon",
+        "weapons",
+        "armor",
+        "gear",
+        "item",
+        "items",
+        "catalyst",
+        "catalysts",
+        "step",
+        "steps",
+    }
+)
+_TOKEN_MATCH_RATIO = 0.8
+
+
+def _distinctive_tokens(value: str) -> list[str]:
+    return [token for token in _normalized(value).split() if token not in GENERIC_TOKENS]
+
+
+def _tokens_match(left: str, right: str) -> bool:
+    if left == right:
+        return True
+    return min(len(left), len(right)) >= 4 and (
+        SequenceMatcher(None, left, right).ratio() >= _TOKEN_MATCH_RATIO
+    )
+
+
+def shares_distinctive_token(query: str, candidate: str) -> bool:
+    """Whether the query and candidate share a subject word, tolerating small misspellings.
+
+    Generic words ("dungeon", "guide", "the") never count, so two different subjects of the same
+    kind do not match each other.
+    """
+
+    candidate_tokens = _distinctive_tokens(candidate)
+    return any(
+        _tokens_match(token, other)
+        for token in _distinctive_tokens(query)
+        for other in candidate_tokens
+    )
+
+
 def _strict_tool(name: str, description: str, properties: dict[str, Any]) -> dict[str, Any]:
     return {
         "type": "function",
@@ -283,6 +428,19 @@ class GuideKnowledgeProvider:
         )
 
     @staticmethod
+    def _identity_text(record: GuideRecord) -> str:
+        """The names a guide goes by, without its summary prose."""
+
+        return " ".join(
+            [
+                record.title,
+                record.subject,
+                *record.aliases,
+                *(value.name for value in record.associated_entities),
+            ]
+        )
+
+    @staticmethod
     def _score(query: str, record: GuideRecord) -> float:
         normalized_query = _normalized(query)
         candidates = [record.subject, record.title, *record.aliases]
@@ -320,8 +478,12 @@ class GuideKnowledgeProvider:
         if contained:
             matched_name, matched_record = max(contained, key=lambda value: len(value[0]))
         else:
+            # A similar-looking alias is only a candidate if it shares a subject word.
+            candidates = [value for value in aliases if shares_distinctive_token(phrase, value[0])]
+            if not candidates:
+                return None
             matched_name, matched_record = max(
-                aliases,
+                candidates,
                 key=lambda value: SequenceMatcher(
                     None, normalized_phrase, _normalized(value[0])
                 ).ratio(),
@@ -433,6 +595,13 @@ class GuideKnowledgeProvider:
         ]
         threshold = 0.28 if canonical else 0.4
         scored = [value for value in scored if value[1] >= threshold]
+        if not canonical and _distinctive_tokens(query):
+            # Without a resolved subject, a guide must still be about something the query names.
+            scored = [
+                value
+                for value in scored
+                if shares_distinctive_token(query, self._identity_text(value[0]))
+            ]
         scored.sort(key=lambda value: (value[1], value[0].title), reverse=True)
         return scored, canonical
 

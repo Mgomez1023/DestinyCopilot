@@ -440,13 +440,14 @@ def test_missing_character_and_empty_results() -> None:
     with pytest.raises(CharacterNotFoundError):
         tools.get_build_details("missing")
     result = tools.search_inventory(InventorySearchRequest(query="does-not-exist"))
-    assert result == {
-        "items": [],
-        "total_matching": 0,
-        "excluded_other_class_count": 0,
-        "limit": 25,
-        "truncated": False,
-    }
+    assert result["items"] == []
+    assert result["total_matching"] == 0
+    assert result["excluded_other_class_count"] == 0
+    assert result["limit"] == 25
+    assert result["truncated"] is False
+    # A zero result states what was searched instead of implying more.
+    assert "socketed perk and plug names" in result["searched_fields"]
+    assert result["socket_data_coverage"]["items_searched"] >= 1
 
 
 def test_title_progress_is_bounded_ranked_and_omits_raw_identifiers() -> None:

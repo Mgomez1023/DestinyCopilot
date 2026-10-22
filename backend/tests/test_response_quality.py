@@ -161,6 +161,8 @@ def test_explicit_timed_step_by_step_request_allows_timed_structure() -> None:
     [
         ("Based on the available data, run Nightfall next.", "answer_not_first"),
         ("The Guardian tool returned your API response.", "internal_jargon"),
+        ("Manifest match: that is the closest dungeon I found.", "internal_jargon"),
+        ("It resolved to a canonical entity called Ibex.", "internal_jargon"),
         (
             "Run Nightfall because it fits your goal. Run Nightfall because it fits your goal.",
             "repeated_content",

@@ -1119,7 +1119,8 @@ class ResponseQualityValidator:
         r"\b(?:guardian|manifest|guide|live) tools?\b|\bapi (?:returned|response|says)\b|"
         r"\b(?:provider terminology|function_call|evidence_state|known_true|known_false|"
         r"not_returned|completion_state|profile_completion_state|active_quest_status|"
-        r"planning context|resolver)\b",
+        r"planning context|resolver)\b|\b(?:manifest|canonical|guide) "
+        r"(?:match(?:es)?|entity|resolution)\b|\bmatched alias\b",
         re.IGNORECASE,
     )
     _DEBUG_REQUEST = re.compile(r"\b(?:debug|api|tool|provider|trace)\b", re.IGNORECASE)
