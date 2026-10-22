@@ -166,3 +166,219 @@ def remove_unverified_item_claims(answer: str, retrieved: set[str]) -> str | Non
     if not removed or len(re.findall(r"\w+", cleaned)) < 6:
         return None
     return cleaned
+
+
+# --- Claims that contradict what a tool returned ---------------------------------------------
+# A name found in some result is not enough: the class or slot the answer states for it must
+# also agree with the retrieved definition (this turn's tools, or the player's gear in context).
+
+Definitions = dict[str, dict[str, set[str]]]
+_Contradiction = tuple[str, str, str, int, int, str]
+
+_CLASS_WORD = re.compile(r"\b(?:Titan|Hunter|Warlock)s?\b", re.IGNORECASE)
+_SLOT_NOUNS = {
+    "helmet": r"helm(?:et)?",
+    "gauntlets": r"gauntlets?|gloves",
+    "chest": r"chest(?:\s+armor|\s+piece)?",
+    "legs": r"legs?(?:\s+armor)?|boots",
+    "class item": r"class\s+items?|bonds?|marks?|cloaks?",
+    "kinetic": r"kinetic",
+    "energy": r"energy",
+    "power": r"power|heavy",
+}
+_SLOT_GROUPS = {key: f"s{index}" for index, key in enumerate(_SLOT_NOUNS)}
+_SLOT_WORD = re.compile(
+    "|".join(f"(?P<{_SLOT_GROUPS[key]}>{value})" for key, value in _SLOT_NOUNS.items()),
+    re.IGNORECASE,
+)
+_ARMOR_NOUN = (
+    r"(?:helm(?:et)?|gauntlets?|gloves|chest(?:\s+armor|\s+piece)?|legs|leg\s+armor|boots|"
+    r"armor|class\s+item|bond|mark|cloak)"
+)
+_CLASS_CLAIM = re.compile(
+    rf"\b(?P<cls>Titan|Hunter|Warlock)s?(?:-only|\s+(?:only|exclusive)\b|[- ]{_ARMOR_NOUN}\b)",
+    re.IGNORECASE,
+)
+_NEGATOR = re.compile(r"\b(?:not|isn't|aren't|can't|cannot|never|no)\b", re.IGNORECASE)
+_SLOT_OF_ITEM = re.compile(
+    r"\b(?:the|its|this)\s+(?P<slot>helm(?:et)?|gauntlets?|gloves|chest(?:\s+armor|\s+piece)?|"
+    r"leg\s+armor|boots|class\s+item|bond|mark|cloak)(?:'s|\s+(?:ability|abilities|perk|"
+    r"perks|intrinsic|effect|exotic))",
+    re.IGNORECASE,
+)
+_SLOT_PHRASE = {
+    "helmet": "helmet",
+    "gauntlets": "gauntlets",
+    "chest": "chest armor",
+    "legs": "leg armor",
+    "class item": "class item",
+    "kinetic": "kinetic",
+    "energy": "energy",
+    "power": "power",
+}
+
+
+def canonical_class(text: str) -> str:
+    folded = text.strip().casefold()
+    for name in ("titan", "hunter", "warlock"):
+        if name in folded:
+            return name
+    return "any" if folded.startswith("any") else ""
+
+
+def canonical_slot(text: str) -> str:
+    """helmet, gauntlets, chest, legs, class item, kinetic, energy, or power; "" if unknown."""
+
+    match = _SLOT_WORD.search(text)
+    if match is None:
+        return ""
+    return next(key for key, group in _SLOT_GROUPS.items() if match.group(group))
+
+
+def collect_item_definitions(result: Any, into: Definitions) -> None:
+    """Record the class restriction and slot each named item was returned with.
+
+    `into` maps a folded item name to {"classes": {...}, "slots": {...}}. Several copies or
+    variants of one name accumulate, so a claim matching any returned variant is consistent.
+    """
+
+    def walk(value: Any, current: dict[str, set[str]] | None, depth: int) -> None:
+        if depth > MAX_RESULT_DEPTH or len(into) >= MAX_RETRIEVED_NAMES:
+            return
+        if isinstance(value, dict):
+            name = value.get("name") or value.get("item_name")
+            if isinstance(name, str) and len(name.strip()) >= MIN_NAME_CHARS:
+                current = into.setdefault(
+                    name.strip().casefold(), {"classes": set(), "slots": set()}
+                )
+            if current is not None:
+                restriction = value.get("class_restriction")
+                if isinstance(restriction, str) and canonical_class(restriction):
+                    current["classes"].add(canonical_class(restriction))
+                for key in ("equipment_slot", "bucket"):
+                    slot = value.get(key)
+                    if isinstance(slot, str) and canonical_slot(slot):
+                        current["slots"].add(canonical_slot(slot))
+            for inner in value.values():
+                if isinstance(inner, (dict, list)):
+                    walk(inner, current, depth + 1)
+        elif isinstance(value, list):
+            for inner in value:
+                walk(inner, current, depth + 1)
+
+    walk(result, None, 0)
+
+
+def _named_items(sentence: str, definitions: Definitions) -> list[str]:
+    folded = sentence.casefold()
+    found = [name for name in definitions if re.search(rf"(?<!\w){re.escape(name)}(?!\w)", folded)]
+    return [name for name in found if not any(name != other and name in other for other in found)]
+
+
+def _contradictions(sentence: str, definitions: Definitions) -> list[_Contradiction]:
+    """(name, kind, claimed, start, end, actual) for each claim a retrieved definition refutes.
+
+    Only a sentence naming exactly one known item is read, and a negated class mention is left
+    alone ("isn't a Titan helmet" agrees with a Hunter item).
+    """
+
+    names = _named_items(sentence, definitions)
+    if len(names) != 1:
+        return []
+    name = names[0]
+    classes, slots = definitions[name]["classes"], definitions[name]["slots"]
+    at = sentence.casefold().find(name)
+    found: list[_Contradiction] = []
+
+    def check_class(word: str, start: int, end: int) -> None:
+        claimed = canonical_class(word)
+        if classes and claimed and claimed not in classes:
+            found.append(
+                (name, "class restriction", claimed, start, end, "/".join(sorted(classes)))
+            )
+
+    def check_slot(word: str, start: int, end: int) -> None:
+        claimed = canonical_slot(word)
+        if slots and claimed and claimed not in slots:
+            found.append((name, "equipment slot", claimed, start, end, "/".join(sorted(slots))))
+
+    appositive = re.match(r"(?:'s)?\s*\((?P<text>[^)]*)\)", sentence[at + len(name) :])
+    if appositive:
+        base = at + len(name) + appositive.start("text")
+        for match in _CLASS_WORD.finditer(appositive.group("text")):
+            check_class(match.group(0), base + match.start(), base + match.end())
+        for match in _SLOT_WORD.finditer(appositive.group("text")):
+            check_slot(match.group(0), base + match.start(), base + match.end())
+    for match in _CLASS_CLAIM.finditer(sentence):
+        if _NEGATOR.search(sentence[max(0, match.start() - 30) : match.start()]):
+            continue
+        check_class(match.group("cls"), match.start("cls"), match.end("cls"))
+    for match in _SLOT_OF_ITEM.finditer(sentence):
+        between = sentence[at + len(name) : match.start()]
+        # "<item> ... the helmet's ability": the slot phrase must be about that item.
+        if match.start() > at and len(between) <= 60 and not re.search(r"[.;,]", between):
+            check_slot(match.group("slot"), match.start("slot"), match.end("slot"))
+    return found
+
+
+def _statements(answer: str) -> list[str]:
+    return [
+        value.strip()
+        for value in _SENTENCE_SPLIT.split(_plain(answer))
+        if value.strip() and not value.strip().endswith("?")
+    ]
+
+
+def contradicted_item_facts(
+    answer: str, definitions: Definitions
+) -> list[tuple[str, str, str, str]]:
+    """(item name, kind, claimed, retrieved) where the answer contradicts a returned definition."""
+
+    if not definitions:
+        return []
+    return [
+        (name, kind, claimed, actual)
+        for sentence in _statements(answer)
+        for name, kind, claimed, _start, _end, actual in _contradictions(sentence, definitions)
+    ]
+
+
+def correct_item_facts(answer: str, definitions: Definitions) -> str | None:
+    """The answer with contradicted facts stated as retrieved, or None.
+
+    A class word becomes the retrieved class, and a slot word inside an appositive becomes the
+    retrieved slot. A sentence whose claim cannot be fixed in place is dropped. None when
+    nothing contradicted a result, or when too little would remain.
+    """
+
+    if not definitions or not contradicted_item_facts(answer, definitions):
+        return None
+    pieces = re.split(r"(?<=[.!?])(\s+)", answer)
+    out: list[str] = []
+    for index in range(0, len(pieces), 2):
+        sentence = pieces[index]
+        spaces = pieces[index + 1] if index + 1 < len(pieces) else ""
+        plain = _plain(sentence)
+        keep: str | None = sentence
+        statement = bool(plain.strip()) and not plain.strip().endswith("?")
+        edits = _contradictions(plain, definitions) if statement else []
+        for _name, kind, _claimed, start, end, actual in sorted(
+            edits, key=lambda value: value[3], reverse=True
+        ):
+            if keep is None:
+                break
+            if kind == "class restriction" and "/" not in actual and actual != "any":
+                keep = keep[:start] + actual.capitalize() + keep[end:]
+            elif (
+                kind == "equipment slot"
+                and actual in _SLOT_PHRASE
+                and "(" in plain[:start]
+                and ")" in plain[end:]
+            ):
+                keep = keep[:start] + _SLOT_PHRASE[actual] + keep[end:]
+            else:
+                keep = None
+        if keep is not None:
+            out.append(keep + spaces)
+    text = "".join(out).strip()
+    return text if len(re.findall(r"\w+", text)) >= 6 else None

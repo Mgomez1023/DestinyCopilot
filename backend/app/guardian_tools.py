@@ -886,15 +886,19 @@ class GuardianToolService:
             fields.extend(f"perk: {plug}" for plug in plugs if matches(plug, request.query))
             return fields[:4]
 
+        def passes_filters(item: ItemSummary) -> bool:
+            return (
+                matches(item.item_type, request.item_type)
+                and matches(item.item_subtype, request.subtype)
+                and matches(item.gear_slot(), slot)
+                and (location is None or item.location == location)
+                and (not request.equipped_only or item.is_equipped)
+            )
+
         in_scope = [
             item
             for item in items
-            if (request.query is None or matched_fields(item))
-            and matches(item.item_type, request.item_type)
-            and matches(item.item_subtype, request.subtype)
-            and matches(item.gear_slot(), slot)
-            and (location is None or item.location == location)
-            and (not request.equipped_only or item.is_equipped)
+            if (request.query is None or matched_fields(item)) and passes_filters(item)
         ]
         candidates = [
             item
@@ -967,7 +971,30 @@ class GuardianToolService:
                     for item in in_scope
                     if id(item) not in candidate_ids
                 ][: request.limit]
-            if not filtered and without:
+            # A name that exists but sits outside the type, slot, or location asked for is not
+            # "none owned": report it with where it really is.
+            excluded = [item for item in items if matched_fields(item) and not passes_filters(item)]
+            if excluded:
+                result["name_matches_excluded_by_filters"] = [
+                    {
+                        "name": item.name,
+                        "item_type": item.item_type,
+                        "subtype": item.item_subtype,
+                        "bucket": item.gear_slot(),
+                        "location": item.location,
+                        "equipped": item.is_equipped,
+                        "matched_on": matched_fields(item),
+                    }
+                    for item in excluded
+                ][: request.limit]
+                result["excluded_by_filters_count"] = len(excluded)
+                if not filtered:
+                    result["search_note"] = (
+                        f"No match under the filters given, but {len(excluded)} item(s) match "
+                        "the query outside them; see name_matches_excluded_by_filters for "
+                        "their actual type, bucket, and location."
+                    )
+            if not filtered and without and "search_note" not in result:
                 result["search_note"] = (
                     f"No match. {without} of {len(searched_items)} searched items returned no "
                     "socket data, so perks on them could not be searched; this does not show "

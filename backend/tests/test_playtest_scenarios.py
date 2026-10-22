@@ -2036,21 +2036,22 @@ def test_trimming_unsupported_claims_never_leaves_an_orphaned_or_headless_answer
     assert kept is not None and "15" not in kept and "30 minutes" in kept
 
 
-def test_a_repaired_loot_followup_still_answers_the_request_and_keeps_the_constraints() -> None:
+def test_a_conflating_sentence_is_dropped_and_the_rest_of_the_plan_stays() -> None:
     turn2 = LIVE6["turn2"]
-    corrected = "Try Haunted Altars of Sorrow; it is available to your Titan."
-    script = Script([assistant_message(turn2["draft"])], [assistant_message(corrected)])
+    script = Script([assistant_message(turn2["draft"])], [assistant_message("unused")])
     value = service(script)
 
     response = run(value, turn2["message"], titan_with(), SOLO_HISTORY)
 
-    # Live: the answer was cut to start with "Why:". The conflation needs one correction, and the
-    # corrected answer stays a direct pick that fits solo, 30 minutes, and the loot request.
-    assert (
-        "activity_record_conflation"
-        in value.latest_trace()["planning_correction"]["violation_codes"]
-    )
-    assert response.message == corrected
+    # Only the Backup sentence that applied the regular activity's Triumph to the seasonal
+    # activity is removed; no correction round and no canned answer replaces the plan.
+    assert len(script.requests) == 1
+    assert value.latest_trace()["activity_conflation_repaired"] is True
+    assert "planning_safe_answer" not in str(value.latest_trace()["planning_correction"])
+    assert "Waves of Altars of Sorrow" not in response.message
+    assert "Launch Haunted Altars of Sorrow" in response.message
+    assert "Kill wave leaders" in response.message
+    assert not response.message.lstrip().lower().startswith(("why", "backup"))
     preferences = _planning_json(script.requests[0]["instructions"])["preferences"]
     assert preferences["fireteam"] == "solo" and preferences["time_minutes"] == 30
     note = _planning_json(script.requests[0]["instructions"])["data_limitations"]

@@ -51,7 +51,8 @@ REWRITE_RULE = (
     "Rewrite the whole answer so it reads as if it had been right the first time: state the "
     "corrected fact directly, and do not announce, label, or apologize for a correction (no "
     "'quick correction', 'to clarify', 'don't mix them up'). Do not mention validation, tools, "
-    "providers, or internal reasoning."
+    "providers, or internal reasoning. Keep every source link, date, and sourced fact from the "
+    "draft; change only what the correction names."
 )
 
 

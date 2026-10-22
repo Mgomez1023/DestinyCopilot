@@ -44,7 +44,12 @@ from app.guardian_tools import (
     GuardianToolError,
     GuardianToolService,
 )
-from app.item_fact_claims import collect_item_names, remove_unverified_item_claims
+from app.item_fact_claims import (
+    collect_item_definitions,
+    collect_item_names,
+    correct_item_facts,
+    remove_unverified_item_claims,
+)
 from app.live_knowledge import (
     LIVE_PROVIDER_CATEGORY,
     unavailable_live_data,
@@ -70,10 +75,12 @@ from app.response_quality import (
     is_guidance_request,
     is_research_request,
     item_definition_lookup,
+    loses_cited_facts,
     remove_correction_narration,
     remove_unsupported_capability_offers,
     response_mode_context,
     response_mode_instruction,
+    strip_filler_opener,
 )
 from app.session_planning import (
     SessionPlanningContext,
@@ -514,6 +521,23 @@ CAUSAL_COMPLETION_MARKERS = (
     "suggests",
     "must have",
 )
+COMPLETION_PREMISE_PATTERN = re.compile(
+    r"\b(?:i|we)(?:'ve|’ve| have|'d| had)?\s+(?:already\s+|just\s+)?"
+    r"(?:finished|completed|beaten|beat|cleared|done)\b",
+    re.IGNORECASE,
+)
+
+
+def states_completion_premise(user_message: str) -> bool:
+    """Whether the player said they finished a campaign or expansion (their word, not proof)."""
+
+    text = user_message.casefold()
+    return bool(
+        COMPLETION_PREMISE_PATTERN.search(user_message)
+        and any(value in text for value in CAMPAIGN_MARKERS)
+    )
+
+
 COMPLETION_DENIAL_MARKERS = (
     "does not",
     "doesn't",
@@ -634,6 +658,22 @@ class RecommendationService:
                 ]
                 if value.item_type == "Weapon" and len(value.name) > 3
             },
+        )
+        # What the account already returned counts as retrieved: the owned items' class and
+        # slot hold on every turn, including a follow-up to an earlier lookup.
+        collect_item_definitions(
+            [
+                {
+                    "name": value.name,
+                    "class_restriction": value.class_restriction,
+                    "bucket": value.gear_slot(),
+                }
+                for value in [
+                    *context.inventory.items,
+                    *(item for character in context.characters for item in character.equipped_gear),
+                ]
+            ],
+            read_only_validation_context.item_definitions,
         )
         planning_intent = classify_planning_intent(
             request.history,
@@ -1098,6 +1138,15 @@ class RecommendationService:
                         corrected_message = remove_correction_narration(
                             self._extract_assistant_text(correction_response)
                         )
+                        if (
+                            corrected_message
+                            and build_fallback_kind(violations) == "style_only"
+                            and loses_cited_facts(message, corrected_message)
+                        ):
+                            # Only presentation was wrong. A rewrite that drops the draft's
+                            # source links or dates is worse than the draft, so keep the draft.
+                            trace["planning_correction"]["rewrite_discarded"] = "lost_citations"
+                            corrected_message = ""
                         if corrected_message:
                             corrected_message, corrected_violations = self._check_answer(
                                 quality_validator,
@@ -1217,7 +1266,9 @@ class RecommendationService:
                         )
                     )
                     safe_message = self._enforce_power_safety(message)
-                    safe_message = self._enforce_campaign_completion_safety(safe_message)
+                    safe_message = self._enforce_campaign_completion_safety(
+                        safe_message, request.message
+                    )
                     safe_message = self._enforce_campaign_comparison_safety(
                         safe_message,
                         request.message,
@@ -1355,6 +1406,7 @@ class RecommendationService:
                     )
                     self._record_mechanics_evidence(mechanics_ledger, call.name, category, result)
                     collect_item_names(result, read_only_validation_context.retrieved_item_names)
+                    collect_item_definitions(result, read_only_validation_context.item_definitions)
                     collect_evidence_terms(result, read_only_validation_context.evidence_terms)
                     self._update_build_validation_context(
                         build_validation_context,
@@ -1844,6 +1896,11 @@ class RecommendationService:
         if trimmed is not None:
             message = trimmed
             trace["trailing_handback_removed"] = True
+        opener_removed = strip_filler_opener(message)
+        if opener_removed is not None:
+            # The label is the only problem; the cited facts and the rest stay as written.
+            message = opener_removed
+            trace["filler_opener_removed"] = True
         violations = quality_validator.validate(
             message,
             mode_context,
@@ -1872,6 +1929,23 @@ class RecommendationService:
                     build_context,
                     read_only_context,
                 )
+        if planning_context is not None and "activity_record_conflation" in {
+            v.code for v in violations
+        }:
+            # Drop only the sentence that applies one activity's record to another; the rest
+            # of the plan stays instead of being replaced by a generic answer.
+            repaired = quality_validator.repair_activity_conflations(message, planning_context)
+            if repaired is not None:
+                message = repaired
+                trace["activity_conflation_repaired"] = True
+                violations = quality_validator.validate(
+                    message,
+                    mode_context,
+                    user_message,
+                    planning_context,
+                    build_context,
+                    read_only_context,
+                )
         if "absence_reported_as_value" in {v.code for v in violations}:
             # Deterministic and faithful: the sentence becomes a plain statement that the
             # measure is unavailable, so no model round is needed to say what is already known.
@@ -1879,6 +1953,20 @@ class RecommendationService:
             if repaired is not None:
                 message = repaired
                 trace["absent_values_replaced"] = True
+                violations = quality_validator.validate(
+                    message,
+                    mode_context,
+                    user_message,
+                    planning_context,
+                    build_context,
+                    read_only_context,
+                )
+        if "contradicted_item_fact" in {v.code for v in violations}:
+            # The retrieved value is known, so state it: no model round is needed.
+            repaired = correct_item_facts(message, read_only_context.item_definitions)
+            if repaired is not None:
+                message = repaired
+                trace["item_facts_corrected"] = True
                 violations = quality_validator.validate(
                     message,
                     mode_context,
@@ -2830,7 +2918,12 @@ class RecommendationService:
         )
 
     @staticmethod
-    def _enforce_campaign_completion_safety(message: str) -> str:
+    def _enforce_campaign_completion_safety(message: str, user_message: str = "") -> str:
+        premise = states_completion_premise(user_message)
+        premise_note = (
+            " (going on your word that it's finished; I can't see that in your account data)"
+        )
+
         def replacement(sentence: str) -> str | None:
             normalized = sentence.casefold()
             absence_inference = (
@@ -2876,6 +2969,11 @@ class RecommendationService:
                 )
                 and not any(value in normalized for value in COMPLETION_DENIAL_MARKERS)
             )
+            if absence_inference and premise:
+                return (
+                    "No matching active quest was returned, which doesn't show whether it's "
+                    "completed; I'm going on your word."
+                )
             if absence_inference:
                 logger.warning("Blocked an inference from active-quest absence")
                 return (
@@ -2891,6 +2989,12 @@ class RecommendationService:
                 and any(value in normalized for value in CAUSAL_COMPLETION_MARKERS)
                 and not any(value in normalized for value in COMPLETION_DENIAL_MARKERS)
             ):
+                if premise:
+                    # The player said it; the how-to stands on that premise. One clause marks
+                    # it as theirs, not as account-verified.
+                    stem = sentence.rstrip()
+                    end = stem[-1] if stem[-1] in ".!?" else ""
+                    return f"{stem.rstrip('.!?')}{premise_note}{end or '.'}"
                 logger.warning("Blocked an unsupported campaign-completion inference")
                 return (
                     "I can't verify campaign completion from an equipped subclass, item, "

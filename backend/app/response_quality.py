@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 
 from app.absence_claims import absent_measure_values
 from app.build_analysis import is_explicit_build_request, replaces_item
-from app.item_fact_claims import unverified_item_claims
+from app.item_fact_claims import contradicted_item_facts, unverified_item_claims
 from app.ownership_evidence import (
     OwnershipClaim,
     OwnershipEvidence,
@@ -130,6 +130,7 @@ GROUNDING_SAFETY_VIOLATION_CODES = frozenset(
         "unsupported_ownership_claim",
         "unsupported_stat_threshold",
         "unverified_item_fact",
+        "contradicted_item_fact",
         "absence_reported_as_value",
     }
 )
@@ -278,6 +279,10 @@ class ReadOnlyActionValidationContext(BaseModel):
     item_facts: dict[str, tuple[str | None, str | None]] = Field(default_factory=dict)
     # Names (folded) that any tool returned this turn: the items a definition fact may be about.
     retrieved_item_names: set[str] = Field(default_factory=set)
+    # Class restriction and slot each returned item carried, from this turn's tools and from the
+    # player's gear in context (so an earlier turn's lookup still counts): a stated class or
+    # slot must agree with it.
+    item_definitions: dict[str, dict[str, set[str]]] = Field(default_factory=dict)
     # Stemmed words of every key and text value the tools returned this turn: a measure none of
     # them mention was never returned, so it cannot be stated as zero.
     evidence_terms: set[str] = Field(default_factory=set)
@@ -932,6 +937,47 @@ _CORRECTION_ONLY_SENTENCE = re.compile(
 )
 
 
+_FILLER_OPENER = re.compile(
+    r"^\s*(?:based on (?:the|your) (?:available )?data|short answer|primary recommendation)"
+    r"\s*[,:—–-]\s*",
+    re.IGNORECASE,
+)
+_CITED_FACT = re.compile(
+    r"https?://[^\s)\]>]+|\b\d{4}-\d{2}-\d{2}\b|"
+    r"\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2}(?:,\s*\d{4})?\b",
+    re.IGNORECASE,
+)
+
+
+def strip_filler_opener(answer: str) -> str | None:
+    """The answer without a filler lead-in ("Based on the available data, ..."), or None.
+
+    The sentence after the label already is the answer, so nothing needs rewriting; only the
+    label goes. Returns None when there is no such opener or nothing would remain.
+    """
+
+    match = _FILLER_OPENER.match(_plain(answer))
+    if match is None:
+        return None
+    rest = answer[match.end() :]
+    if len(re.findall(r"\w+", rest)) < 3:
+        return None
+    return rest[:1].upper() + rest[1:]
+
+
+def loses_cited_facts(draft: str, rewritten: str) -> bool:
+    """Whether a rewrite drops a source link or a date the draft stated.
+
+    A rewrite meant only to reorder or tighten an answer must keep what the answer cites; one
+    that drops them has replaced the evidence with something weaker.
+    """
+
+    kept = rewritten.casefold()
+    return any(
+        value.group(0).rstrip(".,;").casefold() not in kept for value in _CITED_FACT.finditer(draft)
+    )
+
+
 def remove_correction_narration(answer: str) -> str:
     """The answer without lines that narrate a correction instead of stating the fact.
 
@@ -1554,22 +1600,26 @@ class ResponseQualityValidator:
                     ),
                 )
             )
-        if (
-            read_only.recommendation_turn
-            and not read_only.knowledge_lookup_performed
-            and any(
-                _is_loot_claim(sentence) for sentence in _SENTENCE_PARTS.split(_plain(answer))[::2]
-            )
-        ):
+        loot_claims = (
+            [
+                sentence.strip()
+                for sentence in _SENTENCE_PARTS.split(_plain(answer))[::2]
+                if _is_loot_claim(sentence)
+            ]
+            if read_only.recommendation_turn and not read_only.knowledge_lookup_performed
+            else []
+        )
+        if loot_claims:
+            quoted = " | ".join(value[:160] for value in loot_claims[:2])
             violations.append(
                 PlanningViolation(
                     code="unsupported_loot_claim",
                     correction=(
-                        "Nothing retrieved this turn shows which activity has better loot. Say "
-                        "what the data does show (available to launch, fireteam size, any reward "
-                        "names returned) and state plainly that loot quality and solo clear time "
-                        "are not established; do not call an activity the highest-value or best "
-                        "loot."
+                        f"Nothing retrieved this turn supports the loot ranking in: {quoted}. "
+                        "Remove or reword only that claim; keep the rest of the recommendation. "
+                        "Do not add a general disclaimer about loot or clear time: if the answer "
+                        "still compares loot, say in one clause that this comparison is not "
+                        "established, and otherwise say nothing about it."
                     ),
                 )
             )
@@ -1598,6 +1648,18 @@ class ResponseQualityValidator:
                         "inventory) and state only what the result shows; if it cannot be "
                         "retrieved, drop the claim."
                     ),
+                )
+            )
+        contradicted = contradicted_item_facts(answer, read_only.item_definitions)
+        if contradicted:
+            facts = "; ".join(
+                f"{name} has {kind} {actual}, not {claimed}"
+                for name, kind, claimed, actual in dict.fromkeys(contradicted)
+            )
+            violations.append(
+                PlanningViolation(
+                    code="contradicted_item_fact",
+                    correction=f"A retrieved result contradicts the draft: {facts}.",
                 )
             )
         absent = absent_measure_values(answer, read_only.evidence_terms)
@@ -1639,11 +1701,19 @@ class ResponseQualityValidator:
             )
         return violations
 
-    @staticmethod
+    @classmethod
     def activity_record_conflations(
-        answer: str, planning_context: SessionPlanningContext
+        cls, answer: str, planning_context: SessionPlanningContext
     ) -> list[tuple[str, str]]:
-        """(activity, record home) pairs where a record is applied to a different activity.
+        """(activity, record home) pairs where a record is applied to a different activity."""
+
+        return [(a, h) for a, h, _ in cls.conflating_sentences(answer, planning_context)]
+
+    @staticmethod
+    def conflating_sentences(
+        answer: str, planning_context: SessionPlanningContext
+    ) -> list[tuple[str, str, str]]:
+        """(activity, record home, sentence) where a record is applied to a different activity.
 
         A record under "Altars of Sorrow" says nothing about "Haunted Altars of Sorrow": the
         longer name contains the shorter one but they are separate activities.
@@ -1664,7 +1734,7 @@ class ResponseQualityValidator:
             for value in planning_context.candidates
             if "available_activity" in value.source_kinds
         ]
-        found: list[tuple[str, str]] = []
+        found: list[tuple[str, str, str]] = []
         # The activity the answer is currently talking about, so a sentence that says only "it
         # advances the record" is read against the activity named just before it.
         current: tuple[str, str, list[str]] | None = None
@@ -1703,8 +1773,33 @@ class ResponseQualityValidator:
                 and (names_activity or home_key in label)
                 and not _DISTINCT_ACTIVITY.search(sentence)
             ):
-                found.append((activity, home))
+                found.append((activity, home, sentence))
         return found
+
+    @classmethod
+    def repair_activity_conflations(
+        cls, answer: str, planning_context: SessionPlanningContext
+    ) -> str | None:
+        """The answer without the sentences that apply one activity's record to another.
+
+        Only the conflating sentences go; the rest of the plan stays. Returns None when nothing
+        conflated, or when what remains opens mid-thought or holds no recommendation.
+        """
+
+        bad = {
+            _plain(value).strip()
+            for _, _, value in cls.conflating_sentences(answer, planning_context)
+        }
+        if not bad:
+            return None
+        parts = _sentence_parts(answer)
+        replaced: list[str | None] = [
+            None if _plain(value).strip() in bad else value for value in parts[::2]
+        ]
+        text = _rejoin(parts, replaced)
+        if not text or _ORPHAN_START.match(text):
+            return None
+        return text if contains_recommendation(_plain(text)) else None
 
     @staticmethod
     def unsupported_solo_claims(answer: str, planning_context: SessionPlanningContext) -> list[str]:

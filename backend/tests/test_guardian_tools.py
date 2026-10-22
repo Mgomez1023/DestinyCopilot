@@ -1223,7 +1223,7 @@ def test_streaming_content_progression_comparison_uses_safe_campaign_status() ->
 
 
 def test_streaming_correction_never_emits_rejected_draft() -> None:
-    bad = "Based on the available data, run Nightfall next."
+    bad = "There are several things to consider, but run Nightfall next."
     corrected = "Run Nightfall next because it fits your current goal and offers useful rewards."
     streamed = ScriptedStreamingResponses(
         [
