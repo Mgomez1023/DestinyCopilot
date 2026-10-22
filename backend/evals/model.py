@@ -10,7 +10,7 @@ Style = Literal["fact", "planning", "build", "explain"]
 # A bare "can't" proves nothing, so a stated limit has to say what it cannot do.
 LACK = (
     r"(?:can'?t|cannot|can not|unable to|not able to|no way to|don'?t have (?:access|a way)|"
-    r"isn'?t (?:available|exposed)|not (?:available|exposed|tracked)|no data)"
+    r"(?:isn|aren)'?t (?:available|exposed)|not (?:available|exposed|tracked)|no data)"
 )
 
 AXES: dict[str, tuple[str, ...]] = {
@@ -77,6 +77,8 @@ class TurnExpectation:
     forbidden_flag: Flag = "hallucinated_fact"
     # Patterns naming things the account does not hold; the answer must not assert ownership.
     not_owned_claims: tuple[str, ...] = ()
+    # At least one of these tools must have been called during this turn.
+    tools_any: tuple[str, ...] = ()
     # A current-source answer must carry a dated link, or state that it could not be verified.
     linked_source_or_limitation: bool = False
 

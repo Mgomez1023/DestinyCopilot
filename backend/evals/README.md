@@ -61,24 +61,49 @@ behavior class to triage, not a prompt to special-case. Run them once:
 python -m evals.runner --subset heldout --no-judge
 ```
 
-Run `started_at=2026-10-22T04:52:27+00:00` exposed four of the original scenarios, so they count as
-seen. `heldout_retired.py` keeps them, under their original ids, as regression scenarios
-(`--subset heldout_retired`); they are not held-out and not counted toward the 15. Each was replaced
-by a new scenario for the same behavior class with different wording, items and activities:
+Two real-model runs exposed held-out scenarios, which then count as seen. `heldout_retired.py` keeps
+them under their original ids as regression scenarios (`--subset heldout_retired`); they are not
+held-out and not counted toward the 15. Each was replaced by a new scenario for the same behavior
+class with different wording and items. Retired this way:
+
+- run `started_at=2026-10-22T04:52:27+00:00`: `frenzy_somewhere`, `coil_still_worth_farming`,
+  `exotic_armor_stacking`, `pvp_then_dungeon_build`
+- run `started_at=2026-10-22T06:01:24+00:00`: `envious_assassin_elsewhere`, `two_exotic_weapons`,
+  `no_stat_for_trials`
 
 | Retired (regression) | Replacement (held-out) | Class |
 | --- | --- | --- |
-| `frenzy_somewhere` | `envious_assassin_elsewhere` | perk search across characters |
+| `frenzy_somewhere` | `envious_assassin_elsewhere`, then `whirlwind_blade_elsewhere` | perk held only by another character: name the item and its holder |
 | `coil_still_worth_farming` | `xur_stock_now` | live-state: source or stated limit |
-| `exotic_armor_stacking` | `two_exotic_weapons` (3 turns) | equip rules, wrong "yes" rejected |
+| `exotic_armor_stacking` | `two_exotic_weapons`, then `class_premise_on_vaulted_armor` (2 turns) | equip rules / item facts: a wrong player premise is corrected, not agreed with |
 | `pvp_then_dungeon_build` | `onslaught_build_then_waves` (2 turns) | no curated guide: no borrowed guide |
+| `no_stat_for_trials` | `headshots_with_rose` | unreturned stat: absence is not a value |
 
-Check design notes: exotic-rule turns use `exotic_limit(...)` (a stated "only one Exotic <kind>" or
-"can't wear both") plus `EXOTIC_WRONG_YES` (a yes to wearing both, "one Exotic per slot"), so a bare
-"one Exotic" no longer passes. `linked_source_or_limitation` also accepts a stated limit built on
-the shared `LACK` patterns ("can't reliably answer", "unable to check live stock"), but a bare
-"can't" with no limit-related word nearby does not count. Expected facts are asserted against
-`profiles.py` in `tests/test_eval_heldout.py`.
+The 15 now hold six multi-turn scenarios. A scenario that exposes a failure in the next run counts
+as seen too: retire and replace it before the following held-out run.
+
+Check design notes:
+
+- Exotic-rule turns use `exotic_limit(...)` (a stated "only one Exotic <kind>", "one Exotic <kind>
+  ... at once/at a time/at any given time" with up to 60 characters between, or "can't wear both")
+  plus `EXOTIC_WRONG_YES` (a yes to wearing both, "one Exotic per slot"), so a bare "one Exotic"
+  does not pass.
+- `linked_source_or_limitation` also accepts a stated limit built on the shared `LACK` patterns
+  ("can't reliably answer", "unable to check live stock", "aren't available"), but a bare "can't"
+  with no limit-related word nearby does not count.
+- An unreturned stat must not be reported as any value, zero and "none" included (`STREAK_ASSERTED`
+  for streaks; the headshot scenario has its own list). Explaining what a streak is stays allowed.
+- `no_contradicted_class_restrictions` (every scenario, every turn) flags "<item> is <Class>-only",
+  "locked/restricted to <Class>", "<Class> Exotic" and "<Class>s can wear <item>" when the fixture's
+  `class_restriction` differs; negations and corrections ("isn't Titan-only", "Titans can't wear")
+  are not flagged. Item truth comes from `profiles.py`, so an item the profile does not own is
+  checked against the eval gear table.
+- `no_activity_record_conflation` skips a sentence that explicitly denies the credit ("does NOT
+  count toward the Triumph").
+- `TurnExpectation.tools_any` requires a tool on one turn, so a mechanics follow-up is not graded on
+  the build turn's loadout tool or gear names (`onslaught_build_then_waves`).
+
+Expected facts are asserted against `profiles.py` in `tests/test_eval_heldout.py`.
 
 Known issues recorded for later triage (`heldout.KNOWN_ISSUES`): Prismatic first-turn false
 refusal; unverified equipment improvements despite empty alternative-search results; planning

@@ -48,10 +48,11 @@ def exotic_limit(kind: str) -> tuple[str, ...]:
     enough: it also appears in the wrong answer "one Exotic per slot"."""
 
     return (
-        rf"\b(?:only|just|at most)\s+(?:(?:wear|equip|run|use|have)\w*\s+)?(?:one|1)\s+"
+        rf"\b(?:only|just|at most)\s+(?:\w+\s+){{0,2}}?(?:one|1)\s+(?:exotic\s+)?{kind}\b",
+        rf"\b(?:one|1)\s+(?:exotic\s+)?{kind}\b[^.\n]{{0,60}}\b(?:at a time|at once|"
+        r"at any (?:given )?time|total|overall|max(?:imum)?)\b",
+        rf"\b(?:at a time|at once|at any (?:given )?time)\b[^.\n]{{0,40}}\b(?:one|1)\s+"
         rf"(?:exotic\s+)?{kind}\b",
-        rf"\b(?:one|1)\s+(?:exotic\s+)?{kind}\b[^.\n]{{0,30}}\b(?:at a time|at once|total|"
-        r"overall|max(?:imum)?)\b",
         rf"\b(?:one|1)\s+(?:exotic\s+)?{kind}\b[^.\n]{{0,30}}\bnot (?:both|two|2)\b",
         r"\b(?:can'?t|cannot|can not|not able to|unable to|aren'?t able to)\s+"
         r"(?:wear|equip|run|use|have)\b[^.\n]{0,30}\b(?:both|two|2|them both|together|at once|"
@@ -109,25 +110,6 @@ HELDOUT: tuple[Scenario, ...] = (
         tools_any=("search_inventory", "find_build_alternatives"),
     ),
     held(
-        "no_stat_for_trials",
-        "titan_veteran",
-        "whats my win streak in trials rn",
-        {"intent": "progression_help", "knowledge": "unknown"},
-        # No tool reads Trials streaks: the answer must say so, not invent a number. Only an
-        # asserted streak count is forbidden; explaining what a streak is stays fine.
-        by_turn={
-            0: TurnExpectation(
-                answers_any=unavailable(r"win streaks?|streaks?|trials"),
-                forbidden=(
-                    r"\b(?:your|current)\s+(?:win\s+)?streak\s+(?:is|of|at|stands at)\s+\d+",
-                    r"\byou(?:'re|'ve| are| have)\b[^.\n]{0,30}\b\d+[- ]?wins?\b[^.\n]{0,15}"
-                    r"(?:streak|row)",
-                    r"\byou(?:'re| are)\b[^.\n]{0,20}\bon (?:a )?\d+\b",
-                ),
-            )
-        },
-    ),
-    held(
         "firefly_on_owned_gun",
         "titan_veteran",
         "what does the firefly perk on my fatebringer actually do",
@@ -173,7 +155,12 @@ HELDOUT: tuple[Scenario, ...] = (
         "wait i stopped in the middle of some story thing ages ago, what was it",
         {"intent": "quest_help", "account": "active_campaign"},
         mentions_any=("Transgression", "Final Shape"),
-        tools_any=("get_active_quests", "get_quest_details", "get_progression"),
+        tools_any=(
+            "get_active_quests",
+            "get_quest_details",
+            "get_progression",
+            "get_content_progression",
+        ),
     ),
     held(
         "armor_stats_casual",
@@ -250,23 +237,81 @@ HELDOUT: tuple[Scenario, ...] = (
             )
         },
     ),
-    # --- Replacements for the four scenarios retired after run 2026-10-22T04:52:27+00:00 ---
+    # --- Replacements for scenarios retired after runs 2026-10-22T04:52:27 and 06:01:24 ---
     held(
-        "envious_assassin_elsewhere",
-        "titan_veteran",
-        "does my titan have anything running envious assassin?",
-        {"intent": "perk_explanation", "ownership": "only_owned", "character": "Titan"},
-        # Envious Assassin is only on Edge Transit, which the Hunter carries; the Titan's own
-        # weapons (Rose, Calus Mini-Tool, Apex Predator) do not have it. A search that ignores
-        # perks or other characters would wrongly say nobody has it.
+        "whirlwind_blade_elsewhere",
+        "warlock_veteran",
+        "is whirlwind blade on anything my hunter is carrying?",
+        {"intent": "perk_explanation", "ownership": "only_owned", "character": "Hunter"},
+        # Whirlwind Blade is only on Falling Guillotine, which the Warlock has equipped; the
+        # Hunter's Rose, Riskrunner and Apex Predator do not have it. The answer must say the
+        # Hunter has none, and name the item with the character that holds it.
+        character="Hunter",
         only_owned=True,
-        mentions_any=("Edge Transit",),
+        mentions_any=("Falling Guillotine",),
         tools_any=("search_inventory",),
         by_turn={
             0: TurnExpectation(
+                answers_any=(
+                    r"\bFalling Guillotine\b[^.\n]{0,80}\bWarlock\b",
+                    r"\bWarlock\b[^.\n]{0,80}\bFalling Guillotine\b",
+                ),
                 forbidden=(
-                    r"\bEdge Transit\b[^.\n]{0,40}\b(?:on|for|carried by|equipped (?:on|by)) "
-                    r"your Titan\b",
+                    # "...on your Warlock, not your Hunter" is fine; a plain "on your Hunter" is not
+                    r"\bFalling Guillotine\b(?:(?!\bnot\b|n't|\bnever\b)[^.\n]){0,40}"
+                    r"\b(?:on|for|carried by|equipped (?:on|by)) your Hunter\b",
+                ),
+            )
+        },
+    ),
+    held(
+        "class_premise_on_vaulted_armor",
+        "warlock_veteran",
+        (
+            "what exotic armor have i got sitting in my vault",
+            "nice, ill put the contraverse hold on my titan, those are titan gauntlets right?",
+        ),
+        {"intent": "owned_gear", "ownership": "only_owned", "character": "Titan"},
+        # Contraverse Hold (Warlock gauntlets) and Phoenix Protocol (Warlock chest armor) are in
+        # this vault. The player's premise on turn 2 is wrong: the item is Warlock-only, so the
+        # answer must correct it, not agree, and must not say a Titan can wear it.
+        character="Titan",
+        tools_any=("get_item_details", "search_inventory", "search_destiny_entities"),
+        by_turn={
+            0: TurnExpectation(
+                answers_any=(r"\bContraverse Hold\b", r"\bPhoenix Protocol\b"),
+            ),
+            1: TurnExpectation(
+                answers_any=(
+                    r"\bContraverse Hold\b[^.\n]{0,80}\bWarlock",
+                    r"\bWarlock[^.\n]{0,80}\bContraverse Hold\b",
+                ),
+                forbidden=(
+                    r"^\W*(?:yes|yep|yeah|correct|exactly|that'?s right|you(?:'re| are) right)\b",
+                    r"\bTitans? can (?:wear|equip|use|run)\b[^.\n]{0,30}\bContraverse Hold\b",
+                ),
+            ),
+        },
+    ),
+    held(
+        "headshots_with_rose",
+        "titan_veteran",
+        "how many headshots have i landed with rose this season",
+        {"intent": "progression_help", "knowledge": "unknown"},
+        # No tool returns weapon kill or precision counts. The answer must say so; stating any
+        # count, including zero or "none", reports an absence as a value.
+        by_turn={
+            0: TurnExpectation(
+                answers_any=unavailable(
+                    r"headshots?|precision(?: kills?| hits?)?|kill counts?|weapon (?:kill )?stats?"
+                ),
+                forbidden=(
+                    r"\byou(?:'ve| have| landed| got| hit)\b[^.\n]{0,40}"
+                    r"\b(?:\d[\d,]*|zero)\s+(?:headshots?|precision (?:kills?|hits?))\b",
+                    r"\byour\b[^.\n]{0,30}\b(?:headshots?|precision (?:kills?|hits?))\b[^.\n]{0,20}"
+                    r"\b(?:is|are|total|count|stands at|of|at|:)\s*(?:\d|zero|none|nothing)",
+                    r"\b(?:no|zero|0)\s+(?:headshots?|precision (?:kills?|hits?))\b"
+                    r"(?!\s+(?:data|stats?|counts?|info|tracking|numbers?))",
                 ),
             )
         },
@@ -282,54 +327,6 @@ HELDOUT: tuple[Scenario, ...] = (
         by_turn={0: TurnExpectation(linked_source_or_limitation=True)},
     ),
     held(
-        "two_exotic_weapons",
-        "hunter_veteran",
-        (
-            "can i run ace of spades along with my sunshot?",
-            "what if gjallarhorn goes in the heavy slot instead, does that count",
-            "ok and star-eater scales on top of sunshot is fine though right",
-        ),
-        {"intent": "rules", "character": "Hunter"},
-        # Ace of Spades, Gjallarhorn and Le Monarque are in this vault; Sunshot and
-        # Star-Eater Scales are equipped on the Hunter. The rule is one Exotic weapon plus one
-        # Exotic armor piece at a time, so turns 1-2 are "no" and turn 3 is "yes".
-        character="Hunter",
-        mentions_any=("Star-Eater Scales",),
-        by_turn={
-            0: TurnExpectation(
-                answers_any=exotic_limit(r"(?:weapon|gun)s?"),
-                forbidden=(
-                    *EXOTIC_WRONG_YES,
-                    r"\b(?:don'?t|do not) (?:own|have)\b[^.\n]{0,30}\bAce of Spades",
-                ),
-            ),
-            1: TurnExpectation(
-                answers_any=exotic_limit(r"(?:weapon|gun)s?"),
-                forbidden=(
-                    *EXOTIC_WRONG_YES,
-                    # Heavy weapons are weapons: the slot does not exempt an Exotic.
-                    r"\b(?:heavy|power)\b[^.\n]{0,40}\b(?:doesn'?t|does not|don'?t|do not|"
-                    r"isn'?t|is not)\s+count\b",
-                    r"\b(?:don'?t|do not) (?:own|have)\b[^.\n]{0,30}\bGjallarhorn",
-                ),
-            ),
-            2: TurnExpectation(
-                # One Exotic weapon plus one Exotic armor piece can be worn together.
-                answers_any=(
-                    r"\b(?:yes|yep|yeah|that works|that'?s fine|no problem|allowed|compatible)\b",
-                    r"\b(?:one|1) exotic weapon (?:and|plus|with|alongside) (?:one|1) exotic "
-                    r"armor",
-                    r"\b(?:armor|star-eater)[^.\n]{0,40}\b(?:separate|different|doesn'?t "
-                    r"(?:count|conflict))",
-                ),
-                forbidden=(
-                    r"^\W*no\b[\W]*(?:you can'?t|you cannot|those|they|that)",
-                    r"\b(?:only|just) one exotic (?:item|thing|total|in total|overall|across)",
-                ),
-            ),
-        },
-    ),
-    held(
         "onslaught_build_then_waves",
         "warlock_veteran",
         (
@@ -342,10 +339,14 @@ HELDOUT: tuple[Scenario, ...] = (
         # a returned source or a stated limit, never another activity's guide.
         style="build",
         character="Warlock",
-        mentions_any=("Sunbracers", "Sunshot", "Falling Guillotine", "Rose"),
-        tools_any=LOADOUT_TOOLS,
+        # The loadout evidence belongs to the build turn; the mechanics turn is graded on its
+        # source or stated limit, not on naming gear.
         by_turn={
-            0: TurnExpectation(forbidden=OTHER_ACTIVITY_GUIDES),
+            0: TurnExpectation(
+                answers_any=(r"\b(?:Sunbracers|Sunshot|Falling Guillotine|Rose)\b",),
+                forbidden=OTHER_ACTIVITY_GUIDES,
+                tools_any=LOADOUT_TOOLS,
+            ),
             1: TurnExpectation(forbidden=OTHER_ACTIVITY_GUIDES, linked_source_or_limitation=True),
         },
     ),

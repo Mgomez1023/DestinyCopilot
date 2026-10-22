@@ -602,6 +602,83 @@ def no_misdescribed_items(obs: Observation, facts: ProfileFacts) -> PropertyResu
     return _ok(name)
 
 
+_CLS = "|".join(CLASSES)
+_ITEM_GAP = r"\b[^.\n,;]{0,25}\b"
+# (template, exclusive): an exclusive template says the item is limited to one class, which also
+# contradicts an any-class item; the others only name a class, which cannot contradict "Any".
+_RESTRICTION_TEMPLATES: tuple[tuple[str, bool], ...] = (
+    (
+        rf"{{item}}{_ITEM_GAP}(?:is|are)\s+(?:an?\s+|the\s+)?(?:\w+\s+){{0,2}}?"
+        rf"(?P<cls>{_CLS})s?[- ]only\b",
+        True,
+    ),
+    (
+        rf"{{item}}{_ITEM_GAP}(?:is|are)\s+(?:locked|restricted|limited|exclusive)\s+to\s+"
+        rf"(?:the\s+|an?\s+)?(?P<cls>{_CLS})s?\b",
+        True,
+    ),
+    (
+        rf"{{item}}{_ITEM_GAP}(?:only\s+(?:works|usable|equippable|wearable)\s+(?:by|on|for|with)|"
+        rf"can\s+only\s+be\s+(?:worn|equipped|used|run)\s+(?:by|on))\s+(?:an?\s+|your\s+)?"
+        rf"(?P<cls>{_CLS})s?\b",
+        True,
+    ),
+    (
+        rf"\bonly\s+(?P<cls>{_CLS})s\s+(?:can|could)\s+(?:wear|equip|use|run)\s+(?:the\s+)?{{item}}",
+        True,
+    ),
+    (
+        rf"{{item}}{_ITEM_GAP}(?:is|are)\s+(?:an?\s+|the\s+)?(?P<cls>{_CLS})s?\s+(?:exotic|armor|"
+        r"piece|gear|item|helmet|gauntlets|chest|class item)\b",
+        False,
+    ),
+    (
+        rf"\b(?P<cls>{_CLS})s\s+(?:can|could)\s+(?:wear|equip|use|run)\s+(?:the\s+)?{{item}}",
+        False,
+    ),
+)
+_RESTRICTION_NEGATION = re.compile(r"\b(?:not|never|no)\b|n't", re.I)
+
+
+def class_restriction_truth(facts: ProfileFacts) -> dict[str, str]:
+    """Item name -> 'Titan' | 'Hunter' | 'Warlock' | 'Any', from the eval fixtures."""
+
+    truth = {name: owner or "Any" for name, owner in known_gear_names().items()}
+    for name, (restriction, _) in facts.owned_items.items():
+        if restriction in {*CLASSES, "Any"}:
+            truth[name] = restriction
+    return truth
+
+
+def contradicted_class_restriction(text: str, truth: dict[str, str]) -> str | None:
+    """The first sentence limiting a known item to a class its fixture says is wrong."""
+
+    for sentence in _sentences(text):
+        for item, real in truth.items():
+            if item.casefold() not in sentence.casefold():
+                continue
+            for template, exclusive in _RESTRICTION_TEMPLATES:
+                pattern = template.replace("{item}", rf"\b{re.escape(item)}\b")
+                for match in re.finditer(pattern, sentence, re.I):
+                    claimed = match.group("cls").capitalize()
+                    contradicts = claimed != real and (exclusive or real != "Any")
+                    if contradicts and not _RESTRICTION_NEGATION.search(match[0]):
+                        return sentence
+    return None
+
+
+def no_contradicted_class_restrictions(obs: Observation, facts: ProfileFacts) -> PropertyResult:
+    """No turn limits an item to a class its fixture says it is not limited to."""
+
+    name = "no_contradicted_class_restrictions"
+    truth = class_restriction_truth(facts)
+    for turn, answer in _all_answers(obs):
+        sentence = contradicted_class_restriction(answer, truth)
+        if sentence:
+            return _fail(name, "hallucinated_fact", f"turn {turn}: {sentence}")
+    return _ok(name)
+
+
 def no_unrelated_quest_evidence(obs: Observation, facts: ProfileFacts) -> PropertyResult:
     """An active quest is not offered as a route to an unrelated unlock, in any turn."""
 
@@ -848,12 +925,24 @@ def no_perk_mechanic_errors(obs: Observation, facts: ProfileFacts) -> PropertyRe
     return _ok(name)
 
 
+# "Haunted Altars does NOT count toward the Triumph" separates the two; it is not the conflation.
+DENIES_RECORD_CREDIT = re.compile(
+    r"\b(?:does(?:n'?t| not)|do(?:n'?t| not)|did(?:n'?t| not)|will not|won'?t|is(?:n'?t| not)|"
+    r"are(?:n'?t| not)|can(?:'?t|not)|never)\s+(?:\w+\s+){0,2}?(?:count|apply|advance|progress|"
+    r"contribute|credit|carry over|transfer)\w*\s+(?:toward|towards|to|for|on|in|into|against|"
+    r"that|this|the|your)\b",
+    re.I,
+)
+
+
 def no_activity_record_conflation(obs: Observation, facts: ProfileFacts) -> PropertyResult:
     """A Haunted Altars of Sorrow answer does not borrow Altars of Sorrow Triumph progress."""
 
     name = "no_activity_record_conflation"
     for index, turn in enumerate(obs.turns):
         for sentence in _sentences(_plain(turn.answer)):
+            if DENIES_RECORD_CREDIT.search(sentence):
+                continue
             if re.search(r"\bHaunted Altars\b", sentence) and re.search(
                 r"\b(?:Triumphs?|records?|Waves of Altars of Sorrow)\b", sentence
             ):
@@ -1102,6 +1191,10 @@ def turn_expectations(obs: Observation, facts: ProfileFacts) -> PropertyResult:
             re.search(pattern, answer, re.I) for pattern in check.answers_any
         ):
             return _fail(name, None, f"{label} answers none of {list(check.answers_any)}")
+        if check.tools_any and not {call.name for call in obs.turns[index].tool_calls} & set(
+            check.tools_any
+        ):
+            return _fail(name, None, f"{label} called none of {list(check.tools_any)}")
         if check.linked_source_or_limitation and not (
             obs.turns[index].sources
             or URL.search(answer)
@@ -1152,6 +1245,7 @@ PROPERTIES: tuple[Callable[[Observation, ProfileFacts], PropertyResult], ...] = 
     no_contradictory_roll_claims,
     no_cross_subclass_inference,
     no_misdescribed_items,
+    no_contradicted_class_restrictions,
     no_unrelated_quest_evidence,
     lookup_matches_account,
     removal_weighs_tradeoff,

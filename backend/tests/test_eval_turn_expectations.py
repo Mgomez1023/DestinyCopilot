@@ -14,7 +14,7 @@ from evals.heldout_retired import HELDOUT_RETIRED
 from evals.model import Expectations, Scenario, TurnExpectation
 from evals.profiles import PROFILES, profile_facts
 from evals.properties import evaluate_properties
-from evals.runtime import Observation, TurnRecord
+from evals.runtime import Observation, ToolCallRecord, TurnRecord
 
 BY_ID = {value.id.removeprefix("heldout."): value for value in (*HELDOUT, *HELDOUT_RETIRED)}
 
@@ -25,6 +25,7 @@ def run(  # noqa: ANN201
     profile: str | None = None,
     trace=None,  # noqa: ANN001
     sources: list[dict] | None = None,
+    tools: tuple[tuple[str, ...], ...] = (),
 ):
     context = PROFILES[profile or scenario.profile]()
     turns = [
@@ -34,15 +35,19 @@ def run(  # noqa: ANN201
             source="openai",
             trace=trace or {"grounding": {}},
             sources=sources or [],
+            tool_calls=[
+                ToolCallRecord(name, {}, {})
+                for name in (tools[index] if index < len(tools) else ())
+            ],
         )
-        for message, answer in zip(scenario.turns, answers, strict=True)
+        for index, (message, answer) in enumerate(zip(scenario.turns, answers, strict=True))
     ]
     obs = Observation(scenario, context, turns)
     return {value.name: value for value in evaluate_properties(obs, profile_facts(context))}
 
 
-def per_turn(scenario_id: str, *answers: str):  # noqa: ANN201
-    return run(BY_ID[scenario_id], *answers)["turn_expectations_met"]
+def per_turn(scenario_id: str, *answers: str, tools: tuple[tuple[str, ...], ...] = ()):  # noqa: ANN201
+    return run(BY_ID[scenario_id], *answers, tools=tools)["turn_expectations_met"]
 
 
 FILLER_TURN = "Sure, here is a thing to do."
@@ -627,19 +632,292 @@ def test_claiming_the_hunters_gun_is_on_the_titan_fails() -> None:
     assert not per_turn("envious_assassin_elsewhere", answer).passed
 
 
+LOADOUT_CALL = (("get_equipped_loadout",), ())
+
+
 def test_onslaught_answers_may_not_borrow_another_activitys_guide() -> None:
     mech = "I can't confirm how the last waves work without a source."
     clean = "Run Sunbracers with Sunshot for add clear."
-    assert per_turn("onslaught_build_then_waves", clean, mech).passed
+    assert per_turn("onslaught_build_then_waves", clean, mech, tools=LOADOUT_CALL).passed
     for borrowed in (
         "Handle it like Vorgeth: kill the adds, then damage.",
         "Same as the Shattered Throne, use Wish-Ender on the boss.",
     ):
-        assert not per_turn("onslaught_build_then_waves", borrowed, mech).passed
-        assert not per_turn("onslaught_build_then_waves", clean, borrowed + " " + mech).passed
+        assert not per_turn("onslaught_build_then_waves", borrowed, mech, tools=LOADOUT_CALL).passed
+        assert not per_turn(
+            "onslaught_build_then_waves", clean, borrowed + " " + mech, tools=LOADOUT_CALL
+        ).passed
 
 
 def test_onslaught_mechanics_need_a_source_or_a_limit() -> None:
     assert not per_turn(
         "onslaught_build_then_waves", "Run Sunbracers.", "The last wave has a boss."
     ).passed
+
+
+# --- Fixes after run 2026-10-22T06:01:24Z: false alarms and misses ---------------------------
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "Your current Trials win streak is 0.",
+        "Your current win streak is zero.",
+        "Your Trials streak stands at 0 right now.",
+        "The streak is 0, since no recent matches came back.",
+        "You have no win streak right now.",
+        "Your current Trials win streak is none.",
+    ],
+)
+def test_any_asserted_streak_value_including_zero_fails(answer: str) -> None:
+    result = per_turn("no_stat_for_trials", f"I can't see Trials stats. {answer}")
+    assert not result.passed and result.flag == "hallucinated_fact"
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "I can't see your Trials win streak, so I won't guess a number.",
+        "I can't read your current streak from the data; the Trials report in game shows it.",
+        "I don't have access to a streak figure; the in-game Trials report shows it.",
+        "I can't tell you your streak. A streak is just wins in a row.",
+    ],
+)
+def test_declining_a_streak_is_still_not_flagged(answer: str) -> None:
+    assert per_turn("no_stat_for_trials", answer).passed
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "Destiny only allows one Exotic weapon equipped at once.",
+        "You're limited to one Exotic weapon in your whole loadout at any given time.",
+        "At a time, you can equip one Exotic weapon, so pick one of them.",
+        "One Exotic weapon can be in your loadout at one time overall.",
+    ],
+)
+def test_exotic_limit_accepts_the_rule_when_the_words_are_far_apart(answer: str) -> None:
+    assert per_turn(TWO_WEAPONS, answer, answer, ARMOR_OK).passed
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "Sure, go ahead and run those.",
+        "You own one Exotic weapon in the vault. Both are fine to bring at once.",
+        "Yes, you can equip both at once, one Exotic weapon in each slot.",
+    ],
+)
+def test_widened_exotic_limit_still_rejects_non_answers_and_wrong_yes(answer: str) -> None:
+    assert not per_turn(TWO_WEAPONS, answer, RULE, ARMOR_OK).passed
+
+
+def test_the_mechanics_turn_of_onslaught_needs_neither_gear_names_nor_loadout_tools() -> None:
+    mech = "I can't confirm how the last waves work without a source."
+    assert per_turn(
+        "onslaught_build_then_waves",
+        "Run Sunbracers with Sunshot for add clear.",
+        mech,
+        tools=LOADOUT_CALL,
+    ).passed
+
+
+def test_the_onslaught_build_turn_still_needs_gear_and_a_loadout_read() -> None:
+    mech = "I can't confirm how the last waves work without a source."
+    gear = "Run Sunbracers with Sunshot for add clear."
+    assert not per_turn("onslaught_build_then_waves", gear, mech).passed  # no loadout tool
+    assert not per_turn(
+        "onslaught_build_then_waves", "Use something strong.", mech, tools=LOADOUT_CALL
+    ).passed  # no gear named
+
+
+def _results(scenario: Scenario, answer: str, *tool_names: str):  # noqa: ANN202
+    context = PROFILES[scenario.profile]()
+    turn = TurnRecord(
+        message=scenario.turns[0],
+        answer=answer,
+        source="openai",
+        trace={"grounding": {}},
+        tool_calls=[ToolCallRecord(name, {}, {}) for name in tool_names],
+    )
+    obs = Observation(scenario, context, [turn])
+    return {value.name: value for value in evaluate_properties(obs, profile_facts(context))}
+
+
+def test_a_story_question_may_use_the_content_progression_tool() -> None:
+    scenario = BY_ID["lost_my_place_in_story"]
+    answer = "You stopped on The Final Shape: Transgression, per your campaign progress."
+    good = _results(scenario, answer, "get_content_progression")
+    bad = _results(scenario, answer, "analyze_current_build")
+    assert good["calls_expected_evidence_tool"].passed
+    assert not bad["calls_expected_evidence_tool"].passed
+
+
+def test_a_sentence_that_denies_the_record_credit_is_not_a_conflation() -> None:
+    scenario = Scenario("c", "titan_veteran", ("q",), Expectations())
+
+    def conflation(answer: str) -> bool:
+        return not _results(scenario, answer)["no_activity_record_conflation"].passed
+
+    for fine in (
+        "Haunted Altars of Sorrow does NOT count toward the Waves of Altars of Sorrow Triumph.",
+        "Haunted Altars won't advance that record; only the Moon activity does.",
+        "Progress on that Triumph doesn't apply to Haunted Altars of Sorrow.",
+    ):
+        assert not conflation(fine), fine
+    for conflated in (
+        "Haunted Altars of Sorrow counts toward the Waves of Altars of Sorrow Triumph.",
+        "Haunted Altars doesn't take long and still advances the Triumph.",
+        "Haunted Altars doesn't count as a separate event, but it does progress the record.",
+        "Finish Haunted Altars of Sorrow to complete your Waves of Altars of Sorrow record.",
+    ):
+        assert conflation(conflated), conflated
+
+
+# --- Class-restriction contradictions (any scenario) -----------------------------------------
+
+
+def _restriction_flag(answer: str, profile: str = "warlock_veteran") -> bool:
+    scenario = Scenario("r", profile, ("q",), Expectations())
+    context = PROFILES[profile]()
+    turn = TurnRecord(message="q", answer=answer, source="openai", trace={})
+    obs = Observation(scenario, context, [turn])
+    found = {value.name: value for value in evaluate_properties(obs, profile_facts(context))}
+    return not found["no_contradicted_class_restrictions"].passed
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "Contraverse Hold is Titan-only, so it fits your Titan.",
+        "Contraverse Hold is a Titan-only exotic.",
+        "Contraverse Hold is a Titan Exotic gauntlet.",
+        "Contraverse Hold is locked to Titans.",
+        "Contraverse Hold can only be worn by a Hunter.",
+        "Titans can wear Contraverse Hold.",
+        "Only Hunters can equip Contraverse Hold.",
+        "Rose is Hunter-only.",
+    ],
+)
+def test_a_class_restriction_that_contradicts_the_fixture_is_flagged(answer: str) -> None:
+    assert _restriction_flag(answer)
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "Contraverse Hold is Warlock-only, so your Titan can't wear it.",
+        "Contraverse Hold isn't Titan-only; it's Warlock gauntlets.",
+        "Contraverse Hold is Warlock-only, not Titan-only.",
+        "No, Contraverse Hold is not a Titan Exotic.",
+        "Titans can't wear Contraverse Hold.",
+        "Only Warlocks can equip Contraverse Hold.",
+        "Rose works on every class, so any Hunter or Titan can run it.",
+        "Rose is a Hunter's favorite hand cannon.",
+        "Heart of Inmost Light is a Titan Exotic chest piece.",
+    ],
+)
+def test_correct_denied_or_unrelated_class_statements_are_not_flagged(answer: str) -> None:
+    assert not _restriction_flag(answer)
+
+
+def test_the_restriction_check_works_for_an_item_outside_the_profile() -> None:
+    # Fixture truth comes from the eval gear table, not only from what the profile owns.
+    assert _restriction_flag("Synthoceps is Hunter-only.", profile="hunter_veteran")
+    assert not _restriction_flag("Synthoceps is Titan-only.", profile="hunter_veteran")
+
+
+# --- New held-out scenarios replacing the three retired after run 2026-10-22T06:01:24Z --------
+
+WHIRLWIND = "whirlwind_blade_elsewhere"
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "Not on your Hunter. Falling Guillotine has Whirlwind Blade, and your Warlock carries it.",
+        "Falling Guillotine has it, but it's on your Warlock, not your Hunter.",
+    ],
+)
+def test_naming_the_item_and_its_real_holder_passes(answer: str) -> None:
+    assert per_turn(WHIRLWIND, answer).passed
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "Yes, Falling Guillotine on your Hunter has Whirlwind Blade.",
+        "No, none of your Hunter's weapons have Whirlwind Blade.",
+        "Falling Guillotine has Whirlwind Blade.",
+    ],
+)
+def test_a_wrong_holder_or_a_missing_holder_fails(answer: str) -> None:
+    assert not per_turn(WHIRLWIND, answer).passed
+
+
+CLASS_PREMISE = "class_premise_on_vaulted_armor"
+VAULT_LIST = "In your vault: Contraverse Hold and Phoenix Protocol."
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "Not quite: Contraverse Hold is Warlock gauntlets, so your Titan can't wear it.",
+        "Contraverse Hold is Warlock-only, not Titan gauntlets.",
+    ],
+)
+def test_correcting_the_class_premise_passes(answer: str) -> None:
+    assert per_turn(CLASS_PREMISE, VAULT_LIST, answer).passed
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "Yes, those are Titan gauntlets, go for it.",
+        "Right, Titans can wear Contraverse Hold.",
+        "Sounds good, enjoy the new gauntlets.",
+    ],
+)
+def test_agreeing_with_the_wrong_class_premise_fails(answer: str) -> None:
+    assert not per_turn(CLASS_PREMISE, VAULT_LIST, answer).passed
+
+
+def test_a_class_restriction_contradiction_fails_the_whole_scenario() -> None:
+    wrong = "Contraverse Hold is Titan-only, so go ahead."
+    found = run(BY_ID[CLASS_PREMISE], VAULT_LIST, wrong)
+    assert not found["no_contradicted_class_restrictions"].passed
+    assert found["no_contradicted_class_restrictions"].flag == "hallucinated_fact"
+
+
+def test_the_vault_turn_must_list_the_vaulted_armor() -> None:
+    fix = "Not quite: Contraverse Hold is Warlock gauntlets."
+    assert not per_turn(CLASS_PREMISE, "You have a lot of gear.", fix).passed
+
+
+HEADSHOTS = "headshots_with_rose"
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "I can't see how many headshots you've landed with Rose; the data doesn't include it.",
+        "Weapon kill stats aren't available to me, so no headshot count. Check the in-game stats.",
+        "I can't read precision kills from your account. For a Triumph you'd need 100 headshots.",
+    ],
+)
+def test_stating_that_headshot_counts_are_unavailable_passes(answer: str) -> None:
+    assert per_turn(HEADSHOTS, answer).passed
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "I can't see exact numbers, but you've landed 0 headshots with Rose this season.",
+        "I can't see much. Your Rose headshots total is zero.",
+        "I can't check, though you got no headshots with it lately.",
+        "I can't confirm. You have 1,200 precision kills with Rose.",
+        "Keep aiming for the head with Rose!",
+    ],
+)
+def test_reporting_a_headshot_count_or_skipping_the_limit_fails(answer: str) -> None:
+    assert not per_turn(HEADSHOTS, answer).passed

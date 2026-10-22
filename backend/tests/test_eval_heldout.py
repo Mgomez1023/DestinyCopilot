@@ -6,7 +6,7 @@ import pathlib
 from evals.heldout import HELDOUT, KNOWN_ISSUES
 from evals.heldout_retired import HELDOUT_RETIRED
 from evals.model import AXES
-from evals.profiles import PROFILES, WEAPON_PERKS, WEAPONS, profile_facts
+from evals.profiles import EXOTIC_ARMOR, PROFILES, WEAPON_PERKS, WEAPONS, profile_facts
 from evals.scenarios import BANK, SUBSETS
 from tests.test_eval_bank import _tool_names
 
@@ -40,7 +40,7 @@ def test_heldout_is_a_separate_subset_of_fifteen_runnable_scenarios() -> None:
 
 def test_heldout_covers_multi_turn_and_unavailable_data() -> None:
     assert sum(len(value.turns) >= 2 for value in HELDOUT) >= 5
-    trials = next(value for value in HELDOUT if value.id.endswith("trials"))
+    trials = next(value for value in HELDOUT if value.id.endswith("headshots_with_rose"))
     assert trials.expect.by_turn[0].answers_any
     assert {value.expect.style for value in HELDOUT} >= {"fact", "planning", "build"}
     assert len(KNOWN_ISSUES) == 5
@@ -63,10 +63,17 @@ def test_retired_scenarios_are_a_separate_regression_subset() -> None:
         "heldout.coil_still_worth_farming",
         "heldout.exotic_armor_stacking",
         "heldout.pvp_then_dungeon_build",
+        "heldout.envious_assassin_elsewhere",
+        "heldout.two_exotic_weapons",
+        "heldout.no_stat_for_trials",
     }
     assert not retired & {value.id for value in HELDOUT}
     assert all(value not in SUBSETS["full"] for value in HELDOUT_RETIRED)
     assert all(value.note.startswith("retired held-out") for value in HELDOUT_RETIRED)
+    runs = {value.id.removeprefix("heldout."): value.note for value in HELDOUT_RETIRED}
+    assert "2026-10-22T04:52:27+00:00" in runs["frenzy_somewhere"]
+    for name in ("envious_assassin_elsewhere", "two_exotic_weapons", "no_stat_for_trials"):
+        assert "2026-10-22T06:01:24+00:00" in runs[name], name
     tools = _tool_names()
     for value in HELDOUT_RETIRED:
         assert value.profile in PROFILES, value.id
@@ -84,15 +91,37 @@ def test_replacements_do_not_reuse_retired_prompts_or_subjects() -> None:
         for value in HELDOUT
         if value.id.removeprefix("heldout.")
         in {
-            "envious_assassin_elsewhere",
             "xur_stock_now",
-            "two_exotic_weapons",
             "onslaught_build_then_waves",
+            "whirlwind_blade_elsewhere",
+            "class_premise_on_vaulted_armor",
+            "headshots_with_rose",
         }
     ]
-    assert len(replacements) == 4
+    assert len(replacements) == 5
     for value in replacements:
         assert not any(word in turn.lower() for turn in value.turns for word in banned), value.id
+
+
+def test_the_second_batch_replacements_reuse_no_retired_subject() -> None:
+    banned = (
+        "envious",
+        "edge transit",
+        "ace of spades",
+        "gjallarhorn",
+        "sunshot",
+        "star-eater",
+        "trial",
+        "streak",
+        "k/d",
+    )
+    new = {"whirlwind_blade_elsewhere", "class_premise_on_vaulted_armor", "headshots_with_rose"}
+    chosen = [value for value in HELDOUT if value.id.removeprefix("heldout.") in new]
+    assert len(chosen) == 3
+    for value in chosen:
+        text = " ".join(value.turns).lower()
+        assert not any(word in text for word in banned), value.id
+    assert sum(len(value.turns) >= 2 for value in HELDOUT) >= 5
 
 
 def test_replacement_expected_facts_match_the_profiles() -> None:
@@ -129,3 +158,26 @@ def test_the_curated_guides_do_not_cover_the_no_guide_activity() -> None:
         "utf-8"
     )
     assert "onslaught" not in guides.lower()
+
+
+def test_second_batch_expected_facts_match_the_profiles() -> None:
+    warlock = PROFILES["warlock_veteran"]()
+    facts = profile_facts(warlock)
+    # Whirlwind Blade is only on Falling Guillotine, which the Warlock has equipped.
+    holders = [name for name, perks in WEAPON_PERKS.items() if "Whirlwind Blade" in perks]
+    assert holders == ["Falling Guillotine"]
+    assert facts.owned_items["Falling Guillotine"][1] == "equipped:Warlock"
+    hunter = next(value for value in warlock.characters if value.class_name == "Hunter")
+    assert {item.name for item in hunter.equipped_gear if item.item_type == "Weapon"} == {
+        "Rose",
+        "Riskrunner",
+        "Apex Predator",
+    }
+    assert "Hunter" in facts.classes and "Titan" in facts.classes
+    # Contraverse Hold is a Warlock-only vaulted armor piece, in the gauntlets slot.
+    assert EXOTIC_ARMOR["Contraverse Hold"] == ("Warlock", "Gauntlets")
+    assert facts.owned_items["Contraverse Hold"] == ("Warlock", "vault")
+    assert facts.owned_items["Phoenix Protocol"] == ("Warlock", "vault")
+    # No fixture carries a weapon kill or precision count for the headshot question.
+    dumped = json.dumps(PROFILES["titan_veteran"]().model_dump(mode="json")).lower()
+    assert "headshot" not in dumped and "precision" not in dumped
