@@ -18,13 +18,7 @@ Run once with: `python -m evals.runner --subset heldout --no-judge`
 from typing import Any
 
 from evals.golden import PLANNING_TOOLS
-from evals.model import Expectations, Scenario, TurnExpectation
-
-# A bare "can't" proves nothing, so a stated limit has to say what it cannot do.
-LACK = (
-    r"(?:can'?t|cannot|can not|unable to|not able to|no way to|don'?t have (?:access|a way)|"
-    r"isn'?t (?:available|exposed)|not (?:available|exposed|tracked)|no data)"
-)
+from evals.model import LACK, Expectations, Scenario, TurnExpectation
 
 
 def unavailable(topic: str) -> tuple[str, ...]:
@@ -35,6 +29,42 @@ def unavailable(topic: str) -> tuple[str, ...]:
         rf"\b(?:{topic})\b[^.\n]{{0,70}}\b{LACK}\b",
     )
 
+
+# Wrong answers to "can I wear/run both?": a yes, or a per-slot rule that does not exist. Each
+# pattern skips negations ("can't wear both", "not one Exotic per slot") and "one ..., not both".
+EXOTIC_WRONG_YES: tuple[str, ...] = (
+    r"\b(?:can|could|may)\s+(?:equip|wear|run|use|have)\b(?:(?!\bnot\b|n't|\bonly\b|\bone\b)[^.\n])"
+    r"{0,25}\b(?:both|two|them both|all of them)\b",
+    r"(?<!not )(?<!n't )\bone exotic (?:armor |weapon )?(?:piece |item )?"
+    r"(?:per|for each|in each|in every) (?:\w+ )?slot\b",
+    r"^\W*(?:yes|yep|yeah|sure)\b[\W]*(?:you can|both|they (?:stack|work)|that works|it works)",
+    r"\beach (?:armor |weapon )?slot (?:can|may|gets?) (?:have |hold )?(?:its|an|one) "
+    r"(?:own )?exotic",
+)
+
+
+def exotic_limit(kind: str) -> tuple[str, ...]:
+    """Patterns stating that only one Exotic `kind` can be equipped. A bare "one Exotic" is not
+    enough: it also appears in the wrong answer "one Exotic per slot"."""
+
+    return (
+        rf"\b(?:only|just|at most)\s+(?:(?:wear|equip|run|use|have)\w*\s+)?(?:one|1)\s+"
+        rf"(?:exotic\s+)?{kind}\b",
+        rf"\b(?:one|1)\s+(?:exotic\s+)?{kind}\b[^.\n]{{0,30}}\b(?:at a time|at once|total|"
+        r"overall|max(?:imum)?)\b",
+        rf"\b(?:one|1)\s+(?:exotic\s+)?{kind}\b[^.\n]{{0,30}}\bnot (?:both|two|2)\b",
+        r"\b(?:can'?t|cannot|can not|not able to|unable to|aren'?t able to)\s+"
+        r"(?:wear|equip|run|use|have)\b[^.\n]{0,30}\b(?:both|two|2|them both|together|at once|"
+        r"a second)\b",
+    )
+
+
+# Curated guides cover other activities (the Dreaming City arena, Wish-Ender, Hunter's
+# Remembrance, Prismatic Facets). An answer about an activity with no guide must not borrow them.
+OTHER_ACTIVITY_GUIDES: tuple[str, ...] = (
+    r"\b(?:Vorgeth|Dul Incaru|Shattered Throne|Dreaming City|Wish-Ender|Hunter'?s Remembrance|"
+    r"Micah-10|Light Vestiges?|Darkness Vestiges?)\b",
+)
 
 LOADOUT_TOOLS = ("get_equipped_loadout", "get_build_details", "analyze_current_build")
 
@@ -116,25 +146,6 @@ HELDOUT: tuple[Scenario, ...] = (
         tools_any=LOADOUT_TOOLS,
     ),
     held(
-        "frenzy_somewhere",
-        "titan_veteran",
-        "do any of my guns across all my guys have frenzy",
-        {"intent": "perk_explanation", "ownership": "only_owned"},
-        # Funnelweb (Subsistence, Frenzy) is equipped on the Hunter.
-        mentions_any=("Funnelweb",),
-        only_owned=True,
-    ),
-    held(
-        "coil_still_worth_farming",
-        "titan_veteran",
-        "is the coil still the spot to farm its weapons this week or did that change",
-        {"intent": "live_state", "knowledge": "live"},
-        # Manifest strings cannot prove what drops now: the answer needs a dated, linked source
-        # or a stated limit, and live/web evidence or a hedge (current_source_not_overclaimed).
-        current_evidence=True,
-        by_turn={0: TurnExpectation(linked_source_or_limitation=True)},
-    ),
-    held(
         "move_vaulted_gun_to_character",
         "titan_veteran",
         "can you move my fatebringer over to my titan real quick",
@@ -192,39 +203,6 @@ HELDOUT: tuple[Scenario, ...] = (
         mentions_any=("Rite of the Nine", "Duality"),
     ),
     held(
-        "exotic_armor_stacking",
-        "titan_veteran",
-        (
-            "can my titan wear heart of inmost light",
-            "and keep synthoceps on at the same time?",
-        ),
-        {"intent": "rules", "character": "Titan"},
-        character="Titan",
-        by_turn={
-            # Heart of Inmost Light is a Titan chest piece, and it is in this Guardian's vault.
-            0: TurnExpectation(
-                answers_any=(
-                    r"\b(?:yes|yep|you can|can (?:wear|equip|use)|titan (?:exotic|chest)|"
-                    r"works? (?:for|on) (?:a |your )?titan|in your vault)\b",
-                ),
-                forbidden=(
-                    r"\bHeart of Inmost Light\b[^.\n]{0,60}\b(?:isn'?t|not|can'?t|cannot)\b"
-                    r"[^.\n]{0,25}\b(?:titan|usable|equip|wear)",
-                    r"\b(?:don'?t|do not) (?:own|have)\b[^.\n]{0,30}\bHeart of Inmost",
-                ),
-            ),
-            # One Exotic armor piece at a time; Synthoceps is what the Titan wears now.
-            1: TurnExpectation(
-                answers_any=(
-                    r"\bone exotic\b",
-                    r"\bonly one\b",
-                    r"\bone (?:exotic )?(?:armor )?(?:piece )?at a time\b",
-                    r"\b(?:can'?t|cannot) (?:wear|equip|run|use|have) (?:both|two|them)\b",
-                ),
-            ),
-        },
-    ),
-    held(
         "twenty_minutes_then_an_hour",
         "near_complete",
         (
@@ -272,17 +250,103 @@ HELDOUT: tuple[Scenario, ...] = (
             )
         },
     ),
+    # --- Replacements for the four scenarios retired after run 2026-10-22T04:52:27+00:00 ---
     held(
-        "pvp_then_dungeon_build",
+        "envious_assassin_elsewhere",
+        "titan_veteran",
+        "does my titan have anything running envious assassin?",
+        {"intent": "perk_explanation", "ownership": "only_owned", "character": "Titan"},
+        # Envious Assassin is only on Edge Transit, which the Hunter carries; the Titan's own
+        # weapons (Rose, Calus Mini-Tool, Apex Predator) do not have it. A search that ignores
+        # perks or other characters would wrongly say nobody has it.
+        only_owned=True,
+        mentions_any=("Edge Transit",),
+        tools_any=("search_inventory",),
+        by_turn={
+            0: TurnExpectation(
+                forbidden=(
+                    r"\bEdge Transit\b[^.\n]{0,40}\b(?:on|for|carried by|equipped (?:on|by)) "
+                    r"your Titan\b",
+                ),
+            )
+        },
+    ),
+    held(
+        "xur_stock_now",
+        "hunter_veteran",
+        "is xur around right now and what's he selling",
+        {"intent": "live_state", "knowledge": "live"},
+        # A vendor's presence and stock cannot come from the Manifest or the account: the
+        # answer needs a returned source or a plainly stated limit, not a canned refusal.
+        current_evidence=True,
+        by_turn={0: TurnExpectation(linked_source_or_limitation=True)},
+    ),
+    held(
+        "two_exotic_weapons",
         "hunter_veteran",
         (
-            "how does my hunter hold up in pvp right now",
-            "fine. and for the duality dungeon?",
+            "can i run ace of spades along with my sunshot?",
+            "what if gjallarhorn goes in the heavy slot instead, does that count",
+            "ok and star-eater scales on top of sunshot is fine though right",
         ),
-        {"intent": "build_critique", "character": "Hunter"},
-        style="build",
+        {"intent": "rules", "character": "Hunter"},
+        # Ace of Spades, Gjallarhorn and Le Monarque are in this vault; Sunshot and
+        # Star-Eater Scales are equipped on the Hunter. The rule is one Exotic weapon plus one
+        # Exotic armor piece at a time, so turns 1-2 are "no" and turn 3 is "yes".
         character="Hunter",
-        mentions_any=("Star-Eater Scales", "Sunshot", "Rose"),
+        mentions_any=("Star-Eater Scales",),
+        by_turn={
+            0: TurnExpectation(
+                answers_any=exotic_limit(r"(?:weapon|gun)s?"),
+                forbidden=(
+                    *EXOTIC_WRONG_YES,
+                    r"\b(?:don'?t|do not) (?:own|have)\b[^.\n]{0,30}\bAce of Spades",
+                ),
+            ),
+            1: TurnExpectation(
+                answers_any=exotic_limit(r"(?:weapon|gun)s?"),
+                forbidden=(
+                    *EXOTIC_WRONG_YES,
+                    # Heavy weapons are weapons: the slot does not exempt an Exotic.
+                    r"\b(?:heavy|power)\b[^.\n]{0,40}\b(?:doesn'?t|does not|don'?t|do not|"
+                    r"isn'?t|is not)\s+count\b",
+                    r"\b(?:don'?t|do not) (?:own|have)\b[^.\n]{0,30}\bGjallarhorn",
+                ),
+            ),
+            2: TurnExpectation(
+                # One Exotic weapon plus one Exotic armor piece can be worn together.
+                answers_any=(
+                    r"\b(?:yes|yep|yeah|that works|that'?s fine|no problem|allowed|compatible)\b",
+                    r"\b(?:one|1) exotic weapon (?:and|plus|with|alongside) (?:one|1) exotic "
+                    r"armor",
+                    r"\b(?:armor|star-eater)[^.\n]{0,40}\b(?:separate|different|doesn'?t "
+                    r"(?:count|conflict))",
+                ),
+                forbidden=(
+                    r"^\W*no\b[\W]*(?:you can'?t|you cannot|those|they|that)",
+                    r"\b(?:only|just) one exotic (?:item|thing|total|in total|overall|across)",
+                ),
+            ),
+        },
+    ),
+    held(
+        "onslaught_build_then_waves",
+        "warlock_veteran",
+        (
+            "what should my warlock run for onslaught legend, the later waves are wrecking me",
+            "and how do the last waves actually work, anything i need to know",
+        ),
+        {"intent": "build_critique", "character": "Warlock", "knowledge": "unknown"},
+        # No curated guide covers Onslaught. Build advice must come from the Warlock's equipped
+        # loadout (Sunbracers, Sunshot, Rose, Falling Guillotine), and the mechanics turn needs
+        # a returned source or a stated limit, never another activity's guide.
+        style="build",
+        character="Warlock",
+        mentions_any=("Sunbracers", "Sunshot", "Falling Guillotine", "Rose"),
         tools_any=LOADOUT_TOOLS,
+        by_turn={
+            0: TurnExpectation(forbidden=OTHER_ACTIVITY_GUIDES),
+            1: TurnExpectation(forbidden=OTHER_ACTIVITY_GUIDES, linked_source_or_limitation=True),
+        },
     ),
 )

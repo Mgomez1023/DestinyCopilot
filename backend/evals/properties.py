@@ -21,7 +21,7 @@ from app.response_quality import (
     mentions_deprecated_armor_stat,
     misdescribed_items,
 )
-from evals.model import Expectations
+from evals.model import LACK, Expectations
 from evals.profiles import CLASSES, SUBCLASSES, WEAPONS, ProfileFacts, known_gear_names
 from evals.rubric import Flag
 from evals.runtime import Observation, TurnRecord
@@ -1068,6 +1068,14 @@ def _asserts_ownership(answer: str, term: str) -> str | None:
     return None
 
 
+# "I can't reliably answer that" states a limit; a bare "can't" elsewhere in the answer does not.
+LIMITATION = re.compile(
+    rf"\b{LACK}\b[^.\n]{{0,60}}\b(?:reliabl\w*|answer|confirm|verify|determine|tell|say|know|"
+    r"check|see|look up|current|live|real-?time|right now|this week|today)\b",
+    re.I,
+)
+
+
 def turn_expectations(obs: Observation, facts: ProfileFacts) -> PropertyResult:
     """Per-turn checks (`Expectations.by_turn`): earlier turns are graded, not only the last."""
 
@@ -1099,6 +1107,7 @@ def turn_expectations(obs: Observation, facts: ProfileFacts) -> PropertyResult:
             or URL.search(answer)
             or HEDGE.search(answer)
             or NOT_ESTABLISHED.search(answer)
+            or LIMITATION.search(answer)
         ):
             return _fail(
                 name, "stale_live_claim", f"{label} has neither a source nor a stated limit"

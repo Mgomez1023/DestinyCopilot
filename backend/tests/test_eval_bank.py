@@ -67,6 +67,7 @@ def test_bank_size_ids_and_subsets() -> None:
         "mechanics",
         "playtest",
         "heldout",
+        "heldout_retired",
         "full",
     }
     assert len(SUBSETS["acceptance"]) == 7

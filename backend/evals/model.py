@@ -7,6 +7,12 @@ from evals.rubric import Flag
 
 Style = Literal["fact", "planning", "build", "explain"]
 
+# A bare "can't" proves nothing, so a stated limit has to say what it cannot do.
+LACK = (
+    r"(?:can'?t|cannot|can not|unable to|not able to|no way to|don'?t have (?:access|a way)|"
+    r"isn'?t (?:available|exposed)|not (?:available|exposed|tracked)|no data)"
+)
+
 AXES: dict[str, tuple[str, ...]] = {
     "intent": (
         "what_next",

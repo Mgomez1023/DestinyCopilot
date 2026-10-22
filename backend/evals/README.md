@@ -53,13 +53,32 @@ should be checked against `results.json` before acting on them.
 
 ## Held-out scenarios
 
-`heldout.py` holds 15 unseen scenarios (6 multi-turn, casual wording, unavailable-data cases) that
-were never used to repair the product and are not in `BANK`. A failure is a behavior class to
-triage, not a prompt to special-case. Run them once:
+`heldout.py` holds 15 unseen scenarios (6 multi-turn, casual wording, unavailable-data and
+live-state cases) that were never used to repair the product and are not in `BANK`. A failure is a
+behavior class to triage, not a prompt to special-case. Run them once:
 
 ```
 python -m evals.runner --subset heldout --no-judge
 ```
+
+Run `started_at=2026-10-22T04:52:27+00:00` exposed four of the original scenarios, so they count as
+seen. `heldout_retired.py` keeps them, under their original ids, as regression scenarios
+(`--subset heldout_retired`); they are not held-out and not counted toward the 15. Each was replaced
+by a new scenario for the same behavior class with different wording, items and activities:
+
+| Retired (regression) | Replacement (held-out) | Class |
+| --- | --- | --- |
+| `frenzy_somewhere` | `envious_assassin_elsewhere` | perk search across characters |
+| `coil_still_worth_farming` | `xur_stock_now` | live-state: source or stated limit |
+| `exotic_armor_stacking` | `two_exotic_weapons` (3 turns) | equip rules, wrong "yes" rejected |
+| `pvp_then_dungeon_build` | `onslaught_build_then_waves` (2 turns) | no curated guide: no borrowed guide |
+
+Check design notes: exotic-rule turns use `exotic_limit(...)` (a stated "only one Exotic <kind>" or
+"can't wear both") plus `EXOTIC_WRONG_YES` (a yes to wearing both, "one Exotic per slot"), so a bare
+"one Exotic" no longer passes. `linked_source_or_limitation` also accepts a stated limit built on
+the shared `LACK` patterns ("can't reliably answer", "unable to check live stock"), but a bare
+"can't" with no limit-related word nearby does not count. Expected facts are asserted against
+`profiles.py` in `tests/test_eval_heldout.py`.
 
 Known issues recorded for later triage (`heldout.KNOWN_ISSUES`): Prismatic first-turn false
 refusal; unverified equipment improvements despite empty alternative-search results; planning

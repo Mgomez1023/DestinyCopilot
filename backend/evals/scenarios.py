@@ -9,6 +9,7 @@ from typing import Any
 
 from evals.golden import BUILD_TOOLS, GOLDEN, PLANNING_TOOLS
 from evals.heldout import HELDOUT
+from evals.heldout_retired import HELDOUT_RETIRED
 from evals.mechanics import MECHANICS_SCENARIOS
 from evals.model import Expectations, Scenario
 
@@ -1431,6 +1432,8 @@ SUBSETS: dict[str, tuple[Scenario, ...]] = {
     "playtest": PLAYTEST,
     # Unseen prompts kept out of BANK; never fix against them (see evals/heldout.py).
     "heldout": HELDOUT,
+    # Seen held-out scenarios (run 2026-10-22T04:52:27+00:00), kept as regressions only.
+    "heldout_retired": HELDOUT_RETIRED,
     "full": BANK,
 }
 

@@ -10,12 +10,13 @@ from dataclasses import replace
 import pytest
 
 from evals.heldout import HELDOUT
+from evals.heldout_retired import HELDOUT_RETIRED
 from evals.model import Expectations, Scenario, TurnExpectation
 from evals.profiles import PROFILES, profile_facts
 from evals.properties import evaluate_properties
 from evals.runtime import Observation, TurnRecord
 
-BY_ID = {value.id.removeprefix("heldout."): value for value in HELDOUT}
+BY_ID = {value.id.removeprefix("heldout."): value for value in (*HELDOUT, *HELDOUT_RETIRED)}
 
 
 def run(  # noqa: ANN201
@@ -476,7 +477,10 @@ def test_only_held_out_scenarios_define_turn_expectations() -> None:
     from evals.scenarios import BANK, SUBSETS
 
     others = [
-        value for name, subset in SUBSETS.items() if name != "heldout" for value in (*subset, *BANK)
+        value
+        for name, subset in SUBSETS.items()
+        if not name.startswith("heldout")
+        for value in (*subset, *BANK)
     ]
     assert others
     assert all(not value.expect.by_turn for value in others)
@@ -485,3 +489,157 @@ def test_only_held_out_scenarios_define_turn_expectations() -> None:
 def test_scenarios_remain_frozen_values() -> None:
     scenario = BY_ID["sniper_then_fusion"]
     assert replace(scenario, id="x").expect.by_turn == scenario.expect.by_turn
+
+
+# --- Exotic-rule checks reject a wrong "yes" and the invented per-slot rule -----------------
+
+WRONG_EXOTIC_ANSWERS = [
+    "Yes, you can equip both at the same time.",
+    "You can wear both of them together.",
+    "Yes you can, they stack fine.",
+    "It's one Exotic per slot, so that's fine.",
+    "The limit is one Exotic armor piece per slot, so you can keep both on.",
+    "Each slot can have its own Exotic.",
+]
+
+RIGHT_EXOTIC_ANSWERS = [
+    "No, you can only wear one Exotic armor piece at a time.",
+    "Only one Exotic armor piece can be equipped at once.",
+    "You can't wear both together; that's one Exotic armor piece at a time.",
+    "It's not one Exotic per slot: you can't run two Exotic armor pieces at once.",
+    "You can wear one Exotic armor piece, not both.",
+]
+
+
+@pytest.mark.parametrize("answer", WRONG_EXOTIC_ANSWERS)
+def test_a_wrong_yes_to_two_exotic_armor_pieces_fails(answer: str) -> None:
+    result = per_turn("exotic_armor_stacking", "Yes, it's a Titan Exotic.", answer)
+    assert not result.passed
+
+
+@pytest.mark.parametrize("answer", RIGHT_EXOTIC_ANSWERS)
+def test_the_correct_exotic_armor_rule_passes_even_when_it_mentions_both_or_slots(
+    answer: str,
+) -> None:
+    assert per_turn("exotic_armor_stacking", "Yes, it's a Titan Exotic.", answer).passed
+
+
+def test_a_bare_one_exotic_no_longer_satisfies_the_rule() -> None:
+    result = per_turn("exotic_armor_stacking", "Yes, it's a Titan Exotic.", "One Exotic, sure.")
+    assert not result.passed
+
+
+# --- two_exotic_weapons: per-turn rejection of wrong yes answers ----------------------------
+
+TWO_WEAPONS = "two_exotic_weapons"
+RULE = "No, you can only have one Exotic weapon equipped at a time."
+ARMOR_OK = "Yes, one Exotic weapon and one Exotic armor piece can be worn together."
+
+
+def test_two_exotic_weapons_passes_with_no_no_yes() -> None:
+    assert per_turn(TWO_WEAPONS, RULE, RULE + " Heavy counts too.", ARMOR_OK).passed
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "Yes, you can run Ace of Spades with Sunshot.",
+        "You can equip both, one is Kinetic and one is Energy.",
+        "It's one Exotic per weapon slot, so Ace and Sunshot are fine.",
+    ],
+)
+def test_a_yes_to_two_exotic_weapons_fails_on_turn_one(answer: str) -> None:
+    assert not per_turn(TWO_WEAPONS, answer, RULE, ARMOR_OK).passed
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "The heavy slot doesn't count, so yes, you can use Gjallarhorn too.",
+        "Yes, you can equip both, since Gjallarhorn is a Power weapon.",
+    ],
+)
+def test_the_heavy_slot_is_not_an_exemption(answer: str) -> None:
+    assert not per_turn(TWO_WEAPONS, RULE, answer, ARMOR_OK).passed
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "No, you can't wear those together.",
+        "You can only have one Exotic in total.",
+    ],
+)
+def test_an_exotic_weapon_and_an_exotic_armor_piece_may_be_combined(answer: str) -> None:
+    assert not per_turn(TWO_WEAPONS, RULE, RULE, answer).passed
+
+
+def test_denying_ownership_of_a_vaulted_exotic_is_flagged() -> None:
+    assert not per_turn(TWO_WEAPONS, "You don't have Ace of Spades, so no.", RULE, ARMOR_OK).passed
+
+
+# --- linked_source_or_limitation accepts limitation phrasings ------------------------------
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "I can't reliably answer what Xur is selling right now.",
+        "I cannot confirm whether he is here this week.",
+        "I'm unable to check live vendor stock from here.",
+        "I don't have access to current vendor inventory.",
+        "There's no way to see his stock right now with the data I have.",
+    ],
+)
+def test_limitation_phrasings_satisfy_the_live_state_check(answer: str) -> None:
+    assert per_turn("xur_stock_now", answer).passed
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "Yes, Xur is here and sells Exotics.",
+        "He sells some great gear and I can't wait for you to try it.",
+        "I can't believe how good his armor rolls are.",
+    ],
+)
+def test_an_unrelated_cant_does_not_count_as_a_stated_limit(answer: str) -> None:
+    result = per_turn("xur_stock_now", answer)
+    assert not result.passed
+    assert result.flag == "stale_live_claim"
+
+
+def test_a_returned_source_satisfies_the_live_state_check() -> None:
+    answer = "Per this week's report he is at the Tower, selling a rotating Exotic set."
+    assert run(BY_ID["xur_stock_now"], answer, sources=WEB_SOURCE)["turn_expectations_met"].passed
+
+
+# --- envious_assassin_elsewhere / onslaught_build_then_waves ---------------------------------
+
+
+def test_the_other_characters_weapon_may_be_named() -> None:
+    answer = "Not on your Titan, but your Hunter's Edge Transit has Envious Assassin."
+    assert per_turn("envious_assassin_elsewhere", answer).passed
+
+
+def test_claiming_the_hunters_gun_is_on_the_titan_fails() -> None:
+    answer = "Yes, Edge Transit is on your Titan with Envious Assassin."
+    assert not per_turn("envious_assassin_elsewhere", answer).passed
+
+
+def test_onslaught_answers_may_not_borrow_another_activitys_guide() -> None:
+    mech = "I can't confirm how the last waves work without a source."
+    clean = "Run Sunbracers with Sunshot for add clear."
+    assert per_turn("onslaught_build_then_waves", clean, mech).passed
+    for borrowed in (
+        "Handle it like Vorgeth: kill the adds, then damage.",
+        "Same as the Shattered Throne, use Wish-Ender on the boss.",
+    ):
+        assert not per_turn("onslaught_build_then_waves", borrowed, mech).passed
+        assert not per_turn("onslaught_build_then_waves", clean, borrowed + " " + mech).passed
+
+
+def test_onslaught_mechanics_need_a_source_or_a_limit() -> None:
+    assert not per_turn(
+        "onslaught_build_then_waves", "Run Sunbracers.", "The last wave has a boss."
+    ).passed
