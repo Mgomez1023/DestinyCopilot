@@ -15,6 +15,7 @@ From `backend/`:
 python -m evals.runner --subset golden            # 17 never-regress prompts
 python -m evals.runner --subset representative    # 25-scenario routine subset
 python -m evals.runner --subset full              # whole bank (127)
+python -m evals.runner --subset playtest          # 10 production playtest failures (Operation Guardian)
 python -m evals.runner --ids golden.weakest_build --repeat 3   # variance check
 python -m evals.runner --subset golden --no-judge --live-provider --concurrency 4
 python -m evals.runner --subset representative --list
@@ -39,7 +40,28 @@ Each run writes `results.json` and `summary.md` to `.cache/eval/runs/<timestamp>
 
 ## Rules
 
+A request for a *current* source (`Expectations.current_evidence`) is not satisfied by static
+Manifest or guide hints alone: the answer needs live-provider or web-research evidence, or an
+explicit statement that the current state is unverified (`current_source_not_overclaimed`).
+`Expectations.forbidden_tools` marks tools that are unrelated to a request, so a follow-up that
+should reuse earlier evidence is not credited for calling them (`no_irrelevant_tools`).
+
 Golden prompts are regression tests, not special cases: never branch production code on them.
 A failing property points at a behavior class; fix the class. Judge scores are advisory;
 deterministic flags are authoritative for what they cover, and judge "ungrounded" notes
 should be checked against `results.json` before acting on them.
+
+## Held-out scenarios
+
+`heldout.py` holds 15 unseen scenarios (6 multi-turn, casual wording, unavailable-data cases) that
+were never used to repair the product and are not in `BANK`. A failure is a behavior class to
+triage, not a prompt to special-case. Run them once:
+
+```
+python -m evals.runner --subset heldout --no-judge
+```
+
+Known issues recorded for later triage (`heldout.KNOWN_ISSUES`): Prismatic first-turn false
+refusal; unverified equipment improvements despite empty alternative-search results; planning
+fallback and unsupported Haunted Altars reward/solo claims; the Sunshot Exotic replacement check
+is likely a false positive; current-source answers should expose the sources they cite.

@@ -420,8 +420,8 @@ def test_a_build_turn_after_a_switch_analyzes_and_validates_against_the_new_char
     )
     answer_text = (
         "You have Synthoceps equipped, so your weakest stat is Health at 80 against Grenade.\n"
-        "Move one Recuperation mod toward Recovery to even out the stat spread.\n"
-        "Keeping Health and Recovery closer together makes the build more forgiving in fights."
+        "Move one Recuperation mod toward Health to even out the stat spread.\n"
+        "Keeping Health and Grenade closer together makes the build more forgiving in fights."
     )
     outputs = [
         [

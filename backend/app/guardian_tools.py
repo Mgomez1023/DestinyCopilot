@@ -103,6 +103,9 @@ CURRENT_DEFAULT_TOOLS = frozenset(
 )
 
 
+# Words a model may put in `bucket` to mean where an item is stored, not which slot it fits.
+LOCATION_BUCKETS = {"vault": "vault", "equipped": "equipped", "character": "character"}
+
 # Per-character views whose unspecified selector means the conversation's explicit character.
 CONVERSATION_SCOPED_TOOLS = frozenset(
     {"get_active_quests", "get_available_activities", "get_recent_activities"}
@@ -165,7 +168,8 @@ GUARDIAN_TOOL_DEFINITIONS: list[dict[str, Any]] = [
         (
             "Resolve conservative major campaign/content progress for one character using "
             "maintained Bungie-backed evidence rules. Prefer this over reconstructing campaign "
-            "completion from generic quest data."
+            "completion from generic quest data. It needs one character selector (no default): "
+            "use the class the user named, otherwise the current character's class."
         ),
         {
             **_character_selector(optional=False),
@@ -220,13 +224,17 @@ GUARDIAN_TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "search_inventory",
         "Search normalized owned and equipped items using name and structured filters.",
         {
-            "query": _nullable_string("Case-insensitive item-name substring, or null."),
+            "query": _nullable_string(
+                "Case-insensitive substring of an item name or its subtype (such as Hand Cannon), "
+                "or null."
+            ),
             **_character_selector(optional=True),
             "item_type": _nullable_string("Item type filter such as Weapon or Armor, or null."),
             "subtype": _nullable_string("Subtype filter such as Auto Rifle, or null."),
             "bucket": _nullable_string(
                 "Equipment-slot filter such as Helmet or Energy Weapons, or null. Vaulted items "
-                "are matched by their definition slot, not by the vault."
+                "are matched by their definition slot. The words Vault, Equipped, or Character "
+                "filter by where the item is stored instead."
             ),
             "equipped_only": {
                 "type": "boolean",
@@ -242,8 +250,9 @@ GUARDIAN_TOOL_DEFINITIONS: list[dict[str, Any]] = [
     ),
     _strict_tool(
         "get_build_details",
-        "Get a build-focused subclass, exotic, weapon perk, armor stat, and mod view. "
-        "Defaults to the current character.",
+        "Get a build-focused subclass, exotic, weapon perk, armor stat, and mod view, including "
+        "equipped aspects and fragments and Bungie-reported plug-set listings for subclass and "
+        "armor sockets when returned. Defaults to the current character.",
         _character_selector(optional=False, current_default=True),
     ),
 ]
@@ -849,6 +858,11 @@ class GuardianToolService:
         def matches(value: str | None, expected: str | None) -> bool:
             return expected is None or expected.casefold() in (value or "").casefold()
 
+        # A bucket that names where an item is stored ("Vault") is a location filter; any other
+        # value is an equipment slot such as Helmet or Energy Weapons.
+        location = LOCATION_BUCKETS.get((request.bucket or "").strip().casefold())
+        slot = None if location else request.bucket
+
         def is_shared(item: ItemSummary) -> bool:
             # Vault and profile items belong to no single character, so a character-scoped
             # search includes the shared items that character's class can actually use.
@@ -857,10 +871,11 @@ class GuardianToolService:
         candidates = [
             item
             for item in items
-            if matches(item.name, request.query)
+            if (matches(item.name, request.query) or matches(item.item_subtype, request.query))
             and matches(item.item_type, request.item_type)
             and matches(item.item_subtype, request.subtype)
-            and matches(item.gear_slot(), request.bucket)
+            and matches(item.gear_slot(), slot)
+            and (location is None or item.location == location)
             and (not request.equipped_only or item.is_equipped)
             and (selected is None or item.character_id == selected.character_id or is_shared(item))
         ]

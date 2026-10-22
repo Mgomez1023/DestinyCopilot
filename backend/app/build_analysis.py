@@ -24,6 +24,7 @@ from app.models import (
 from app.session_preferences import SessionPreferenceContext
 
 MAX_LOCKED_ITEMS = 8
+MAX_GOAL_ITEMS = 4
 MAX_REQUIRED_PERKS = 6
 MAX_ALTERNATIVES = 8
 MAX_BUILD_ITEMS = 12
@@ -56,8 +57,9 @@ BUILD_TOOL_DEFINITIONS = [
     _strict_tool(
         "analyze_current_build",
         (
-            "Inspect one character's normalized equipped build, explicit constraints, factual "
-            "coverage observations, data gaps, and external knowledge needs. Produces no score."
+            "Inspect one character's normalized equipped build (including subclass aspects, "
+            "fragments, and reported plug-set listings), explicit constraints, factual coverage "
+            "observations, data gaps, and external knowledge needs. Produces no score."
         ),
         {
             "character_id": _nullable_string(
@@ -212,6 +214,8 @@ class BuildRequestContext(BaseModel):
     goal: str | None = None
     activity: str | None = None
     locked_items: list[str] = Field(default_factory=list, max_length=MAX_LOCKED_ITEMS)
+    # Items the player said they want to get or use; softer than a lock, but not replaceable.
+    goal_items: list[str] = Field(default_factory=list, max_length=MAX_GOAL_ITEMS)
     preserve_equipped_exotics: bool = False
     activity_mode: str = "unspecified"
     fireteam: str = "unspecified"
@@ -333,6 +337,36 @@ _RELEASE_EXOTIC = re.compile(
     r"\bmy exotic (?:can|may) change\b|\bdon'?t (?:need to )?keep my exotic\b",
     re.IGNORECASE,
 )
+# A proper name as the player typed it: capitalized words, optionally joined by "of"/"the".
+_PROPER_NAME = r"(?-i:[A-Z][\w'’-]*(?:\s+(?:(?:of|of the|the)\s+)?[A-Z][\w'’-]*){0,4})"
+# "I want to get X", "I'm farming for X", "I really like using X": an item the player is
+# pursuing or enjoys. Names are matched by capitalization only, never against a list.
+_ITEM_PREFIX = r"(?:a\s+|an\s+|the\s+|my\s+)?(?:(?:copy|roll|good roll|god roll) of\s+)?"
+_GOAL_ITEM = re.compile(
+    r"\bi(?:'d| would)?\s+(?:really\s+)?(?:want|wanna|would like|'d like|hope|plan|need|"
+    r"am going|'m going)\s+(?:to\s+)?(?:get|obtain|earn|unlock|farm|chase|grind(?: out)?|"
+    r"acquire|craft|try|use|run|keep using|build around)\s+"
+    + _ITEM_PREFIX
+    + r"(?P<want>"
+    + _PROPER_NAME
+    + r")|\bi(?:'m|’m| am|m)\s+(?:farming|chasing|grinding|hunting)(?:\s+for)?\s+"
+    + _ITEM_PREFIX
+    + r"(?P<chase>"
+    + _PROPER_NAME
+    + r")|"
+    r"\bi\s+(?:really\s+)?(?:like|love|enjoy)\s+(?:using\s+|running\s+|my\s+)?"
+    r"(?P<like>" + _PROPER_NAME + r")",
+    re.IGNORECASE,
+)
+_GENERIC_GOAL_WORDS = frozenset(
+    {"a", "an", "it", "that", "this", "them", "some", "more", "my", "your", "something",
+     "anything", "everything", "good", "better", "best", "i"}
+)  # fmt: skip
+_SINGLE_CHANGE = re.compile(
+    r"\b(?:single|one|1|#1|number one|biggest|top|main|most important|best)\s+"
+    r"(?:\w+\s+){0,2}?(?:improvement|change|upgrade|fix|swap|tweak|thing)\b(?!s)",
+    re.IGNORECASE,
+)
 _RELEASE_NAMED = re.compile(
     r"\b(?:you can|feel free to) (?:change|replace|remove)\s+"
     r"(?P<name>[A-Z][A-Za-z0-9' -]{1,60}?)(?=[,.!?]|\s+now\b|$)|"
@@ -372,6 +406,81 @@ def build_followup_kind(
     return None
 
 
+def replaces_item(text: str, item: str) -> bool:
+    """Whether the text replaces or drops the named item ("swap out X", "instead of X").
+
+    "Swap X in/into/back" puts the item on, so it does not count.
+    """
+
+    escaped = re.escape(item)
+    # Up to four plain words may sit between the verb and the name: "replace your equipped
+    # Energy SMG (Calus Mini-Tool)". They may not contain a preposition or conjunction.
+    gap = r"(?:(?!(?:with|for|in|into|and|or|to|on)\b)[\w'’-]+\s+){0,4}\(?"
+    return bool(
+        re.search(
+            rf"\b(?:replace|remove|drop|ditch|bench|retire|get rid of|move (?:off|away from)|"
+            rf"swap|switch|trade)\s+(?:out\s+)?{gap}{escaped}\b"
+            rf"(?!\s+(?:in|into|back)\b)|"
+            rf"\binstead of (?:your\s+|the\s+|my\s+)?{escaped}\b|"
+            rf"\b{escaped}\b\s+(?:should|could|can)\s+(?:be\s+)?"
+            rf"(?:replaced|swapped|dropped|benched|removed)\b",
+            text,
+            re.IGNORECASE,
+        )
+    )
+
+
+def _releases_goal(text: str, item: str) -> bool:
+    """The player moved off an item: "should I replace X?", "I'm tired of X", "X over Y"."""
+
+    escaped = re.escape(item)
+    return replaces_item(text, item) or bool(
+        re.search(
+            rf"\b(?:don'?t|do not|no longer)\s+(?:really\s+)?(?:want|like|need|use|enjoy)\b"
+            rf"[^.?!]{{0,20}}\b{escaped}\b|"
+            rf"\b(?:done with|tired of|sick of|bored (?:of|with)|over)\s+(?:my\s+|the\s+)?"
+            rf"{escaped}\b",
+            text,
+            re.IGNORECASE,
+        )
+    )
+
+
+def _goal_item_names(text: str) -> list[str]:
+    names: list[str] = []
+    for match in _GOAL_ITEM.finditer(text):
+        name = (match.group("want") or match.group("chase") or match.group("like") or "").strip()
+        if name and not (" " not in name and name.casefold() in _GENERIC_GOAL_WORDS):
+            names.append(name)
+    return names
+
+
+def derive_goal_items(message: str, history: Sequence[ChatTurn] = ()) -> list[str]:
+    """Items the player said they want to get or use, from their own last six turns.
+
+    A goal is a soft preference, never a lock: it is dropped for good when the player moves
+    off the item ("should I replace X?", "I'm tired of X", "you can change X"), and an item
+    the current message asks about directly (without restating the goal) is left out for this
+    turn so the question gets a straight answer. Neutral mentions ("where does X drop?") keep it.
+    """
+
+    users = [turn.content for turn in history if turn.role == "user"][-6:]
+    goals: dict[str, str] = {}
+    for value in [*users, message]:
+        for name in _goal_item_names(value):
+            goals[_normalized(name)] = name
+        for key, name in list(goals.items()):
+            if _releases_goal(value, name):
+                del goals[key]
+        for match in _RELEASE_NAMED.finditer(value):
+            goals.pop(_normalized(match.group("name") or match.group("rejected")), None)
+    restated = {_normalized(value) for value in _goal_item_names(message)}
+    asked = _normalized(message)
+    return [
+        name for key, name in goals.items() if key in restated or f" {key} " not in f" {asked} "
+    ][:MAX_GOAL_ITEMS]
+
+
 def _requested_activity(message: str) -> str | None:
     match = _ACTIVITY.search(message) or _ENTERING_ACTIVITY.search(message)
     return match.group("activity").strip() if match else None
@@ -407,6 +516,14 @@ def derive_build_request_context(
         if _RELEASE_EXOTIC.search(value):
             preserve_exotics = False
     explicit_build = is_explicit_build_request(message)
+    asks_exotic_swap = bool(
+        re.search(
+            r"\b(?:swap|change|replace|switch|try|use|find|get)\b[^.?!]{0,25}\b(?:an? |my |the )?"
+            r"(?:different |new |other )?exotic\b",
+            message,
+            re.IGNORECASE,
+        )
+    )
     followup_kind = build_followup_kind(message, history)
     is_followup = followup_kind is not None
     is_build = bool(explicit_build or is_followup or active_locks or preserve_exotics)
@@ -422,6 +539,11 @@ def derive_build_request_context(
             or followup_kind == "current_build"
         )
     )
+    # Reviewing the current build keeps its Exotic unless the player asks to change it.
+    if requires_current_build_analysis and not requires_owned_inventory and not asks_exotic_swap:
+        preserve_exotics = preserve_exotics or not any(
+            _RELEASE_EXOTIC.search(value) for value in conversation
+        )
     goal: str | None = None
     goal_markers = (
         ("boss_dps", ("boss dps", "single-target", "single target")),
@@ -454,6 +576,14 @@ def derive_build_request_context(
     }:
         activity = None
     locks = list(active_locks.values())
+    locked_keys = {_normalized(value) for value in locks}
+    goal_items = [
+        value
+        for value in derive_goal_items(message, history)
+        if _normalized(value) not in locked_keys
+    ]
+    single_change = bool(is_build and _SINGLE_CHANGE.search(message))
+    detailed_rebuild = bool(_DETAILED_REBUILD.search(message))
     activity_mode = preferences.activity_mode
     if activity_mode == "unspecified" and any(
         marker in normalized for marker in ("pvp", "crucible", "iron banner")
@@ -467,19 +597,20 @@ def derive_build_request_context(
         followup_kind=followup_kind,
         focused_recommendation=bool(
             is_build
-            and _FOCUSED_GEAR_REQUEST.search(message)
-            and not _DETAILED_REBUILD.search(message)
+            and (_FOCUSED_GEAR_REQUEST.search(message) or single_change)
+            and not detailed_rebuild
         ),
         requires_current_build_analysis=requires_current_build_analysis,
         requires_owned_inventory=requires_owned_inventory,
         goal=goal,
         activity=activity,
         locked_items=list(dict.fromkeys(locks))[:MAX_LOCKED_ITEMS],
+        goal_items=goal_items,
         preserve_equipped_exotics=preserve_exotics,
         activity_mode=activity_mode,
         fireteam=preferences.fireteam,
         intensity=preferences.intensity,
-        normal_change_limit=None if _DETAILED_REBUILD.search(message) else 3,
+        normal_change_limit=None if detailed_rebuild else 1 if single_change else 3,
     )
 
 

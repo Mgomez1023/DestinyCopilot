@@ -23,6 +23,10 @@ Flag = Literal[
     "tool_loop_failed",
     "excessive_verbosity",
     "cross_character_leak",
+    "unsupported_capability",
+    "unfulfilled_request",
+    "contradictory_claim",
+    "ungrounded_advice",
 ]
 FLAGS: tuple[str, ...] = Flag.__args__  # type: ignore[attr-defined]
 
@@ -87,7 +91,12 @@ def deterministic_scores(
     personalized = any(term.casefold() in answer.casefold() for term in personal_terms)
     return {
         "factual_correctness": score(
-            {"hallucinated_fact", "wrong_destination", "invented_reward_or_mechanic"},
+            {
+                "hallucinated_fact",
+                "wrong_destination",
+                "invented_reward_or_mechanic",
+                "contradictory_claim",
+            },
             {"mentions_expected_fact", "no_forbidden_claims"},
         ),
         "account_grounding": score(
@@ -102,17 +111,21 @@ def deterministic_scores(
         # actionability cannot be assessed deterministically and stays at 1.
         "personalization": (2 if personalized else 0) if account_scenario else 2,
         "actionability": 0
-        if flags & {"false_refusal", "tool_loop_failed"}
-        else (1 if account_scenario else 2),
+        if flags
+        & {"false_refusal", "tool_loop_failed", "unsupported_capability", "unfulfilled_request"}
+        else 1
+        if account_scenario or "no_read_only_permission_request" in failed
+        else 2,
         "concision": score(
             {"excessive_verbosity"},
             {"concise", "answer_first", "no_filler", "does_not_repeat_prompt"},
         ),
         "confidence_calibration": score(
-            {"stale_live_claim", "hallucinated_fact"}, {"unknown_fields_not_filled_from_memory"}
+            {"stale_live_claim", "hallucinated_fact", "contradictory_claim"},
+            {"unknown_fields_not_filled_from_memory"},
         ),
         "follow_up_constraint_handling": score(
-            {"wrong_character", "ownership_hallucination"},
+            {"wrong_character", "ownership_hallucination", "unfulfilled_request"},
             {"limited_follow_up_questions", "one_primary_and_brief_backup"},
         ),
     }

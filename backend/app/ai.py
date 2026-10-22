@@ -31,6 +31,7 @@ from app.chat_stream import (
     is_web_search_stream_event,
     status_for_tool,
 )
+from app.citations import citation_spans, clean_citation_artifacts
 from app.config import Settings
 from app.content_progression import mentioned_content_names, supported_content_aliases
 from app.core_knowledge import DestinyKnowledgeEngine, normalize_text
@@ -62,7 +63,12 @@ from app.response_quality import (
     ResponseModeContext,
     ResponseQualityValidator,
     build_fallback_kind,
+    declines_change,
     is_account_fact_only,
+    is_guidance_request,
+    is_research_request,
+    item_definition_lookup,
+    remove_unsupported_capability_offers,
     response_mode_context,
     response_mode_instruction,
 )
@@ -97,6 +103,18 @@ the request itself is authorization. Do not ask whether you should check, scan, 
 proceed, and do not ask for confirmation merely because another read-only call is needed. Ask one
 targeted clarification only when materially different interpretations remain unresolved by the
 current and recent conversation. All tools remain read-only; never claim or attempt a Bungie write.
+Never offer the user a choice of sources or offer to do a lookup they already asked for; do it,
+combining sources when the first cannot answer, and report what you found. Never say you checked,
+searched, or verified something unless a lookup for it ran in this turn.
+
+What Copilot can and cannot do: this chat is text only, so the player cannot upload or send
+screenshots, images, or files; never ask for or offer them. Copilot only reads data: it cannot
+move, transfer, vault, equip, lock, infuse, dismantle, or otherwise change items or characters, so
+never offer to and never say it did. When asked for such a change, say briefly that you can't make
+it and give the in-game steps. When the available data can't establish something, say so in one
+short sentence and still give the most useful grounded next step; ask the player to type something
+only when one specific missing name is required. The chat shows plain text, so do not use Markdown
+headings, bold, or tables; use short paragraphs and simple "-" bullets.
 
 Guardian ownership, progress, character, inventory, and account claims MUST come from Guardian tool
 results. Web search results are public information and must never be treated as evidence about the
@@ -120,7 +138,9 @@ live_sensitive topics still require Live tools or sourced current information.
 Quest steps, exotic acquisition methods, drop sources, encounter mechanics, prerequisites, and
 practical walkthroughs must come from retrieved guide or web research results, never model memory.
 Never infer missing ownership, player progression, or missing game facts. Treat every limitation,
-freshness marker, conflict, and warning returned by a tool as meaningful. If retrieved knowledge is
+freshness marker, conflict, and warning returned by a tool as meaningful for what you claim, but
+mention one to the player only when it changes what they should do or how far to trust a specific
+claim, in one short clause; never stack caveats or disclaimers. If retrieved knowledge is
 incomplete or conflicting, say exactly what is known and uncertain. General gameplay suggestions
 may be inferred only when clearly labeled as suggestions rather than retrieved facts. Keep
 provenance internal unless a source or uncertainty note helps the user verify the answer. Prefer one
@@ -167,6 +187,11 @@ Session planning and recommendation behavior:
 - Do not invent exact activity durations or minute-by-minute plans. Use a factual time estimate
   only when maintained application knowledge, Guide, Live, Manifest, or sourced web research
   establishes it. Otherwise say the duration is unknown or use soft session-fit language.
+- Keep four facts apart when recommending an activity, especially for a solo or short session:
+  launchable (get_available_activities), fireteam size (grounded facts), duration, and loot. Only
+  the first two can come from account data or grounded facts. Never call an activity the best or
+  highest-value loot, or say it suits solo play, without retrieved evidence; say that part is
+  unknown in one clause and still give one recommendation that fits the stated constraints.
 
 Campaign-completion safety:
 - Owning or equipping Prismatic, a subclass, item, destination, reward, or related unlock does NOT
@@ -196,7 +221,11 @@ User-facing behavior:
   "completing The Final Shape" as the main campaign unless context creates genuine ambiguity.
 - If missing preference materially changes the choice, give the best default and a short backup,
   then ask at most ONE targeted follow-up such as "Story or loot?" or "How much time do you have?"
-  Do not ask generic clarification or closing questions.
+  Do not ask generic clarification or closing questions. Otherwise end when the answer is
+  complete: no closing question and no "want me to..." or "let me know if..." offer.
+- Lead with the answer. A simple factual question gets one to three sentences; a recommendation
+  gets a clear pick and a short why. Do not pad an answer with general theory the player did not
+  ask for.
 - Normal recommendations and comparisons should preserve enough actionable detail to use
   immediately: one primary route, a few concrete actions, a brief reason, an optional compatible
   backup, and optionally one targeted follow-up. Do not force every useful recommendation into two
@@ -222,6 +251,37 @@ Build and loadout behavior:
 - Explicit user constraints outrank generic optimization. Pass named preserved items and the
   preserve-Exotic constraint into build tools. "Build around Sunshot" locks Sunshot. "Don't change
   my Exotic" preserves the relevant equipped Exotic. Never recommend replacing a locked item.
+- Rampage, Kill Clip, and Multikill Clip build only from qualifying kills with the weapon that
+  has the perk; another weapon never raises their uptime. Two weapons of the same type do not
+  automatically cover more range, and a swap needs a named owned replacement and evidence it is
+  better (compare the equipped weapon with what find_build_alternatives returns). If no
+  improvement can be demonstrated, say that instead of inventing one.
+- Records and Triumphs belong to the activity they name: progress on an "Altars of Sorrow" record
+  says nothing about "Haunted Altars of Sorrow", which is a different activity. Whether an
+  activity can be played strictly alone or only by queuing alone into matchmaking is unknown
+  unless a source says so; the account data only shows it can be launched.
+- Armor uses the Armor 3.0 stats: Weapons, Health, Class, Grenade, Melee, and Super. Recovery,
+  Resilience, Discipline, Intellect, Strength, and Mobility no longer exist; never recommend or
+  mention them as armor stats. Use only stats the tools returned: a stat that was not returned is
+  unknown, never low, and a stat's effect needs a retrieved source. To suggest replacing a worn
+  piece, first search the owned gear (find_build_alternatives) and name the specific piece it
+  returns; if none can be established, say so and give the best smaller change you can verify. The
+  tools can search the player's inventory, so never say you cannot, or offer to while denying it.
+- Earlier assistant answers in this conversation already contain what the guides said. Build on
+  them instead of repeating their steps, and fetch a guide again only for detail they lack. Do not
+  call an unrelated tool (Titles, progression) to look busy: if no tool can answer, say what the
+  account data cannot show and give the most useful supported next step.
+- Respect goals from the conversation: an item the player said they want to get or keep using is
+  part of their plan, so build around it instead of recommending its replacement unless they ask.
+  Without a stated goal, do not optimize for boss DPS or another niche goal; judge the build for
+  general play. When asked for one improvement, give exactly one, grounded in returned data (an
+  owned item, an open socket, a mod, fragment, or stat observation) rather than a generic weapon
+  archetype; if no confident upgrade is supported, give the smaller verified tweak. Before
+  calling a change the best, weigh the whole build: what the equipped Exotic and each mod do
+  together, and what the change gives up. Do not remove a mod that supports an equipped Exotic or
+  weapon unless the replacement is shown to be better. Recommend only mods and items the tools
+  returned, and describe each only by its returned description or rarity and weapon type; never
+  from memory of what a mod or item is.
 - Ownership of every immediate alternative MUST be established by Guardian inventory results.
   Manifest, Guide, Live, Web, and model memory can describe an item but cannot prove ownership.
   Clearly separate an owned option available now from an aspirational item to pursue later, and
@@ -266,6 +326,25 @@ Tool routing guidance:
   focused build surface.
 - Item ownership questions need Guardian inventory evidence. Never establish ownership from
   Manifest, Guide, Live, Web, or model memory.
+- Subclass aspect or fragment questions about the player's account need analyze_current_build or
+  get_build_details for that character. They show only the equipped subclass and, when Bungie
+  returned it, plug-set listings for its sockets. Equipped is not unlocked, a listed or
+  insertion-blocked plug proves neither state, and plugs on another subclass (Solar fragments when
+  asked about Prismatic) say nothing about it. If unlock status stays unknown, say so once and give
+  the specific unlock path (named activities, locations, collectibles) from Guide or web research,
+  not generic categories. Do not offer to check which fragments are unlocked or missing: the tools
+  do not expose that. An active quest is evidence about an unlock only if a retrieved source
+  names that quest as the route; otherwise leave the player's quests out of the answer.
+- When search_destiny_guides finds a matching guide, call get_destiny_guide for it before
+  answering how-to questions: search returns only a summary, and the steps, locations, and
+  requirements are in the full guide. Use its specifics (named activities, which Vestige type
+  leads where) instead of general advice, and on a follow-up add only what is new rather than
+  repeating earlier steps.
+- Drop-source and acquisition verification starts with Manifest (find_item_source,
+  get_item_details) and Guide; add web research for current or changed sources, or when those
+  cannot answer. Whether an item's barrel, magazine, or perks can change comes from its
+  get_item_details socket_configuration: a fixed_by_manifest socket is identical on every copy;
+  only a randomized_roll_pool rolls differently between copies.
 - Questions about recent play need get_recent_activities.
 - Personal Destiny Title/Seal or Triumph-completion questions need get_title_progress. For
   "closest" requests, use its observable ranking and describe the result as closest to completion
@@ -467,13 +546,46 @@ class RecommendationService:
             requires_owned_inventory=build_request_context.requires_owned_inventory,
             preserve_equipped_exotics=build_request_context.preserve_equipped_exotics,
             locked_item_names=build_request_context.locked_items,
+            goal_item_names=build_request_context.goal_items,
             activity_mode=build_request_context.activity_mode,
             fireteam=build_request_context.fireteam,
             normal_change_limit=build_request_context.normal_change_limit,
         )
+        research_requested = is_research_request(request.message)
         read_only_validation_context = ReadOnlyActionValidationContext(
-            intent_resolved=title_request_context.intent_resolved,
-            lookup_required=title_request_context.retrieval_required,
+            research_requested=research_requested,
+            current_source_requested=bool(
+                research_requested
+                and re.search(
+                    r"\b(?:current|latest|up[- ]to[- ]date|right now|this season)\b",
+                    request.message,
+                    re.IGNORECASE,
+                )
+            ),
+            # A follow-up to an earlier how-to question reuses the answer already given; only the
+            # first asks for a lookup this turn.
+            guidance_requested=is_guidance_request(request.message)
+            and not any(
+                is_guidance_request(turn.content) for turn in request.history if turn.role == "user"
+            ),
+            guidance_asked=is_guidance_request(request.message),
+            account_quest_names=sorted(
+                {
+                    name
+                    for character in context.characters
+                    for value in character.quests
+                    for name in (value.name, value.step_name)
+                    if name
+                }
+            ),
+            item_facts={
+                value.name: (value.tier, value.item_subtype)
+                for value in [
+                    *context.inventory.items,
+                    *(item for character in context.characters for item in character.equipped_gear),
+                ]
+                if value.item_type == "Weapon" and len(value.name) > 3
+            },
         )
         planning_intent = classify_planning_intent(
             request.history,
@@ -485,6 +597,7 @@ class RecommendationService:
         )
         planning_continuation = planning_intent.kind == "character_switch"
         session_planning = planning_intent.is_planning
+        read_only_validation_context.recommendation_turn = session_planning
         if session_planning:
             # Constraints come from this planning segment only; the character stays with the
             # conversation scope above.
@@ -617,6 +730,8 @@ class RecommendationService:
                 "violation_codes": [],
                 "succeeded": None,
             },
+            "research_requested": research_requested,
+            "initiative_retry": {"attempted": False, "violation_codes": []},
             "answer": "not_generated",
             "mechanics_claims": None,
             "tool_trace": [],
@@ -671,6 +786,14 @@ class RecommendationService:
             tool_definitions.extend(self.knowledge.definitions())
         if not account_fact_only:
             tool_definitions.append(WEB_SEARCH_TOOL)
+        # A question one item's Manifest definition settles starts from that definition, not
+        # from web search or memory. Build turns have their own required evidence.
+        item_lookup = item_definition_lookup(request.message)
+        if build_request_context.is_build_request or item_lookup not in {
+            value.get("name") for value in tool_definitions
+        }:
+            item_lookup = None
+        trace["item_lookup_forced"] = item_lookup
         scoped_history, stale_turns_removed = self._scoped_history(
             request.history, conversation_scope
         )
@@ -695,11 +818,15 @@ class RecommendationService:
                 build_request_context,
                 title_request_context,
                 current_character,
+                research_requested=research_requested,
             ),
             core_grounding,
         )
 
         forced_evidence_attempted: set[str] = set()
+        # After a draft proposes replacing gear without checking the inventory, the next round
+        # must run that search, rather than hoping the model chooses to.
+        pending_forced_tool: str | None = None
 
         try:
             for round_number in range(1, MAX_TOOL_ROUNDS + 1):
@@ -710,7 +837,14 @@ class RecommendationService:
                     title_request_context,
                     build_validation_context,
                     forced_evidence_attempted,
+                    item_lookup,
                 )
+                if pending_forced_tool is not None:
+                    tool_choice, forced_evidence = (
+                        {"type": "function", "name": pending_forced_tool},
+                        (),
+                    )
+                    pending_forced_tool = None
                 # The last permitted round, or a spent tool budget, must produce the answer:
                 # no tools, answer from the evidence already gathered.
                 round_instructions = turn_instructions
@@ -810,15 +944,23 @@ class RecommendationService:
                         raise RuntimeError(
                             "OpenAI returned a final response without assistant text."
                         )
-                    if stream_status is not None:
-                        if mode_context.mode in {"recommendation", "comparison"}:
-                            await stream_status.emit("comparison")
-                        elif mode_context.mode == "build_advice":
-                            await stream_status.emit("build")
-                        await stream_status.emit("final")
-                        trace["emitted_status_categories"] = list(stream_status.emitted_categories)
                     build_validation_context.current_external_grounding = bool(
                         web_sources or trace["grounding"]["live_provider"]
+                    )
+                    read_only_validation_context.lookups_performed = bool(
+                        trace["tools"] or trace["web_research_occurred"]
+                    )
+                    read_only_validation_context.guardian_lookup_performed = bool(
+                        trace["number_of_guardian_tools_used"] or planning_context is not None
+                    )
+                    read_only_validation_context.current_evidence_performed = bool(
+                        trace["grounding"]["web_research"] or trace["grounding"]["live_provider"]
+                    )
+                    read_only_validation_context.inventory_checked = bool(
+                        {"search_inventory", "find_build_alternatives"} & set(trace["tools"])
+                    )
+                    read_only_validation_context.knowledge_lookup_performed = bool(
+                        set(trace["knowledge_categories_used"]) - {"guardian"}
                     )
                     safe_fallback = False
                     message, violations = self._check_answer(
@@ -832,6 +974,47 @@ class RecommendationService:
                         read_only_validation_context,
                         trace,
                     )
+                    if (
+                        not final_forced
+                        and not trace["initiative_retry"]["attempted"]
+                        and quality_validator.needs_initiative_retry(
+                            violations, read_only_validation_context
+                        )
+                    ):
+                        # The draft asked about, offered, or claimed read-only work instead of
+                        # doing it. Send it back once with tools still available; a tool-less
+                        # correction could only rephrase the missing work.
+                        trace["initiative_retry"] = {
+                            "attempted": True,
+                            "violation_codes": [value.code for value in violations],
+                            "round": round_number,
+                        }
+                        # One tool-enabled chance is enough: if no source can settle it, an
+                        # honest "couldn't verify" afterwards is accepted, not corrected again.
+                        read_only_validation_context.research_requested = False
+                        read_only_validation_context.guidance_requested = False
+                        read_only_validation_context.current_source_requested = False
+                        if {"unsupported_replacement", "false_inventory_denial"} & {
+                            value.code for value in violations
+                        }:
+                            pending_forced_tool = "find_build_alternatives"
+                        input_items.extend(self._normalize_replay_output_items(response_output))
+                        input_items.append(
+                            {
+                                "role": "developer",
+                                "content": quality_validator.initiative_instruction(violations),
+                            }
+                        )
+                        trace["continuation_items_normalized"] = True
+                        continue
+                    if stream_status is not None:
+                        if mode_context.mode in {"recommendation", "comparison"}:
+                            await stream_status.emit("comparison")
+                        elif mode_context.mode == "build_advice":
+                            await stream_status.emit("build")
+                        await stream_status.emit("final")
+                        trace["emitted_status_categories"] = list(stream_status.emitted_categories)
+                    correction_output: list[Any] = []
                     if violations:
                         trace["planning_correction"] = {
                             "attempted": True,
@@ -873,6 +1056,22 @@ class RecommendationService:
                             correction_sources, _ = self._extract_web_sources(correction_output)
                             self._merge_sources(web_sources, correction_sources)
                             trace["web_research"]["source_count"] = len(web_sources)
+                        elif build_validation_context.is_build_request and (
+                            "unsupported_replacement" in {v.code for v in corrected_violations}
+                            and build_fallback_kind(corrected_violations) != "evidence"
+                            and {v.code for v in corrected_violations}
+                            <= {"unsupported_replacement", "too_many_build_changes"}
+                        ):
+                            # The only problem left is a swap with no verified owned
+                            # replacement: say that, instead of a generic refusal.
+                            message = quality_validator.safe_build_no_swap_answer(
+                                build_validation_context
+                            )
+                            safe_fallback = True
+                            trace["planning_correction"]["remaining_violation_codes"] = [
+                                value.code for value in corrected_violations
+                            ]
+                            trace["planning_correction"]["fallback"] = "build_no_swap"
                         elif build_validation_context.is_build_request:
                             fallback_kind = build_fallback_kind(corrected_violations)
                             trace["planning_correction"]["remaining_violation_codes"] = [
@@ -926,6 +1125,30 @@ class RecommendationService:
                             else:
                                 message = quality_validator.planning.safe_answer(planning_context)
                                 safe_fallback = True
+                                trace["planning_correction"]["remaining_violation_codes"] = [
+                                    value.code for value in corrected_violations
+                                ]
+                                trace["planning_correction"]["fallback"] = "planning_safe_answer"
+                        elif corrected_message and {
+                            value.code for value in corrected_violations
+                        } <= {value.code for value in violations}:
+                            # Neither a build nor a planning turn: the correction introduced no
+                            # new problem, so it is at least as good as the draft it replaces.
+                            message = corrected_message
+                            correction_sources, _ = self._extract_web_sources(correction_output)
+                            self._merge_sources(web_sources, correction_sources)
+                            trace["web_research"]["source_count"] = len(web_sources)
+                            trace["planning_correction"]["remaining_violation_codes"] = [
+                                value.code for value in corrected_violations
+                            ]
+                            trace["planning_correction"]["fallback"] = "partial_correction_accepted"
+                    # Presentation only: readable citations, and no offer of an ability the app
+                    # lacks even if a correction left one in place.
+                    message = remove_unsupported_capability_offers(
+                        clean_citation_artifacts(
+                            message, citation_spans([*response_output, *correction_output])
+                        )
+                    )
                     safe_message = self._enforce_power_safety(message)
                     safe_message = self._enforce_campaign_completion_safety(safe_message)
                     safe_message = self._enforce_campaign_comparison_safety(
@@ -933,8 +1156,13 @@ class RecommendationService:
                         request.message,
                         character_scope,
                     )
+                    # Sources the answer cites come first, so a citation shortened to its label
+                    # in the text always keeps its link within the source limit.
                     sources = self._combined_sources(
-                        web_sources,
+                        [
+                            *self._cited_sources([*response_output, *correction_output]),
+                            *web_sources,
+                        ],
                         knowledge_sources,
                         limit=mode_context.source_limit,
                     )
@@ -1034,6 +1262,7 @@ class RecommendationService:
                                     build_request_context,
                                     title_request_context,
                                     current_character,
+                                    research_requested=research_requested,
                                 ),
                                 core_grounding,
                             )
@@ -1351,6 +1580,11 @@ class RecommendationService:
             context.inventory_ownership_checked = True
 
         item_groups: list[dict[str, Any]] = []
+        for key in ("equipped_weapons", "equipped_armor", "weapons", "armor"):
+            for value in result.get(key) or []:
+                name = value.get("name") if isinstance(value, dict) else None
+                if isinstance(name, str) and name not in context.equipped_item_names:
+                    context.equipped_item_names.append(name)
         for key in (
             "equipped_weapons",
             "equipped_armor",
@@ -1512,10 +1746,28 @@ class RecommendationService:
 
         A possession or "equipped" sentence that no Guardian result supports is removed on its
         own when it is not part of a recommendation, so a grounded build answer is not
-        replaced by a generic refusal. Everything else keeps its fail-closed handling. This
-        never calls tools or the model.
+        replaced by a generic refusal. A closing hand-back (see trim_trailing_handback) is
+        removed the same way. Everything else keeps its fail-closed handling. This never calls
+        tools or the model.
         """
 
+        # A closing hand-back costs a model round to correct and adds nothing: an offer of more
+        # read-only work once lookups ran (or once the answer declined an impossible change),
+        # an offer of an ability the app lacks, or a "which do you want?" after a ranked
+        # recommendation. Before any lookup, a lookup offer is the missing work itself, so it
+        # is left for the tool-enabled retry.
+        trimmed = quality_validator.trim_trailing_handback(
+            message,
+            offers=read_only_context.lookups_performed
+            or (not read_only_context.research_requested and declines_change(message))
+            # A planning turn already carries the Guardian data its recommendation used.
+            or (planning_context is not None and not read_only_context.research_requested),
+            choices=planning_context is not None,
+            account_checked=read_only_context.guardian_lookup_performed,
+        )
+        if trimmed is not None:
+            message = trimmed
+            trace["trailing_handback_removed"] = True
         violations = quality_validator.validate(
             message,
             mode_context,
@@ -1524,6 +1776,26 @@ class RecommendationService:
             build_context,
             read_only_context,
         )
+        if {"unsupported_loot_claim", "invented_duration"} & {v.code for v in violations}:
+            # Cut only the unsupported loot ranking or stated duration; the recommendation,
+            # its steps, and the player's constraints stay, so no model round is spent.
+            repaired = quality_validator.repair_planning_claims(
+                message,
+                quality_validator.allowed_minutes(user_message, planning_context)
+                if planning_context is not None
+                else None,
+            )
+            if repaired is not None:
+                message = repaired
+                trace["planning_claims_repaired"] = True
+                violations = quality_validator.validate(
+                    message,
+                    mode_context,
+                    user_message,
+                    planning_context,
+                    build_context,
+                    read_only_context,
+                )
         if not build_context.is_build_request:
             return message, violations
         claims = quality_validator.ownership_claims(message, build_context)
@@ -1944,16 +2216,20 @@ class RecommendationService:
         title_request_context: TitleRequestContext,
         build_context: BuildResponseValidationContext,
         already_forced: set[str],
+        item_lookup: str | None = None,
     ) -> tuple[str | dict[str, Any], tuple[str, ...]]:
         """Select this round's tool_choice and the build evidence tools it forces.
 
-        Title retrieval keeps first-round priority. Required build evidence is acquired up
-        front instead of being requested later by a tool-less correction. Each evidence tool
-        is forced at most once, and the final round allows no tools so the model must answer.
+        Title retrieval keeps first-round priority, then a required item-definition lookup.
+        Required build evidence is acquired up front instead of being requested later by a
+        tool-less correction. Each evidence tool is forced at most once, and the final round
+        allows no tools so the model must answer.
         """
 
         if round_number == 1 and title_request_context.retrieval_required:
             return {"type": "function", "name": "get_title_progress"}, ()
+        if round_number == 1 and item_lookup:
+            return {"type": "function", "name": item_lookup}, ()
         if round_number >= MAX_TOOL_ROUNDS:
             return "none", ()
         missing = tuple(
@@ -1996,8 +2272,19 @@ class RecommendationService:
         build_request_context: BuildRequestContext,
         title_request_context: TitleRequestContext,
         current_character: CurrentCharacter | None = None,
+        *,
+        research_requested: bool = False,
     ) -> str:
         routing: list[str] = [response_mode_instruction(mode_context)]
+        if research_requested:
+            routing.append(
+                "The user explicitly asked you to verify, confirm, or look this up. Run the "
+                "lookups now without asking which source to use: Manifest or Guide for canonical "
+                "item, activity, and source facts; web research for current or changed "
+                "information; Guardian tools for anything about this player's account. If the "
+                "first source cannot settle it, try the next, then say in a sentence what you "
+                "found and where. If nothing settles it, say so briefly."
+            )
         if session_planning:
             routing.append(
                 "Turn routing: handle this turn as session planning. "
@@ -2018,8 +2305,11 @@ class RecommendationService:
             routing.append(
                 f"Current character (most recently played): {current_character.class_name}. "
                 "When the user does not name a character, pass null for both character_id "
-                "and character_class so Guardian tools use it; never guess a class. If the "
-                "user names a character, that explicit choice wins."
+                "and character_class to the tools that default to it (loadout, build details, "
+                "build analysis, build alternatives); never guess a class. get_content_progression "
+                f"has no default and needs one selector: pass character_class="
+                f"{current_character.class_name}. If the user names a character, that explicit "
+                "choice wins."
             )
         if planning_context is not None:
             routing.append(
@@ -2032,7 +2322,19 @@ class RecommendationService:
             routing.append(
                 "Application-derived build constraints follow as bounded JSON. Treat explicit "
                 "locked items, preserved Exotics, activity mode, fireteam, and change limit as "
-                "hard constraints. If requires_current_build_analysis is true, call "
+                "hard constraints. For a review of the current build, keep the equipped Exotic and "
+                "the weapon the player said they like unless they asked to change them: give "
+                "one smaller improvement you can verify from the returned data (an open "
+                "socket, a mod, a fragment, a stat), or say plainly that the evidence does not "
+                "justify a particular change. Never ask permission to swap an Exotic. "
+                "goal_items are items the player said they want to get or use: "
+                "build around them and never recommend replacing one unless the player asks about "
+                "it directly. A null goal means this message names no build goal: use the "
+                "activity mode and goals from the conversation, and otherwise do not assume boss "
+                "DPS or another niche goal; judge changes for general play. A normal_change_limit "
+                "of 1 means exactly one change. Prefer a change grounded in returned data (an "
+                "owned item, an open socket, a mod, fragment, or stat observation) over a generic "
+                "weapon archetype. If requires_current_build_analysis is true, call "
                 "analyze_current_build before judging or recommending changes to the current "
                 "setup. If requires_owned_inventory is true, use find_build_alternatives or an "
                 "appropriate Guardian inventory lookup before naming owned choices or exact "
@@ -2644,6 +2946,13 @@ class RecommendationService:
         cls._merge_sources(combined, web_sources, limit)
         cls._merge_sources(combined, knowledge_sources, limit)
         return combined
+
+    @classmethod
+    def _cited_sources(cls, output_items: list[Any]) -> list[ChatSource]:
+        """Only the url_citation sources in assistant messages, in citation order."""
+
+        messages = [item for item in output_items if cls._field(item, "type") == "message"]
+        return cls._extract_web_sources(messages)[0]
 
     @classmethod
     def _extract_web_sources(cls, output_items: list[Any]) -> tuple[list[ChatSource], bool]:

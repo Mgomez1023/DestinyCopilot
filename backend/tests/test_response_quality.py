@@ -406,7 +406,7 @@ def test_preserved_exotic_blocks_a_second_exotic_of_the_same_kind() -> None:
 def test_resolved_read_only_lookup_rejects_permission_loop() -> None:
     message = "yes those are what I mean"
     mode = response_mode_context(message, session_planning=False, continuation=True)
-    context = ReadOnlyActionValidationContext(intent_resolved=True, lookup_required=True)
+    context = ReadOnlyActionValidationContext(lookups_performed=True)
 
     violations = ResponseQualityValidator().validate(
         "Would you like me to scan your Title progress now?",
@@ -423,7 +423,7 @@ def test_resolved_read_only_lookup_rejects_permission_loop() -> None:
 def test_unresolved_title_clarification_is_not_blocked_as_permission_loop() -> None:
     message = "What is the easiest title for me?"
     mode = response_mode_context(message, session_planning=False, continuation=False)
-    context = ReadOnlyActionValidationContext(intent_resolved=False, lookup_required=False)
+    context = ReadOnlyActionValidationContext()
 
     violations = ResponseQualityValidator().validate(
         "Do you mean a Destiny Triumph Title or something else?",
@@ -435,3 +435,172 @@ def test_unresolved_title_clarification_is_not_blocked_as_permission_loop() -> N
     )
 
     assert "unnecessary_read_only_permission" not in {value.code for value in violations}
+
+
+# --- Capability and initiative detectors (playtest follow-up) -------------------------------
+
+
+def _codes(answer: str, **read_only: bool) -> set[str]:
+    message = "Question?"
+    mode = response_mode_context(message, session_planning=False, continuation=False)
+    context = ReadOnlyActionValidationContext(**read_only)
+    return {
+        value.code
+        for value in ResponseQualityValidator().validate(answer, mode, message, None, None, context)
+    }
+
+
+LOOKED_UP = {"lookups_performed": True, "guardian_lookup_performed": True}
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "I can check official live data or community reports. Which do you prefer?",
+        "Want me to search your vault for hand cannons?",
+        "Should I look up the current drop table?",
+        "If you'd like, I can compare your two Rose rolls.",
+        "Let me know if you want me to verify that with Bungie's notes.",
+    ],
+)
+def test_read_only_offers_are_flagged(answer: str) -> None:
+    assert "unnecessary_read_only_permission" in _codes(answer, **LOOKED_UP)
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "Which quest should I look up for you?",
+        "Run the Nightfall. Are you chasing a weapon or an armor upgrade?",
+        "Do you mean a Destiny Triumph Title or something else?",
+        "I checked your vault: Fatebringer is there.",
+    ],
+)
+def test_ordinary_questions_and_answers_are_not_read_only_offers(answer: str) -> None:
+    assert "unnecessary_read_only_permission" not in _codes(answer, **LOOKED_UP)
+
+
+def test_lookup_claims_and_unperformed_research_need_a_real_lookup() -> None:
+    claim = "I checked Bungie's site and The Coil still drops it."
+    assert "unperformed_lookup" in _codes(claim)
+    assert "unperformed_lookup" not in _codes(claim, lookups_performed=True)
+    assert "unperformed_lookup" in _codes("Yes, it drops there.", research_requested=True)
+
+
+def test_asking_for_account_data_is_flagged_only_before_a_guardian_lookup() -> None:
+    answer = "Type the fragments you have and I'll tell you which are missing."
+    assert "account_data_requested" in _codes(answer)
+    assert "account_data_requested" not in _codes(answer, guardian_lookup_performed=True)
+    assert "account_data_requested" not in _codes(
+        "Open the Quests tab and list the steps in your Director."
+    )
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "Upload a screenshot of your fragment screen.",
+        "Send me a picture of your vault.",
+        "Want me to move Rose to your vault?",
+        "I can equip Sunshot for you if you don't mind.",
+        "I'll swap the barrel on Sunshot.",
+    ],
+)
+def test_unsupported_capability_offers_are_flagged(answer: str) -> None:
+    assert "unsupported_capability" in _codes(answer, **LOOKED_UP)
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "I can't view screenshots or move items, but here's how to do it in game.",
+        "You can't send images in this chat, so describe the perk instead.",
+        "Want me to move on to your Hunter?",
+        "I'll lock in your solo preference for the rest of the session.",
+        "Let me pull up your loadout.",
+    ],
+)
+def test_denials_and_unrelated_phrases_are_not_capability_offers(answer: str) -> None:
+    assert "unsupported_capability" not in _codes(answer, **LOOKED_UP)
+
+
+def test_claiming_a_completed_item_change_is_flagged_on_any_turn() -> None:
+    assert "implied_bungie_write" in _codes("Done! I've moved Rose to your vault.", **LOOKED_UP)
+    assert "implied_bungie_write" not in _codes("You've equipped Rose already.", **LOOKED_UP)
+    assert "implied_bungie_write" not in _codes("I've locked in your solo plan.", **LOOKED_UP)
+
+
+def test_unsupported_capability_sentences_are_removed_and_denials_kept() -> None:
+    from app.response_quality import (
+        UNSUPPORTED_CAPABILITY_FALLBACK,
+        remove_unsupported_capability_offers,
+    )
+
+    assert (
+        remove_unsupported_capability_offers(
+            "Rose is in your kinetic slot. Want me to move it to your vault?\n- Next: Vanguard Ops."
+        )
+        == "Rose is in your kinetic slot.\n- Next: Vanguard Ops."
+    )
+    honest = "I can't move items. In game, hover Rose and transfer it."
+    assert remove_unsupported_capability_offers(honest) == honest
+    assert (
+        remove_unsupported_capability_offers("Upload a screenshot.")
+        == UNSUPPORTED_CAPABILITY_FALLBACK
+    )
+
+
+def _drop(answer: str) -> str | None:
+    return ResponseQualityValidator.trim_trailing_handback(answer, offers=True, choices=False)
+
+
+def test_a_closing_lookup_offer_is_dropped_only_when_the_rest_stands_alone() -> None:
+    drop = _drop
+    assert (
+        drop("Mint Retrograde drops from The Coil. Want me to check if you own one?")
+        == "Mint Retrograde drops from The Coil."
+    )
+    assert drop("Would you like me to scan your Title progress now?") is None
+    assert drop("Want me to check your vault? Rose is equipped.") is None
+
+
+@pytest.mark.parametrize(
+    ("answer", "flagged", "kept"),
+    [
+        # In-game advice to take a screenshot is not a request to send one to Copilot.
+        ("Take a screenshot of the symbols so you remember the order.", False, None),
+        # A denial in an earlier clause does not excuse the request that follows it.
+        (
+            "I can't see your unlocked fragments, so send me a screenshot of the fragment screen.",
+            True,
+            "I can't see your unlocked fragments.",
+        ),
+        # Information before an offer survives; only the offering clause goes.
+        ("Rose is in your vault, and I can equip it for you.", True, "Rose is in your vault."),
+    ],
+)
+def test_capability_checks_work_per_clause(answer: str, flagged: bool, kept: str | None) -> None:
+    from app.response_quality import remove_unsupported_capability_offers
+
+    assert ("unsupported_capability" in _codes(answer, **LOOKED_UP)) is flagged
+    assert remove_unsupported_capability_offers(answer) == (kept or answer)
+
+
+def test_a_closing_sentence_with_information_or_a_clarification_is_never_dropped() -> None:
+    drop = _drop
+    # Only the offering clause goes; the information before it stays.
+    assert (
+        drop("Rose is equipped. Rose has Rampage, and I can compare it if you'd like.")
+        == "Rose is equipped. Rose has Rampage."
+    )
+    assert drop("I see three active quests. Which quest do you want me to look up?") is None
+    assert drop("Rose is equipped. Do you want me to compare its roll?") == "Rose is equipped."
+
+
+def test_putting_a_wanted_item_on_is_not_replacing_it() -> None:
+    from app.build_analysis import replaces_item
+
+    assert not replaces_item("Swap Rose into your kinetic slot for this.", "Rose")
+    assert not replaces_item("Swap Rose back in once you have Rampage.", "Rose")
+    assert replaces_item("Swap out Rose for Fatebringer.", "Rose")
+    assert replaces_item("Use Fatebringer instead of Rose.", "Rose")

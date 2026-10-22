@@ -53,6 +53,9 @@ def record(obs: Observation, results: list[PropertyResult], card: ScoreCard) -> 
                 "ownership_validation": trace.get("ownership_validation"),
                 "conversation_scope": trace.get("conversation_scope"),
                 "validator": trace.get("planning_correction"),
+                "initiative_retry": trace.get("initiative_retry"),
+                "item_lookup_forced": trace.get("item_lookup_forced"),
+                "trailing_handback_removed": bool(trace.get("trailing_handback_removed")),
                 "tool_budget": trace.get("tool_budget"),
                 "answer_kind": trace.get("answer"),
                 "build_analysis": trace.get("build_analysis"),
@@ -143,6 +146,10 @@ def usage_stats(records: list[dict[str, Any]]) -> dict[str, Any]:
         "validator_corrections": sum(
             bool((t.get("validator") or {}).get("attempted")) for t in all_turns
         ),
+        "initiative_retries": sum(
+            bool((t.get("initiative_retry") or {}).get("attempted")) for t in all_turns
+        ),
+        "handbacks_trimmed": sum(bool(t.get("trailing_handback_removed")) for t in all_turns),
         "validator_fallbacks": dict(
             sorted(
                 {
@@ -196,6 +203,20 @@ def summary_markdown(
         f"**Core knowledge** bundle on {usage['core_bundle_attached_final_turns']} final turns · "
         f"tool used on {usage['core_tool_used_final_turns']} · validator corrections "
         f"{usage['validator_corrections']} · fallbacks {usage['validator_fallbacks'] or 'none'}",
+        f"**Validator rounds** {usage['initiative_retries']} tool-enabled retries · "
+        f"{usage['validator_corrections']} corrections · {usage['handbacks_trimmed']} closing "
+        "hand-backs trimmed without a model round",
+        *(
+            []
+            if meta["judge"]
+            else [
+                "",
+                "_Judge off: scores come from deterministic properties only. Factual accuracy "
+                "and usefulness beyond those properties are not assessed, and a dimension with no "
+                "applicable property counts as met. Read the answers before trusting a high "
+                "score._",
+            ]
+        ),
         "",
         "| Scenario | Score | Flags | Failed properties | Tools (final turn) | s |",
         "|---|---|---|---|---|---|",

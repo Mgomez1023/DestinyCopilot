@@ -153,7 +153,8 @@ _GOAL_PATTERNS: dict[PrimaryGoal, tuple[re.Pattern[str], ...]] = {
     ),
     "gear_rewards": (
         re.compile(
-            r"\b(?:want|need|focus on|what about)\b.{0,24}\b(?:better gear|gear|loot|rewards?)\b",
+            r"\b(?:want|need|focus on|what about|(?:something|anything)\s+(?:with|for))\b"
+            r".{0,24}\b(?:better gear|gear|loot|rewards?)\b",
             re.I,
         ),
         re.compile(r"\b\d+\s*[- ]?minute\s+(?:gear|loot)\s+run\b", re.I),

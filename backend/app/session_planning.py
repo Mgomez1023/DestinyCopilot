@@ -41,6 +41,33 @@ MAX_RECENT_ACTIVITIES = 6
 MAX_PROGRESSIONS = 6
 MAX_REQUIREMENTS_PER_CANDIDATE = 2
 MAX_REQUIREMENT_CHARS = 2400
+# Activity types whose grounded fireteam size is three or more (core knowledge: Strike,
+# Nightfall, Raid, Dungeon). A solo player is not offered them as a first choice.
+TEAM_ACTIVITY_TYPES = ("nightfall", "strike", "vanguard op", "raid", "dungeon", "gambit")
+
+
+def _has_term(label: str, term: str) -> bool:
+    """The term as whole words in a normalized label; a plural "s" is allowed."""
+
+    return re.search(rf"(?:^| ){re.escape(_normalize(term))}s?(?: |$)", label) is not None
+
+
+def _is_team_activity(value: str) -> bool:
+    label = _normalize(value)
+    return any(_has_term(label, term) for term in TEAM_ACTIVITY_TYPES)
+
+
+# Words that identify each explicit session exclusion, in answers and in candidate names or
+# activity types. A candidate that matches an exclusion is removed before the model sees it.
+EXCLUSION_TERMS: dict[str, tuple[str, ...]] = {
+    "pvp": ("pvp", "crucible", "trials", "iron banner"),
+    "pve": ("pve",),
+    "dungeons": ("dungeon",),
+    "raids": ("raid",),
+    "grinding": ("grind", "farm"),
+    "group_play": ("fireteam", "matchmade", "with a group"),
+    "solo_play": ("solo",),
+}
 
 
 class PlanningObjective(BaseModel):
@@ -126,6 +153,8 @@ class SessionPlanningContext(BaseModel):
     # Set when the user rejected suggestions or asked for another option; see
     # planning_alternatives. Excluded candidates are already removed from `candidates`.
     excluded_by_user: list[str] = Field(default_factory=list, max_length=12)
+    # Candidates removed because they match a stated exclusion ("no dungeons", "no Crucible").
+    excluded_by_preference: list[str] = Field(default_factory=list, max_length=12)
     already_recommended: list[str] = Field(default_factory=list, max_length=3)
     alternative_guidance: str | None = None
     # M4B: how to read candidate `requirements`, present only when some candidate has any.
@@ -135,7 +164,7 @@ class SessionPlanningContext(BaseModel):
     @model_serializer(mode="wrap")
     def _omit_empty_requirement_fields(self, handler):  # type: ignore[no-untyped-def]
         data = handler(self)
-        for key in ("requirement_basis", "requirements_omitted"):
+        for key in ("requirement_basis", "requirements_omitted", "excluded_by_preference"):
             if not data.get(key):
                 data.pop(key, None)
         return data
@@ -574,6 +603,49 @@ def build_session_planning_context(
         candidates, pending_requirements, loadout_evidence(character) if character else None
     )
 
+    excluded_by_preference: list[str] = []
+    solo = effective_preferences.fireteam == "solo"
+    # Milestones whose activities are all fireteam activities (Weekly Vanguard -> Vanguard Ops).
+    team_milestones = {
+        _normalize(milestone.name)
+        for milestone in (character.milestones if character else [])
+        if milestone.activity_names
+        and all(_is_team_activity(name) for name in milestone.activity_names)
+    }
+    team_set_aside: list[str] = []
+    for key, candidate in list(candidates.items()):
+        # The record's category path counts too: a Duality record sits under "Dungeons".
+        label = _normalize(
+            " ".join((candidate.name, candidate.activity_type or "", *candidate.context_path))
+        )
+        if any(
+            _has_term(label, term)
+            for exclusion in effective_preferences.exclusions
+            for term in EXCLUSION_TERMS[exclusion]
+        ):
+            excluded_by_preference.append(candidate.name)
+            del candidates[key]
+        elif solo and (
+            _is_team_activity(candidate.name)
+            or _is_team_activity(candidate.activity_type or "")
+            or key in team_milestones
+        ):
+            excluded_by_preference.append(candidate.name)
+            team_set_aside.append(candidate.name)
+            del candidates[key]
+    if solo:
+        limitations.insert(
+            0,
+            "Solo may mean strictly alone or queuing alone into matchmaking. The data does not "
+            "say which an activity supports, so do not state that one is solo-playable.",
+        )
+    if team_set_aside:
+        limitations.insert(
+            0,
+            f"Set aside for the solo preference (grounded fireteam size is three or more): "
+            f"{', '.join(team_set_aside[:4])}.",
+        )
+
     known_completion = [
         f"Campaign completed: {value.content}"
         for value in content_evidence
@@ -617,9 +689,46 @@ def build_session_planning_context(
         explicitly_known_completion_facts=known_completion,
         explicitly_unknown_completion_facts=unknown_completion,
         data_limitations=limitations[:8],
+        excluded_by_preference=excluded_by_preference[:12],
         requirement_basis=requirement_basis,
         requirements_omitted=requirements_omitted,
     )
+
+
+# "Run X", "- Try X", "**Queue into X**": the usual way a recommendation is phrased. Questions
+# ("Play solo or with friends?") are excluded where this is used.
+_IMPERATIVE_RECOMMENDATION = re.compile(
+    r"^\s*(?:[-*•]\s*|\d+[.)]\s*)?(?:\*\*)?(?:(?:primary|backup|alternate|option \d)"
+    r"(?: pick)?\s*[:—-]\s*)?(?:run|try|go (?:with|for|do)|queue(?: up| into)?|"
+    r"jump into|hop into|head (?:to|into)|load into|launch|farm|grind|play|finish|complete|"
+    r"do|tackle|work on)\b"
+)
+_RECOMMENDATION_MARKERS = (
+    "recommend",
+    "should",
+    "play ",
+    "choose",
+    "pick",
+    "clear next",
+    "clearly next",
+    "best next",
+    "next step",
+    "continue",
+    "start ",
+    "do the ",
+)
+
+
+def _recommends(sentence: str) -> bool:
+    """One lowercased sentence recommends something ("you should…", "Run X", not "Run X?")."""
+
+    return any(marker in sentence for marker in _RECOMMENDATION_MARKERS) or bool(
+        _IMPERATIVE_RECOMMENDATION.match(sentence) and not sentence.rstrip().endswith("?")
+    )
+
+
+def contains_recommendation(text: str) -> bool:
+    return any(_recommends(value) for value in re.split(r"(?<=[.!?])\s+|[\r\n]+", text.casefold()))
 
 
 _AVOID_SENTENCE_MARKERS = (
@@ -637,20 +746,7 @@ _AVOID_SENTENCE_MARKERS = (
 
 
 class PlanningAnswerValidator:
-    _recommendation_markers = (
-        "recommend",
-        "should",
-        "play ",
-        "choose",
-        "pick",
-        "clear next",
-        "clearly next",
-        "best next",
-        "next step",
-        "continue",
-        "start ",
-        "do the ",
-    )
+    _recommendation_markers = _RECOMMENDATION_MARKERS
     _meaningful_reason_markers = (
         "unlock",
         "advance",
@@ -881,19 +977,11 @@ class PlanningAnswerValidator:
                 )
             )
 
-        forbidden_terms: dict[str, tuple[str, ...]] = {
-            "pvp": ("pvp", "crucible", "trials", "iron banner"),
-            "pve": ("pve",),
-            "dungeons": ("dungeon",),
-            "raids": ("raid",),
-            "grinding": ("grind", "farm"),
-            "group_play": ("fireteam", "matchmade", "with a group"),
-            "solo_play": ("solo",),
-        }
+        forbidden_terms = EXCLUSION_TERMS
         recommendation_sentences = [
             sentence
             for sentence in re.split(r"(?<=[.!?])\s+|[\r\n]+", normalized)
-            if any(marker in sentence for marker in self._recommendation_markers)
+            if _recommends(sentence)
             and not any(
                 marker in sentence
                 for marker in ("avoid ", "skip ", "no ", "not ", "don't ", "do not ")
@@ -910,20 +998,35 @@ class PlanningAnswerValidator:
                         correction=f"Honor the user's explicit exclusion of {exclusion}.",
                     )
                 )
-        avoided = [*context.excluded_by_user, *context.already_recommended]
-        for name in avoided:
+
+        def recommended(name: str) -> bool:
             alias = _normalize(re.sub(r"^(?:the|a|an)\s+", "", name, flags=re.I))
-            if len(alias) >= 4 and any(
+            return len(alias) >= 4 and any(
                 alias in _normalize(sentence)
                 and not any(marker in sentence for marker in _AVOID_SENTENCE_MARKERS)
                 for sentence in recommendation_sentences
-            ):
+            )
+
+        if any(
+            recommended(name) for name in [*context.excluded_by_user, *context.already_recommended]
+        ):
+            violations.append(
+                PlanningViolation(
+                    code="rejected_candidate_recommended",
+                    correction=(
+                        "The user rejected or already received that option; recommend a "
+                        "different candidate from the planning context instead."
+                    ),
+                )
+            )
+        for name in context.excluded_by_preference:
+            if recommended(name):
                 violations.append(
                     PlanningViolation(
-                        code="rejected_candidate_recommended",
+                        code="excluded_candidate_recommended",
                         correction=(
-                            "The user rejected or already received that option; recommend a "
-                            "different candidate from the planning context instead."
+                            f"{name} matches an activity the user excluded; recommend a "
+                            "candidate from the planning context instead."
                         ),
                     )
                 )
@@ -1055,11 +1158,21 @@ class PlanningAnswerValidator:
             set_aside = [*context.excluded_by_user, *context.already_recommended]
             aside = f"I've set aside {', '.join(set_aside[:3])}. " if set_aside else ""
             if context.candidates:
-                options = ", ".join(value.name for value in context.candidates[:3])
+                first = context.candidates[0]
+                progress = next(
+                    (
+                        f" ({value.name}: {value.progress_percent:.0f}% done)"
+                        for value in first.objectives
+                        if value.progress_percent is not None
+                    ),
+                    "",
+                )
+                more = ", ".join(value.name for value in context.candidates[1:3])
                 return (
-                    f"{aside}Other grounded options I can see for {scope} are {options}. "
-                    "I couldn't check a fuller plan against your constraints, so tell me which "
-                    "one to build out."
+                    f"{aside}Within your constraints, {first.name} is available to you"
+                    f"{progress}, so that's the pick I can stand behind. Your data doesn't show "
+                    "how its loot compares or how long it takes, so I'm not ranking it on either."
+                    + (f" Also available: {more}." if more else "")
                 )
             return (
                 f"{aside}I don't see another grounded option for {scope} in the account data "

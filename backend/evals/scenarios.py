@@ -8,6 +8,7 @@ Not a Cartesian product: each scenario targets an intersection that has product 
 from typing import Any
 
 from evals.golden import BUILD_TOOLS, GOLDEN, PLANNING_TOOLS
+from evals.heldout import HELDOUT
 from evals.mechanics import MECHANICS_SCENARIOS
 from evals.model import Expectations, Scenario
 
@@ -1311,6 +1312,113 @@ ACCEPTANCE: tuple[Scenario, ...] = (
     ),
 )
 
+# Production playtest failures (Operation Guardian): following through on requested lookups,
+# no unsupported abilities, goal-respecting build advice, and constraint-keeping follow-ups.
+# Kept out of BANK so the main bank's size and coverage limits are unchanged.
+PLAYTEST: tuple[Scenario, ...] = (
+    sc(
+        "playtest.verify_current_source",
+        "titan_veteran",
+        "Can you verify The Coil drops Mint Retrograde with a current source?",
+        {"intent": "item_explanation", "knowledge": "live"},
+        # The local item-source data identifies the item; web search alone did not. It cannot
+        # confirm a *current* source by itself, so live or web evidence is still required.
+        tools_any=("find_item_source", "get_item_details", "search_destiny_entities"),
+        current_evidence=True,
+    ),
+    sc(
+        "playtest.inventory_lookup",
+        "titan_veteran",
+        "Do I have any hand cannons in my vault?",
+        {"intent": "owned_gear", "ownership": "only_owned", "account": "large_vault"},
+        mentions_any=("Fatebringer",),
+        tools_any=("search_inventory", "find_build_alternatives"),
+    ),
+    sc(
+        "playtest.missing_fragments",
+        "titan_veteran",
+        (
+            "I've finished The Final Shape campaign. How do I unlock the rest of my Prismatic "
+            "fragments?",
+            "Which Prismatic fragments am I still missing on my Titan, and what's the fastest "
+            "way to unlock the next one?",
+        ),
+        {"intent": "progression_help", "character": "Titan", "knowledge": "unknown"},
+        character="Titan",
+        # The first turn's guide answer is reused; no tool reads which Facets are unlocked, and
+        # Titles/progression tools are unrelated to the unlock path.
+        forbidden_tools=("get_title_progress",),
+    ),
+    sc(
+        "playtest.single_improvement_goal",
+        "titan_veteran",
+        (
+            "I really like using Rose.",
+            "Look at my current Titan build. What's the single biggest improvement I could make?",
+        ),
+        {"intent": "build_critique", "character": "Titan"},
+        style="build",
+        character="Titan",
+        tools_any=("analyze_current_build",),
+        forbidden=(
+            r"\b(?:replace|swap out|drop|ditch|bench)\s+(?:your\s+)?Rose\b",
+            r"\binstead of (?:your\s+)?Rose\b",
+        ),
+    ),
+    sc(
+        "playtest.reject_activity",
+        "titan_veteran",
+        ("What should I do next?", "I don't want to do the Nightfall. Give me something else."),
+        {"intent": "what_next"},
+        style="planning",
+        forbidden=(r"^\W*(?:run|try|play|queue|do)\b[^.\n]{0,40}\bNightfall\b",),
+    ),
+    sc(
+        "playtest.constraints_followup",
+        "titan_veteran",
+        (
+            "I have 30 minutes, solo, no Crucible and no dungeons. What should I do?",
+            "Something with better loot instead?",
+        ),
+        {"intent": "short_session", "time": "30m", "social": "solo"},
+        style="planning",
+        # Solo, no Crucible, no dungeons: a three-player Nightfall or Vanguard Ops is not a pick.
+        forbidden=(
+            r"^\W*(?:primary(?: pick)?\s*[:—-]\s*)?(?:run|try|play|queue|do|finish)\b"
+            r"[^.\n]{0,60}\b(?:Crucible|Duality|Nightfall|Vanguard Ops)\b",
+        ),
+    ),
+    sc(
+        "playtest.vault_move",
+        "titan_veteran",
+        "Move my Rose to the vault.",
+        {"intent": "owned_gear"},
+        mentions_any=("can't", "cannot", "read-only", "can not"),
+    ),
+    sc(
+        "playtest.fixed_exotic_perk",
+        "warlock_veteran",
+        "Can you change the barrel on my Sunshot?",
+        {"intent": "perk_explanation", "character": "Warlock"},
+        character="Warlock",
+        # Whether the barrel is fixed is in the item's Manifest socket data.
+        tools_any=("get_item_details", "get_equipped_loadout", "get_build_details"),
+        mentions_any=("can't", "cannot", "fixed", "read-only", "can not"),
+    ),
+    sc(
+        "playtest.drop_source_short",
+        "titan_veteran",
+        "Where does Mint Retrograde drop?",
+        {"intent": "item_explanation", "knowledge": "stable"},
+    ),
+    sc(
+        "playtest.unavailable_data",
+        "titan_veteran",
+        "Which Exotic catalysts have I completed?",
+        {"intent": "progression_help", "knowledge": "unknown"},
+    ),
+)
+
 BANK: tuple[Scenario, ...] = GOLDEN + MATRIX + CONVERSATIONS + ACCEPTANCE
 REPRESENTATIVE: tuple[Scenario, ...] = tuple(value for value in BANK if value.representative)
 SUBSETS: dict[str, tuple[Scenario, ...]] = {
@@ -1320,6 +1428,9 @@ SUBSETS: dict[str, tuple[Scenario, ...]] = {
     "acceptance": ACCEPTANCE,
     # Mechanics grounding baseline (M0); separate so the main bank keeps its size limits.
     "mechanics": MECHANICS_SCENARIOS,
+    "playtest": PLAYTEST,
+    # Unseen prompts kept out of BANK; never fix against them (see evals/heldout.py).
+    "heldout": HELDOUT,
     "full": BANK,
 }
 

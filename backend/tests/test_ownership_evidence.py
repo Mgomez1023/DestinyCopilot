@@ -185,7 +185,7 @@ def test_the_old_false_positive_no_longer_blocks_a_grounded_critique() -> None:
     context = context_with("titan_veteran", ("analyze_current_build", ANALYZE))
     answer = (
         "Your weakest part is survivability: you have 80 Health against 100 Grenade, with "
-        "Synthoceps equipped. Move one Recuperation mod toward Recovery."
+        "Synthoceps equipped. Move one Recuperation mod toward Health."
     )
 
     assert not context.inventory_ownership_checked
@@ -251,7 +251,7 @@ def test_repair_removes_only_the_unsupported_aside() -> None:
     answer = (
         "Your weakest stat is Health at 80 against 100 Grenade.\n"
         "You already have Witherhoard in your vault.\n"
-        "Shift one Recuperation mod toward Recovery to even out survivability."
+        "Shift one Recuperation mod toward Health to even out survivability."
     )
 
     repaired, removed = VALIDATOR.repair_ownership(answer, context)
@@ -259,7 +259,7 @@ def test_repair_removes_only_the_unsupported_aside() -> None:
     assert [value.item for value in removed] == ["Witherhoard"]
     assert repaired == (
         "Your weakest stat is Health at 80 against 100 Grenade.\n"
-        "Shift one Recuperation mod toward Recovery to even out survivability."
+        "Shift one Recuperation mod toward Health to even out survivability."
     )
 
 
@@ -268,7 +268,7 @@ def test_repair_removes_a_bullet_and_its_marker() -> None:
     answer = (
         "Your weakest stat is Health at 80 against 100 Grenade, so survivability suffers.\n"
         "- You have Witherhoard.\n"
-        "- Shift one Recuperation mod toward Recovery to even out the stat spread."
+        "- Shift one Recuperation mod toward Health to even out the stat spread."
     )
 
     repaired, removed = VALIDATOR.repair_ownership(answer, context)
@@ -318,11 +318,11 @@ def chat(outputs: list[list[Any]]) -> tuple[Any, ScriptedBuildResponses, dict[st
 GROUNDED_WITH_ASIDE = (
     "Your weakest stat is Health at 80 against 100 Grenade, so survivability suffers.\n"
     "You already have Witherhoard in your vault.\n"
-    "Shift one Recuperation mod toward Recovery to even out the stat spread."
+    "Shift one Recuperation mod toward Health to even out the stat spread."
 )
 CLEAN = (
     "Your weakest stat is Health at 80 against 100 Grenade, so survivability suffers.\n"
-    "Shift one Recuperation mod toward Recovery to even out the stat spread."
+    "Shift one Recuperation mod toward Health to even out the stat spread."
 )
 
 
@@ -354,7 +354,7 @@ def test_one_removable_unsupported_phrase_does_not_trigger_a_fallback_or_extra_r
 def test_trace_reports_supported_claims_with_their_evidence_source() -> None:
     supported = (
         "You have Synthoceps equipped, but your weakest stat is Health at 80 against 100 "
-        "Grenade. Shift one Recuperation mod toward Recovery to even out the stat spread."
+        "Grenade. Shift one Recuperation mod toward Health to even out the stat spread."
     )
     answer, _, trace = chat(
         [[_call("analyze_current_build", ANALYZE, "analysis-1")], [_answer(supported)]]

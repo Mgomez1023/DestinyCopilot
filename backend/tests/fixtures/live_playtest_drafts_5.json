@@ -1,0 +1,46 @@
+{
+  "source": "playtest live-model run 2026-10-22T00:28:45Z (gpt-5-mini, titan_veteran profile)",
+  "turn1": {
+    "message": "I have 30 minutes, solo, no Crucible and no dungeons. What should I do?",
+    "answer": "Primary pick — finish the Edge of Fate quest mission \"Kepler Uplink\" (quick story/progression run).\n- Why: it’s an active campaign quest for your Titan, fits a solo 30‑minute slot, and advances meaningful progression rather than a repeat grind.\n- What to do: launch the Kepler Uplink mission, take a balanced loadout (high‑impact kinetic primary + a mid/close burst energy weapon), bring a recovery/survivability Exotic or heavy that you’re comfortable with, and focus on clearing objectives rather than hunting every chest.\n\nQuick backup — short Vanguard/Ops or seasonal content:\n- If you want faster repeats with matchmaking, run a Vanguard Ops (three‑player activity) for milestone progress and reward chances.\n- If Haunted Altars / Waves of Altars of Sorrow are available and you prefer objective completion, you’re at 92% on that waves record — try to finish the remaining waves (availability may vary).\n\nWhich would you prefer: story mission (Kepler Uplink) or quick Vanguard runs? I’ll give a brief loadout and mod checklist for the choice you pick."
+  },
+  "turn2": {
+    "message": "Something with better loot instead?",
+    "drafts": [
+      "Primary pick — run the Nightfall (The Lightblade) for best loot potential.\n- Why: Nightfalls have the highest-quality weekly rewards (chance at Nightfall-exclusive rolls, high‑tier engrams, and strike-specific drops). Even solo you can get the better drops — but Nightfalls are tuned for 3 players, so expect tougher encounters and tougher clears.\n- How to make it work solo in ~30 minutes:\n  - Matchmaking: use matchmaking if you want easier group play; otherwise prepare to solo the activity.\n  - Loadout: reliable long‑range add clear + a heavy boss DPS option. Example roles: precision kinetic primary or pulse/hand cannon for targets at range, an energy weapon that handles shields, and a heavy rocket/linear/GL for bosses.\n  - Survivability: bring what keeps you alive — high recovery armor, a defensive Titan Exotic you’re comfortable with, and a grenade/melee/ability setup that you know how to use under pressure.\n  - Mods/consumables: Ammo finder/reserves for the heavy type you’ll use, recovery/resilience mods, and a few Refreshment/Well mods if you have them.\n  - Strategy: skip optional exploration, focus on objectives and boss phases, use cover and pull adds into choke points.\n\nQuick backup — Vanguard Ops (safer, still good rewards)\n- Why: easier to complete solo via matchmaking and contributes to weekly Vanguard milestone rewards and engrams; faster clears if you want a reliable 30‑minute session with decent drops.\n\nWhich do you want to run now — try Nightfall solo (I’ll give a tighter solo loadout and encounter tips) or go Vanguard Ops for a safer loot session?",
+      "Primary pick — Nightfall: The Lightblade (available to your Titan; designed for a 3‑player fireteam).\n- What the available data shows: Nightfall is available to launch for your character and its fireteam size is 3. No returned data here establishes exact reward names, drop rates, or which activity gives the “best” loot.  \n- Why pick it for loot-focused play: Nightfalls are typically a high‑reward strike option, but their reward quality and solo clear time are not established by the data we have — expect tougher encounters if you attempt it solo.\n\nSolo setup and tactics (30‑minute focus)\n- Matchmaking: enable it if you want easier clears; otherwise prepare to solo and accept a harder run.  \n- Loadout: one reliable long‑range add clearer (pulse/hand cannon or scout), one energy weapon to handle shields, and a heavy that excels at boss burst damage (rocket/linear/GL).  \n- Survivability: high recovery/resilience armor, a defensive Exotic you know, and ability usage tuned to survival (use cover, timed grenades/melee).  \n- Ammo and mods: carry heavy‑ammo reserves/finder mods, plus recovery/resilience or ability-cooldown mods that keep you in the fight.  \n- Strategy: skip exploration, clear priority adds, bait boss mechanics into safe windows, and use boss DPS windows efficiently.\n\nSafer backup — Vanguard Ops (available to your Titan)\n- What the data shows: Vanguard Ops is available to your character and appears in your recent activity list (you’ve done it recently). Its fireteam size is 3. Reward specifics aren’t returned here, but it’s generally quicker and easier with matchmaking.\n\nWhich do you want: attempt the Nightfall (solo, higher difficulty) with a tight solo loadout and encounter tips, or run Vanguard Ops for a safer, faster loot session? I’ll give a concise, Titan‑specific loadout for whichever you pick."
+    ],
+    "live_answer": "I've set aside The Edge of Fate. Other grounded options I can see for the selected character are Weekly Vanguard, Nightfall: The Lightblade, Vanguard Ops. I couldn't check a fuller plan against your constraints, so tell me which one to build out.",
+    "live_validator": {
+      "attempted": true,
+      "violation_codes": [
+        "unsupported_loot_claim"
+      ],
+      "succeeded": false,
+      "remaining_violation_codes": [
+        "reasked_known_fireteam",
+        "solo_constraint"
+      ],
+      "fallback": "planning_safe_answer"
+    }
+  },
+  "build": {
+    "message": "Look at my current Titan build. What's the single biggest improvement I could make?",
+    "drafts": [
+      "Primary improvement: raise your Recovery (survivability/ability uptime) by swapping one or two Iron Forerunner armor pieces for replacements with higher Recovery rather than Grenade bias.\n\nWhy: your Titan’s armor stats show high Grenade (125) and relatively low Health/Recovery (Health 100 / Recovery not listed but implied low). You’re using Synthoceps (melee-focused exotic) — improving Recovery lets you survive longer, get abilities back faster, and stay in melee more consistently, which leverages Synthoceps better than the current grenade-heavy split.\n\nConcrete next step:\n- Replace either the chest or legs (the easiest impactful swap) with an armor piece that shifts stat points into Recovery (and optionally Resilience) while keeping a similar total Power.\n- In-game: open the character screen → select the chest or leg slot → preview comparable armor and look for higher Recovery on the stat bars, then equip.\n\nIf you want, I can:\n- Scan your Titan’s owned items and suggest exact pieces to equip, or\n- Run a build analysis to recommend the single best owned armor swap right now. Which would you like?",
+      "Single biggest, high-impact change: swap your Iron Forerunner Plate (chest) for a chest with higher Recovery.\n\nWhy one swap: your Titan is wearing Synthoceps (melee-focused) and the current armor set stacks Grenade/Health style. Replacing just the chest to shift stats into Recovery gives the largest immediate survivability and ability-uptime gain for melee play without a full rebuild—more Recovery => faster ability and grenade return and better sustain in close fights, which makes Synthoceps perform noticeably better.\n\nHow to do it now (in-game):\n- Open character screen → select Chest Armor → preview available chests.\n- Pick a chest with higher Recovery on the stat bars (and similar overall Power) and equip it.\n- Keep the rest of your equipped items (Rose, Calus Mini-Tool, Apex Predator, Synthoceps, current mods) — one chest swap is the focused change.\n\nWant me to pick the exact chest from your inventory and show the stat delta? I don’t have access to scan your collection right now; if you want that, I can do it next and give the single best owned swap."
+    ],
+    "live_answer": "Single biggest, high-impact change: swap your Iron Forerunner Plate (chest) for a chest with higher Recovery.\n\nWhy one swap: your Titan is wearing Synthoceps (melee-focused) and the current armor set stacks Grenade/Health style. Replacing just the chest to shift stats into Recovery gives the largest immediate survivability and ability-uptime gain for melee play without a full rebuild—more Recovery => faster ability and grenade return and better sustain in close fights, which makes Synthoceps perform noticeably better.\n\nHow to do it now (in-game):\n- Open character screen → select Chest Armor → preview available chests.\n- Pick a chest with higher Recovery on the stat bars (and similar overall Power) and equip it.\n- Keep the rest of your equipped items (Rose, Calus Mini-Tool, Apex Predator, Synthoceps, current mods) — one chest swap is the focused change.\n\nWant me to pick the exact chest from your inventory and show the stat delta? I don’t have access to scan your collection right now; if you want that, I can do it next and give the single best owned swap.",
+    "live_validator": {
+      "attempted": true,
+      "violation_codes": [
+        "too_many_build_changes"
+      ],
+      "succeeded": false,
+      "remaining_violation_codes": [
+        "too_many_build_changes"
+      ],
+      "fallback": "style_only_accepted"
+    }
+  }
+}

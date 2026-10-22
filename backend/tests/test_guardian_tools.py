@@ -1872,7 +1872,7 @@ def test_unrequested_timed_itinerary_uses_existing_single_correction_retry() -> 
     assert response.message == corrected
     assert len(scripted.requests) == 2
     trace = service.latest_trace()
-    assert trace["planning_correction"]["violation_codes"] == ["unrequested_timed_itinerary"]
+    assert "unrequested_timed_itinerary" in trace["planning_correction"]["violation_codes"]
     assert trace["planning_correction"]["succeeded"] is True
 
 
@@ -2060,6 +2060,8 @@ def test_active_quest_absence_does_not_establish_campaign_completion() -> None:
         "attempted": True,
         "violation_codes": ["unknown_completion_as_known"],
         "succeeded": False,
+        "remaining_violation_codes": ["unknown_completion_as_known"],
+        "fallback": "planning_safe_answer",
     }
 
 

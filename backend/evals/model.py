@@ -71,6 +71,11 @@ class Expectations:
     mentions_any: tuple[str, ...] = ()
     forbidden: tuple[str, ...] = ()
     tools_any: tuple[str, ...] = ()
+    # Tools that are unrelated to the request; calling one is wasted work, not extra diligence.
+    forbidden_tools: tuple[str, ...] = ()
+    # The request asks for a *current* source: static Manifest/guide hints do not satisfy it, so
+    # live-provider or web-research evidence (or an explicit hedge) is required.
+    current_evidence: bool = False
     question_allowed: bool = False
     missing_class: str | None = None
     # Conversation-level checks: the character each turn should be about, and strings that
