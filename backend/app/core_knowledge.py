@@ -42,7 +42,28 @@ _NON_ALPHANUMERIC = re.compile(r"[^a-z0-9]+")
 
 ResolutionStatus = Literal["entity", "ambiguous", "unknown"]
 MatchVia = Literal["canonical", "alias", "misspelling", "plural", "shorthand", "ambiguity"]
-MentionOrigin = Literal["message", "candidate"]
+MentionOrigin = Literal["message", "candidate", "rules_question"]
+
+
+# A message that asks whether gear may be worn, slotted, or combined is a rules question even
+# when it names no concept the corpus has an alias for (it may name only a specific item).
+_EQUIP_VERB = re.compile(
+    r"\b(?:wear|wearing|equip|equipped|equipping|slot|slotted|stack|stacking|combine|combining|"
+    r"pair|put on|keep\b[^?.!]{0,30}\bon)\b",
+    re.I,
+)
+_RULE_FRAME = re.compile(
+    r"\b(?:can|could|may|allowed|able|possible|limit|limits|restriction|restrictions|rule|"
+    r"rules|only one|how many|at the same time|at once|both|two|more than one|"
+    r"same time|simultaneously)\b",
+    re.I,
+)
+
+
+def asks_equip_rule(text: str) -> bool:
+    """Whether the text asks what gear may be equipped or combined (a stable-rules question)."""
+
+    return bool(_EQUIP_VERB.search(text) and _RULE_FRAME.search(text))
 
 
 def normalize_text(value: str) -> str:
@@ -460,12 +481,21 @@ class DestinyKnowledgeEngine:
         return {"status": "unknown", "query": name}
 
     def bundle(self, message: str, candidate_names: tuple[str, ...] = ()) -> FactBundle | None:
-        """Build the bounded grounded-facts payload, or None when nothing matched."""
+        """Build the bounded grounded-facts payload, or None when nothing matched.
+
+        A message asking an equip/combination rules question also carries every curated rule,
+        because such a question often names only items, never the rule's own aliases.
+        """
 
         mentions = self.mentions(message, origin="message")
         for name in candidate_names:
             mentions.extend(self.mentions(name, origin="candidate"))
         selection = self._select(mentions)
+        if asks_equip_rule(message):
+            known = {entity_id for entity_id, _ in selection.rules}
+            for entity_id, entity in self._entities.items():
+                if entity.kind == "rule" and entity_id not in known:
+                    selection.rules.append((entity_id, self._rule_mention(entity_id)))
         if not (selection.entities or selection.rules or selection.ambiguities):
             return None
 
@@ -520,6 +550,21 @@ class DestinyKnowledgeEngine:
         return next(
             (str(fact.o) for fact in self._entities[entity_id].facts if fact.p == "located_on"),
             None,
+        )
+
+    def _rule_mention(self, entity_id: str) -> Mention:
+        return Mention(
+            origin="rules_question",
+            start_token=0,
+            end_token=0,
+            text="",
+            resolution=Resolution(
+                status="entity",
+                query="",
+                normalized="",
+                via="canonical",
+                entity_id=entity_id,
+            ),
         )
 
     def _select(self, mentions: list[Mention]) -> _Selection:

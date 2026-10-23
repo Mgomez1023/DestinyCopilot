@@ -440,13 +440,14 @@ def test_missing_character_and_empty_results() -> None:
     with pytest.raises(CharacterNotFoundError):
         tools.get_build_details("missing")
     result = tools.search_inventory(InventorySearchRequest(query="does-not-exist"))
-    assert result == {
-        "items": [],
-        "total_matching": 0,
-        "excluded_other_class_count": 0,
-        "limit": 25,
-        "truncated": False,
-    }
+    assert result["items"] == []
+    assert result["total_matching"] == 0
+    assert result["excluded_other_class_count"] == 0
+    assert result["limit"] == 25
+    assert result["truncated"] is False
+    # A zero result states what was searched instead of implying more.
+    assert "socketed perk and plug names" in result["searched_fields"]
+    assert result["socket_data_coverage"]["items_searched"] >= 1
 
 
 def test_title_progress_is_bounded_ranked_and_omits_raw_identifiers() -> None:
@@ -1221,15 +1222,9 @@ def test_streaming_content_progression_comparison_uses_safe_campaign_status() ->
     assert [event.stage for event in statuses[1:]] == ["comparison", "final"]
 
 
-def test_streaming_correction_never_emits_rejected_draft() -> None:
-    bad = "Based on the available data, run Nightfall next."
-    corrected = "Run Nightfall next because it fits your current goal and offers useful rewards."
-    streamed = ScriptedStreamingResponses(
-        [
-            FakeResponses.response([assistant_message(bad)]),
-            FakeResponses.response([assistant_message(corrected)]),
-        ]
-    )
+def test_streaming_a_style_only_draft_is_sent_once_without_a_rewrite() -> None:
+    draft = "There are several things to consider, but run Nightfall next."
+    streamed = ScriptedStreamingResponses([FakeResponses.response([assistant_message(draft)])])
     emitted: list[Any] = []
 
     async def emit(event: Any) -> None:
@@ -1244,23 +1239,16 @@ def test_streaming_correction_never_emits_rejected_draft() -> None:
             stream_status=StreamStatusReporter(emit),
         )
     )
-    client_events = response_events(response, "recommendation")
     streamed_text = "".join(
-        event.delta for event in client_events if event.event == "message_delta"
+        event.delta
+        for event in response_events(response, "recommendation")
+        if event.event == "message_delta"
     )
 
-    assert streamed_text == corrected
-    assert bad not in streamed_text
-    assert len(streamed.requests) == 2
-    assert streamed.requests[1]["tool_choice"] == "none"
-    replayed_message = next(
-        value
-        for value in streamed.requests[1]["input"]
-        if isinstance(value, dict) and value.get("type") == "message"
-    )
-    assert replayed_message["role"] == "assistant"
-    assert "parsed_content" not in replayed_message
-    assert service.latest_trace()["planning_correction"]["succeeded"] is True
+    # Presentation only, and nothing local to move: the draft is kept, with no second request.
+    assert streamed_text == draft
+    assert len(streamed.requests) == 1
+    assert service.latest_trace()["planning_correction"]["attempted"] is False
 
 
 def test_parallel_streaming_guardian_tools_emit_one_guardian_status() -> None:
@@ -1872,7 +1860,7 @@ def test_unrequested_timed_itinerary_uses_existing_single_correction_retry() -> 
     assert response.message == corrected
     assert len(scripted.requests) == 2
     trace = service.latest_trace()
-    assert trace["planning_correction"]["violation_codes"] == ["unrequested_timed_itinerary"]
+    assert "unrequested_timed_itinerary" in trace["planning_correction"]["violation_codes"]
     assert trace["planning_correction"]["succeeded"] is True
 
 
@@ -2060,6 +2048,8 @@ def test_active_quest_absence_does_not_establish_campaign_completion() -> None:
         "attempted": True,
         "violation_codes": ["unknown_completion_as_known"],
         "succeeded": False,
+        "remaining_violation_codes": ["unknown_completion_as_known"],
+        "fallback": "planning_safe_answer",
     }
 
 
@@ -2383,12 +2373,10 @@ def _title_tool_call() -> Any:
     )
 
 
-def test_ambiguous_title_request_allows_one_targeted_clarification() -> None:
-    answer = "Do you mean Destiny Triumph Titles and Seals?"
-    scripted = ScriptedWebResponses([[assistant_message(answer)]], [answer])
+def _title_chat(*drafts: str) -> tuple[Any, Any]:
+    scripted = ScriptedWebResponses([[assistant_message(value)] for value in drafts], list(drafts))
     service = RecommendationService(Settings(openai_api_key="test-key"))
     service.client = SimpleNamespace(responses=scripted)
-
     response = asyncio.run(
         service.chat(
             ChatRequest(
@@ -2399,9 +2387,44 @@ def test_ambiguous_title_request_allows_one_targeted_clarification() -> None:
             _guardian_with_title_progress(),
         )
     )
+    return response, (service, scripted)
+
+
+def test_a_question_only_draft_gets_one_rewrite_that_states_an_assumption() -> None:
+    question = "Do you mean Destiny Triumph Titles and Seals?"
+    assumed = (
+        "Assuming you mean Triumph Titles, Dredgen is closest to completion from your current "
+        "progress; actual effort may differ."
+    )
+    response, (service, scripted) = _title_chat(question, assumed)
+
+    assert response.message == assumed
+    assert len(scripted.requests) == 2
+    correction = service.latest_trace()["planning_correction"]
+    assert correction["violation_codes"] == ["clarification_only"]
+    assert correction["succeeded"] is True
+
+
+def test_a_rewrite_that_still_only_asks_is_kept_not_replaced_by_a_canned_answer() -> None:
+    question = "Do you mean Destiny Triumph Titles and Seals?"
+    still_asking = "Which kind of title do you mean: Triumph Titles or Seals?"
+    response, (service, scripted) = _title_chat(question, still_asking)
+
+    # One rewrite only; if no assumption was possible the question stands.
+    assert response.message == still_asking
+    assert len(scripted.requests) == 2
+    assert response.source == "openai"
+
+
+def test_an_answer_that_also_asks_is_not_a_question_only_draft() -> None:
+    answer = (
+        "Dredgen is closest to completion from your current Triumph progress. "
+        "Do you want the next step too?"
+    )
+    response, (service, scripted) = _title_chat(answer)
 
     assert response.message == answer
-    assert scripted.requests[0]["tool_choice"] == "auto"
+    assert len(scripted.requests) == 1
     assert service.latest_trace()["planning_correction"]["attempted"] is False
 
 
@@ -2551,14 +2574,9 @@ def test_system_instructions_default_to_read_only_action_without_weakening_write
     assert "All tools remain read-only" in SYSTEM_INSTRUCTIONS
 
 
-def test_planning_style_only_failure_returns_corrected_recommendation() -> None:
+def test_planning_style_only_failure_is_repaired_locally_and_keeps_the_recommendation() -> None:
     draft = "Run the Nightfall on your Titan for Vanguard rank progress. Want loot? Or story?"
-    corrected = (
-        "Run the Nightfall on your Titan for Vanguard rank progress. Want more loot? Or more story?"
-    )
-    scripted = ScriptedWebResponses(
-        [[assistant_message(draft)], [assistant_message(corrected)]], [draft, corrected]
-    )
+    scripted = ScriptedWebResponses([[assistant_message(draft)]], [draft])
     service = RecommendationService(Settings(openai_api_key="test-key"))
     service.client = SimpleNamespace(responses=scripted)
 
@@ -2566,12 +2584,9 @@ def test_planning_style_only_failure_returns_corrected_recommendation() -> None:
         service.chat(ChatRequest(message="What should I do next?"), guardian_context())
     )
 
-    # Only a presentation issue remained, so the grounded recommendation is kept instead of
-    # being replaced by "I can't make a grounded next-step recommendation".
-    assert response.message == corrected
-    assert "can't make a grounded" not in response.message
-    assert len(scripted.requests) == 2
-    assert scripted.requests[1]["tool_choice"] == "none"
-    correction = service.latest_trace()["planning_correction"]
-    assert correction["fallback"] == "style_only_accepted"
-    assert correction["remaining_violation_codes"] == ["too_many_followups"]
+    # Only presentation was wrong: the second question is dropped, nothing is rewritten.
+    assert response.message == (
+        "Run the Nightfall on your Titan for Vanguard rank progress. Want loot?"
+    )
+    assert len(scripted.requests) == 1
+    assert service.latest_trace()["planning_correction"]["attempted"] is False

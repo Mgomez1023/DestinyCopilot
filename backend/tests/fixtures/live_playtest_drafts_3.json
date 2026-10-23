@@ -1,0 +1,25 @@
+{
+  "source": "playtest live-model run 2026-10-21T22:47:58Z (gpt-5-mini, titan_veteran profile)",
+  "inventory_search_arguments": {
+    "query": "Hand Cannon",
+    "character_id": null,
+    "character_class": null,
+    "item_type": "Weapon",
+    "subtype": "Hand Cannon",
+    "bucket": "Vault",
+    "equipped_only": false,
+    "limit": 100
+  },
+  "inventory_answer": "No — your vault contains zero Hand Cannons.",
+  "loot_followup": {
+    "message": "Something with better loot instead?",
+    "draft": "Primary — Run Nightfall: The Lightblade (highest‑value loot)\n- Why: Nightfalls award higher‑tier drops and better chances at Powerful/Prismatic rewards than routine Vanguard Ops, so they’re the best short session for loot.\n- What to do: launch Nightfall from the Director → Nightfall: The Lightblade. Bring a boss‑burst heavy/power weapon, strong add‑clear primary, and defensive mods (overshields, healing) — play cautiously and focus boss phases to maximize drop chances.\n- Note: Nightfalls are a 3‑player activity by design, so soloing is harder; matchmaking may join teammates or you may face tougher odds alone. Bring survivability and expect longer runs if solo.\n\nBackup — Vanguard Ops (fast, reliable Powerful rewards)\n- Why: Faster to finish solo and still gives Vanguard tokens and milestone progress; you can usually fit one or two in 30 minutes.\n\nOptional — Haunted Altars of Sorrow if you prefer seasonal content and chest/record drops.\n\nDo you want to attempt the Nightfall solo now, or prefer the safer Vanguard Ops?"
+  },
+  "fragments_turn_1_selector_call": {
+    "character_id": null,
+    "character_class": null,
+    "content_name": "The Final Shape"
+  },
+  "fragments_turn_2_draft": "On your Titan I can see the equipped Prismatic fragments: Ember of Ashes and Ember of Empyrean.\n\nI cannot directly read which Prismatic fragments you’ve already unlocked but are not equipped — the build inspection only shows the subclass and the fragments currently socketed. To find exactly which fragments you’re still missing, open your Titan’s Prismatic subclass screen and note the fragment names that are locked/greyed or absent.\n\nFastest way to unlock the next fragment\n- Open the Prismatic subclass on your Titan and write down the name of the next missing fragment.  \n- Go to the Pale Heart (post‑Final Shape patrol/area) and run the post‑campaign Adventures and the orange Prismatic markers/puzzles there — most fragments come from those Adventures, from solving the symbol puzzles, completing small mini‑events that drop keys, and opening the orange chests.  \n- If the fragment’s description names a specific Adventure or mission, replay that Adventure/mission on the Titan to spawn the chest/puzzle.  \n- After opening the chest or finishing the Adventure, check the subclass screen on that same Titan — account‑wide fragments sometimes still need the fragment chest run on the character to appear in the subclass menu.\n\nIf you want, I can:\n- List all Prismatic fragment names and common sources (I’ll fetch manifest/guide entries), or\n- Tell you precisely where to get the next fragment if you paste the exact fragment name you see as missing. Which do you want?",
+  "synthoceps_draft": "Swap out Synthoceps (your equipped Exotic gauntlets).  \n\nWhy: Synthoceps lock your Exotic slot into a melee-focused gauntlet and force you to build around that playstyle. Replacing them with a Legendary gauntlet (then equipping a different Exotic that better complements Sunbreaker’s Solar grenades/aspects, or moving the Exotic to a chest/class item that opens stronger mod synergy) is the single biggest, highest-impact change because it frees your Exotic slot and lets you fit a more directly synergistic Exotic + armor-mod set for boss damage, ability uptime, or grenade-heavy play.  \n\nImmediate next step: do you want me to (A) show owned Exotic/Legendary gauntlet alternatives you have and one concrete swap, or (B) recommend a specific Exotic to pursue and the one armor mod to add? (I’ll run the inventory check if you pick A.)"
+}

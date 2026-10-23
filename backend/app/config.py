@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Literal
 from urllib.parse import urlparse
 
-from pydantic import Field, model_validator
+from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
@@ -17,6 +17,7 @@ class Settings(BaseSettings):
         env_file=ROOT_DIR / ".env",
         env_file_encoding="utf-8",
         extra="ignore",
+        populate_by_name=True,
     )
 
     app_env: Literal["development", "test", "production"] = "development"
@@ -29,6 +30,32 @@ class Settings(BaseSettings):
     openai_model: str = "gpt-5-mini"
     openai_reasoning_effort: Literal["none", "minimal", "low", "medium", "high"] = "low"
     openai_max_output_tokens: int = Field(default=2000, ge=512, le=32768)
+    # Beta guardrails, in process (single instance). 0 turns a limit off.
+    daily_message_quota: int = Field(default=50, ge=0)
+    daily_spend_cap_usd: float = Field(default=3.0, ge=0)
+    # USD per 1M tokens (web search per 1K calls), used to estimate spend. Shared with the
+    # evaluation tooling's EVAL_PRICE_* names; with no input and output price the cap cannot
+    # be enforced.
+    price_input_per_1m: float | None = Field(
+        default=None,
+        validation_alias=AliasChoices("EVAL_PRICE_INPUT_PER_1M", "OPENAI_PRICE_INPUT_PER_1M"),
+    )
+    price_cached_input_per_1m: float | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "EVAL_PRICE_CACHED_INPUT_PER_1M", "OPENAI_PRICE_CACHED_INPUT_PER_1M"
+        ),
+    )
+    price_output_per_1m: float | None = Field(
+        default=None,
+        validation_alias=AliasChoices("EVAL_PRICE_OUTPUT_PER_1M", "OPENAI_PRICE_OUTPUT_PER_1M"),
+    )
+    price_web_search_per_1k: float | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "EVAL_PRICE_WEB_SEARCH_PER_1K", "OPENAI_PRICE_WEB_SEARCH_PER_1K"
+        ),
+    )
     frontend_origin: str = "https://localhost:5173"
     frontend_url: str = "https://localhost:5173"
     cookie_secure: bool = True

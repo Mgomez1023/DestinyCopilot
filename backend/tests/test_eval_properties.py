@@ -571,3 +571,75 @@ def test_ground_truth_treats_mods_as_equipped_with_the_character_that_wears_them
     )
 
     assert result.passed, result
+
+
+def test_permission_requests_and_unsupported_capabilities_are_caught() -> None:
+    assert_flag(
+        "I can check official sources or community reports. Which do you prefer?",
+        "no_read_only_permission_request",
+        None,
+    )
+    assert_pass("Fatebringer is in your vault.", "no_read_only_permission_request")
+    assert_flag(
+        "Upload a screenshot of your fragments.",
+        "no_unsupported_capability",
+        "unsupported_capability",
+    )
+    assert_flag(
+        "Done, I've moved Rose to your vault.",
+        "no_unsupported_capability",
+        "unsupported_capability",
+    )
+    assert_pass(
+        "I can't move items or view screenshots; transfer Rose from the item menu in game.",
+        "no_unsupported_capability",
+    )
+
+
+# --- Blind spots from the 2026-10-21 live run (answers quoted from that run) ---------------
+
+
+def test_handing_the_choice_back_is_an_unfulfilled_request() -> None:
+    for answer in (
+        "Primary pick: Nightfall. Backup: Vanguard Ops. Which do you want to run: Nightfall or "
+        "Vanguard Ops?",
+        "Other options are Vanguard Ops and Nightfall. I couldn't check a fuller plan against "
+        "your constraints, so tell me which one to build out.",
+        'I can’t find any matches. Do you mean the weapon named exactly "Mint Retrograde"?',
+        "Edge of Fate, Vanguard Ops, or Duality? (Pick one.)",
+    ):
+        assert_flag(answer, "request_fulfilled", "unfulfilled_request")
+    # A finished answer, and one targeted preference question, are both fine.
+    assert_pass("Run Nightfall: The Lightblade solo for loot.", "request_fulfilled")
+    assert_pass("Run Nightfall. Pick one: survivability or boss DPS?", "request_fulfilled")
+    assert_pass("Tell me which platform you're on for exact buttons.", "request_fulfilled")
+
+
+def test_a_fixed_barrel_that_another_copy_could_change_is_a_contradiction() -> None:
+    live = (
+        "I can’t make in‑game changes. Also: you can’t swap or re‑roll the "
+        "barrel on an Exotic like Sunshot — its intrinsic/perk slots are fixed on each copy. "
+        "To get a different barrel you must obtain another Sunshot."
+    )
+    assert_flag(live, "no_contradictory_roll_claims", "contradictory_claim")
+    assert_pass(
+        "Sunshot's barrel is fixed: every copy has Chambered Compensator.",
+        "no_contradictory_roll_claims",
+    )
+
+
+def test_an_element_fragment_is_not_evidence_about_prismatic() -> None:
+    live = (
+        "Confirmed: your Titan currently has Ember of Solar equipped and I can’t see which "
+        "other Prismatic fragments are unlocked from here."
+    )
+    assert_flag(live, "no_cross_subclass_inference", "hallucinated_fact")
+    assert_pass(
+        "Your Titan is on Sunbreaker, so Ember of Ashes says nothing about your Prismatic unlocks.",
+        "no_cross_subclass_inference",
+    )
+
+
+def test_the_planning_fallback_counts_as_a_refusal() -> None:
+    trace = {"grounding": {}, "planning_correction": {"fallback": "planning_safe_answer"}}
+    assert_flag("Tell me which one to build out.", "no_false_refusal", "false_refusal", trace=trace)

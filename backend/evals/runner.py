@@ -5,7 +5,8 @@
 
 Uses the configured OpenAI model and key (root .env) against synthetic Guardian profiles,
 the local Manifest SQLite, the guide corpus, and the core knowledge corpus. Writes
-results.json (machine-readable) and summary.md (human-readable).
+results.json (machine-readable), summary.md (human-readable), and cassette.jsonl (every raw
+model request fingerprint and response, for `python -m evals.replay`).
 """
 
 import argparse
@@ -15,8 +16,10 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
+from evals.cassette import CASSETTE_NAME, CassetteWriter
 from evals.judge import judge
 from evals.mechanics import mechanics_baseline
+from evals.pricing import load_prices
 from evals.profiles import PROFILES, profile_facts
 from evals.properties import evaluate_properties
 from evals.report import record, summary_markdown, usage_stats
@@ -58,12 +61,22 @@ async def run(arguments: argparse.Namespace) -> int:
     judge_client = AsyncOpenAI(api_key=settings.openai_api_key) if arguments.judge else None
     semaphore = asyncio.Semaphore(arguments.concurrency)
     started_at = datetime.now(UTC).isoformat(timespec="seconds")
+    # One clock for the whole run, recorded as started_at, so a replay can reproduce the prompts.
+    run_clock = datetime.fromisoformat(started_at)
+    out = (
+        Path(arguments.out) if arguments.out else EVAL_CACHE / "runs" / started_at.replace(":", "")
+    )
+    out.mkdir(parents=True, exist_ok=True)
+    # Every model call is recorded so evals.replay can re-run post-processing offline.
+    cassette = CassetteWriter(out / CASSETTE_NAME)
 
     async def evaluate(scenario):  # noqa: ANN001, ANN202
         async with semaphore:
             context = PROFILES[scenario.profile]()
             facts = profile_facts(context)
-            obs = await run_scenario(settings, knowledge, scenario, context)
+            obs = await run_scenario(
+                settings, knowledge, scenario, context, cassette=cassette, now=run_clock
+            )
             results = evaluate_properties(obs, facts)
             verdict = None
             if judge_client is not None and not obs.final.error:
@@ -95,11 +108,8 @@ async def run(arguments: argparse.Namespace) -> int:
         "live_provider": arguments.live_provider,
         "started_at": started_at,
         "manifest": manifest.name,
+        "prices": load_prices(),
     }
-    out = (
-        Path(arguments.out) if arguments.out else EVAL_CACHE / "runs" / started_at.replace(":", "")
-    )
-    out.mkdir(parents=True, exist_ok=True)
     (out / "results.json").write_text(
         json.dumps(
             {

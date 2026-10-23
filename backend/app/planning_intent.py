@@ -124,7 +124,9 @@ _ALTERNATIVES = re.compile(
     r"\b(?:what|anything|something|anywhere)\s+else\b|"
     r"\b(?:other|another|different|more|alternative)\s+"
     r"(?:options?|ideas?|suggestions?|choices?|activit(?:y|ies)|things?)\b|"
-    r"\bany\s+(?:other|alternatives)\b",
+    r"\bany\s+(?:other|alternatives)\b|"
+    # "Something with better loot instead?", "anything solo instead".
+    r"\b(?:something|anything)\b[^.?!]{0,40}\binstead\b",
     re.IGNORECASE,
 )
 # Feedback on what was suggested: declining it, or taking a declined option back.

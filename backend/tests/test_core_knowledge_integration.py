@@ -128,7 +128,7 @@ def test_startup_loads_the_production_corpus_once_and_can_be_disabled() -> None:
     disabled = core_knowledge_provider(Settings(core_knowledge_enabled=False))
     broken = core_knowledge_provider(Settings(core_knowledge_file=Path("missing.json")))
 
-    assert provider is not None and provider.engine.entity_count == 48
+    assert provider is not None and provider.engine.entity_count == 49
     assert disabled is None
     assert broken is None
 
@@ -224,8 +224,15 @@ def test_core_tool_results_are_never_guardian_evidence() -> None:
 # --- Per-turn grounded-facts block ------------------------------------------------------
 
 
+CLOCK_MARK = "\n\nCurrent date and time (UTC): "
+
+
 def instructions_of(responses: Any, index: int = 0) -> str:
-    return responses.requests[index]["instructions"]
+    """The instructions without the clock line, which always comes last (see test_prompt_clock)."""
+
+    text = responses.requests[index]["instructions"]
+    assert CLOCK_MARK in text and text.count(CLOCK_MARK) == 1
+    return text.split(CLOCK_MARK, 1)[0]
 
 
 def test_bundle_is_appended_once_after_routing_and_keeps_the_static_prefix() -> None:
@@ -373,13 +380,19 @@ def test_live_sensitive_metadata_never_bypasses_the_live_gate() -> None:
     assert trace["required_live_topic"] == "weekly_nightfall"
     assert trace["answer"] == "unavailable_live_data"
     assert answer.source == "local"
-    assert responses.requests == []
+    # The model ran (web research was possible) but found nothing, so the limit stands.
+    assert trace["grounding"]["web_research"] is False
+    assert trace["grounding"]["live_provider"] is False
 
 
 def test_core_provider_works_on_the_streaming_path() -> None:
     recommendations, responses = service(
         streaming=True,
-        outputs=[[concept_call("Altars")], [_answer("Which altar do you mean?")]],
+        outputs=[
+            [concept_call("Altars")],
+            [_answer("Which altar do you mean?")],
+            [_answer("Assuming you mean Altars of Sorrow on the Moon, it is in Sorrow's Harbor.")],
+        ],
     )
     emitted: list[Any] = []
 
@@ -396,7 +409,8 @@ def test_core_provider_works_on_the_streaming_path() -> None:
     )
     trace = recommendations.latest_trace()
 
-    assert answer.message == "Which altar do you mean?"
+    # A question-only draft gets one rewrite that states an assumption and answers.
+    assert answer.message.startswith("Assuming you mean Altars of Sorrow")
     assert "manifest" in reporter.emitted_categories
     assert reporter.emitted_categories[-1] == "final"
     assert all(value["instructions"].count(CORE_FACTS_HEADER) == 1 for value in responses.requests)

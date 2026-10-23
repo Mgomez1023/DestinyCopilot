@@ -46,12 +46,12 @@ EXOTIC_ARMOR = {
     "Contraverse Hold": ("Warlock", "Gauntlets"),
     "Necrotic Grip": ("Warlock", "Gauntlets"),
 }
-# Weapons: (subtype, bucket, tier, damage).
+# Weapons: (subtype, bucket, tier, damage), as the Manifest defines them.
 WEAPONS = {
     "Ace of Spades": ("Hand Cannon", "Kinetic Weapons", "Exotic", "Kinetic"),
     "Sunshot": ("Hand Cannon", "Energy Weapons", "Exotic", "Solar"),
     "Rose": ("Hand Cannon", "Kinetic Weapons", "Legendary", "Kinetic"),
-    "Fatebringer": ("Hand Cannon", "Energy Weapons", "Legendary", "Arc"),
+    "Fatebringer": ("Hand Cannon", "Kinetic Weapons", "Legendary", "Kinetic"),
     "Funnelweb": ("Submachine Gun", "Energy Weapons", "Legendary", "Void"),
     "Riskrunner": ("Submachine Gun", "Energy Weapons", "Exotic", "Arc"),
     "Calus Mini-Tool": ("Submachine Gun", "Energy Weapons", "Legendary", "Solar"),
@@ -59,7 +59,7 @@ WEAPONS = {
     "Apex Predator": ("Rocket Launcher", "Power Weapons", "Legendary", "Solar"),
     "Edge Transit": ("Grenade Launcher", "Power Weapons", "Legendary", "Void"),
     "Witherhoard": ("Grenade Launcher", "Kinetic Weapons", "Exotic", "Kinetic"),
-    "Heritage": ("Shotgun", "Energy Weapons", "Legendary", "Arc"),
+    "Heritage": ("Shotgun", "Kinetic Weapons", "Legendary", "Kinetic"),
     "Taipan-4fr": ("Linear Fusion Rifle", "Power Weapons", "Legendary", "Void"),
     "Falling Guillotine": ("Sword", "Power Weapons", "Legendary", "Void"),
     "Outbreak Perfected": ("Pulse Rifle", "Kinetic Weapons", "Exotic", "Kinetic"),
@@ -77,17 +77,110 @@ WEAPON_PERKS = {
     "Taipan-4fr": ["Firing Line", "Bait and Switch"],
     "Falling Guillotine": ["Relentless Strikes", "Whirlwind Blade"],
 }
+# Exotic weapons' fixed sockets (name, plug category) from the Manifest definition; every
+# copy has exactly these.
+EXOTIC_SOCKETS = {
+    "Ace of Spades": [
+        ("Memento Mori", "intrinsics"),
+        ("Corkscrew Rifling", "barrels"),
+        ("High-Caliber Rounds", "magazines"),
+        ("Firefly", "frames"),
+    ],
+    "Sunshot": [
+        ("Sunburn", "intrinsics"),
+        ("Chambered Compensator", "barrels"),
+        ("Accurized Rounds", "magazines"),
+        ("Sun Blast", "frames"),
+    ],
+    "Riskrunner": [
+        ("Arc Conductor", "intrinsics"),
+        ("Arrowhead Brake", "barrels"),
+        ("Extended Mag", "magazines"),
+        ("Superconductor", "frames"),
+    ],
+    "Gjallarhorn": [
+        ("Wolfpack Rounds", "intrinsics"),
+        ("Alloy Casing", "magazines_gl"),
+        ("Pack Hunter", "frames"),
+    ],
+    "Witherhoard": [
+        ("Primeval's Torment", "intrinsics"),
+        ("Black Powder", "magazines_gl"),
+        ("Break the Bank", "frames"),
+    ],
+    "Outbreak Perfected": [
+        ("The Corruption Spreads", "intrinsics"),
+        ("Extended Barrel", "barrels"),
+        ("Accurized Rounds", "magazines"),
+        ("Parasitism", "frames"),
+    ],
+    "Le Monarque": [
+        ("Poison Arrows", "intrinsics"),
+        ("Natural String", "bowstrings"),
+        ("Compact Arrow Shaft", "arrows"),
+        ("Snapshot Sights", "frames"),
+    ],
+    "Polaris Lance": [
+        ("The Perfect Fifth", "intrinsics"),
+        ("Smallbore", "barrels"),
+        ("Tactical Mag", "magazines"),
+        ("Zen Moment", "frames"),
+    ],
+}
 SUBCLASSES = {
     "Titan": {"Solar": "Sunbreaker", "Arc": "Striker", "Void": "Sentinel"},
     "Hunter": {"Solar": "Gunslinger", "Arc": "Arcstrider", "Void": "Nightstalker"},
     "Warlock": {"Solar": "Dawnblade", "Arc": "Stormcaller", "Void": "Voidwalker"},
 }
-LEGENDARY_ARMOR = {
-    "Titan": ["Iron Forerunner Helm", "Iron Forerunner Plate", "Iron Forerunner Greaves"],
-    "Hunter": ["Iron Forerunner Mask", "Iron Forerunner Vest", "Iron Forerunner Boots"],
-    "Warlock": ["Iron Forerunner Hood", "Iron Forerunner Robes", "Iron Forerunner Boots"],
+# Real Manifest plug names: one grenade and one aspect per class and element, and two
+# fragments per element (fragments are shared by every class of that element).
+SUBCLASS_GRENADES = {
+    "Titan": {"Solar": "Thermite Grenade", "Arc": "Pulse Grenade", "Void": "Suppressor Grenade"},
+    "Hunter": {"Solar": "Swarm Grenade", "Arc": "Flux Grenade", "Void": "Vortex Grenade"},
+    "Warlock": {"Solar": "Healing Grenade", "Arc": "Storm Grenade", "Void": "Vortex Grenade"},
 }
-ARMOR_BUCKETS = ("Helmet", "Chest Armor", "Leg Armor")
+SUBCLASS_ASPECTS = {
+    "Titan": {"Solar": "Roaring Flames", "Arc": "Knockout", "Void": "Bastion"},
+    "Hunter": {"Solar": "Knock 'Em Down", "Arc": "Flow State", "Void": "Stylish Executioner"},
+    "Warlock": {"Solar": "Heat Rises", "Arc": "Electrostatic Mind", "Void": "Chaos Accelerant"},
+}
+SUBCLASS_FRAGMENTS = {
+    "Solar": ("Ember of Ashes", "Ember of Empyrean"),
+    "Arc": ("Spark of Ions", "Spark of Magnitude"),
+    "Void": ("Echo of Persistence", "Echo of Expulsion"),
+}
+ARMOR_BUCKETS = ("Helmet", "Gauntlets", "Chest Armor", "Leg Armor", "Class Armor")
+LEGENDARY_ARMOR = {
+    "Titan": [
+        "Iron Forerunner Helm",
+        "Iron Forerunner Gauntlets",
+        "Iron Forerunner Plate",
+        "Iron Forerunner Greaves",
+        "Iron Forerunner Mark",
+    ],
+    "Hunter": [
+        "Iron Forerunner Mask",
+        "Iron Forerunner Grips",
+        "Iron Forerunner Vest",
+        "Iron Forerunner Strides",
+        "Iron Forerunner Cloak",
+    ],
+    "Warlock": [
+        "Iron Forerunner Hood",
+        "Iron Forerunner Gloves",
+        "Iron Forerunner Vestments",
+        "Iron Forerunner Boots",
+        "Iron Forerunner Bond",
+    ],
+}
+# One real armor mod per slot, in that slot's Manifest plug category.
+ARMOR_MODS = {
+    "Helmet": ("Hands-On", "enhancements.v2_head"),
+    "Gauntlets": ("Heavy Handed", "enhancements.v2_arms"),
+    "Chest Armor": ("Charged Up", "enhancements.v2_chest"),
+    "Leg Armor": ("Recuperation", "enhancements.v2_legs"),
+    "Class Armor": ("Bomber", "enhancements.v2_class_item"),
+}
 
 
 def _hash(*parts: object) -> int:
@@ -105,9 +198,23 @@ def _plug(name: str, category: str, plug_type: str) -> SocketedPlugSummary:
     )
 
 
+SOCKET_LABELS = {
+    "intrinsics": "Intrinsic",
+    "barrels": "Barrel",
+    "magazines": "Magazine",
+    "magazines_gl": "Magazine",
+    "frames": "Trait",
+    "bowstrings": "Bowstring",
+    "arrows": "Arrow",
+}
+
+
 def weapon(name: str, location: str, character_id: str | None, equipped: bool = False):
     subtype, bucket, tier, damage = WEAPONS[name]
-    perks = [_plug(value, "frames", "Trait") for value in WEAPON_PERKS.get(name, [])]
+    perks = [
+        _plug(value, category, SOCKET_LABELS[category])
+        for value, category in EXOTIC_SOCKETS.get(name, [])
+    ] or [_plug(value, "frames", "Trait") for value in WEAPON_PERKS.get(name, [])]
     return ItemSummary(
         item_hash=_hash("weapon", name),
         instance_id=f"inst-{_hash(name, location, character_id)}",
@@ -144,11 +251,7 @@ def armor(
 ) -> ItemSummary:
     exotic = name in EXOTIC_ARMOR
     owner_class, exotic_bucket = EXOTIC_ARMOR.get(name, (class_name, bucket))
-    mod = _plug(
-        "Heavy Handed" if "Gauntlet" in (exotic_bucket or "") else "Recuperation",
-        "enhancements.v2_arms",
-        "Armor Mod",
-    )
+    mod = _plug(*ARMOR_MODS[exotic_bucket or "Helmet"], "Armor Mod")
     return ItemSummary(
         item_hash=_hash("armor", name, owner_class),
         instance_id=f"inst-{_hash(name, location, character_id)}",
@@ -178,9 +281,20 @@ def subclass(class_name: str, element: str, character_id: str) -> ItemSummary:
     name = SUBCLASSES[class_name][element]
     lower = element.casefold()
     plugs = [
-        _plug(f"{element} Grenade", f"shared.{lower}.grenades", f"{element} Grenade"),
-        _plug(f"{element} Aspect", f"{class_name.casefold()}.{lower}.aspects", f"{element} Aspect"),
-        _plug(f"Ember of {element}", f"shared.{lower}.fragments", f"{element} Fragment"),
+        _plug(
+            SUBCLASS_GRENADES[class_name][element],
+            f"shared.{lower}.grenades",
+            f"{element} Grenade",
+        ),
+        _plug(
+            SUBCLASS_ASPECTS[class_name][element],
+            f"{class_name.casefold()}.{lower}.aspects",
+            f"{element} Aspect",
+        ),
+        *(
+            _plug(fragment, f"shared.{lower}.fragments", f"{element} Fragment")
+            for fragment in SUBCLASS_FRAGMENTS[element]
+        ),
     ]
     return ItemSummary(
         item_hash=_hash("subclass", name),
@@ -265,13 +379,13 @@ class CharacterSpec:
 
 
 ACTIVITY_TYPES = {
-    "Duality: Standard": ("Dungeon", "Dreaming City"),
+    "Duality: Standard": ("Dungeon", "Derelict Leviathan"),
     "Nightfall: The Lightblade": ("Nightfall", "Cosmodrome"),
     "Vanguard Ops": ("Vanguard Op", "The Tower"),
     "Crucible: Control": ("Control", None),
     "Gambit": ("Gambit", None),
     "Haunted Altars of Sorrow": ("Story", None),
-    "The Coil": ("Seasonal Arena", "Neomuna"),
+    "The Coil": ("Seasonal Arena", "The Dreaming City"),
     "Onslaught: Legend": ("Onslaught", None),
 }
 
@@ -298,8 +412,6 @@ def character(spec: CharacterSpec) -> CharacterSummary:
                     equipped=True,
                 )
             )
-    if spec.exotic_armor and EXOTIC_ARMOR[spec.exotic_armor][1] not in ARMOR_BUCKETS:
-        gear.append(armor(spec.exotic_armor, "equipped", character_id, equipped=True))
     return CharacterSummary(
         character_id=character_id,
         class_name=spec.class_name,
@@ -582,7 +694,7 @@ def large_vault() -> GuardianContext:
             CharacterSpec(
                 "Titan",
                 element="Arc",
-                weapons=("Rose", "Heritage", "Apex Predator"),
+                weapons=("Heritage", "Riskrunner", "Apex Predator"),
                 exotic_armor="Cuirass of the Falling Star",
                 activities=["Duality: Standard", "Nightfall: The Lightblade", "Vanguard Ops"],
             ),

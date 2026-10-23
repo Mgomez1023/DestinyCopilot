@@ -254,7 +254,7 @@ def test_the_context_is_untouched_when_nothing_was_rejected_or_requested() -> No
     assert apply_alternatives(original, state) is original
 
 
-def test_specific_fallback_lists_remaining_grounded_options() -> None:
+def test_specific_fallback_names_one_verified_pick_and_the_other_options() -> None:
     state = state_after(
         "I don't want to do Ember Relay.", ("user", "What next?"), ("assistant", FIRST_REPLY)
     )
@@ -263,7 +263,10 @@ def test_specific_fallback_lists_remaining_grounded_options() -> None:
     fallback = PlanningAnswerValidator.safe_answer(result)
 
     assert fallback.startswith("I've set aside Ember Relay.")
-    assert "Harbor Patrol, Glass Descent: Standard, Iron Trial" in fallback
+    # One pick the data supports, an honest limit, and the rest, not a "tell me which one" list.
+    assert "Harbor Patrol is available to you" in fallback
+    assert "Also available: Glass Descent: Standard, Iron Trial." in fallback
+    assert "not ranking it" in fallback and "tell me which one" not in fallback
     assert "can't make a grounded next-step recommendation" not in fallback
 
 
@@ -347,7 +350,9 @@ def test_rejecting_a_recommended_activity_type_removes_all_of_that_type() -> Non
 
     data = json.loads(planning_json(responses.requests[0]["instructions"]).split("\n", 1)[0])
     assert all(value.get("activity_type") != "Dungeon" for value in data["candidates"])
-    assert data["excluded_by_user"] == ["Duality: Standard"]
+    # "Don't want to do dungeons" is also a stated session exclusion, so the dungeon is pruned
+    # with the other excluded activity types before rejection handling runs.
+    assert "Duality: Standard" in data["excluded_by_preference"]
 
 
 def test_a_reversed_rejection_brings_the_candidate_back() -> None:

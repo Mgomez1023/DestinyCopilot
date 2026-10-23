@@ -321,6 +321,160 @@
         {"source_id": "bungie-update-9-7-0-1", "title": "Destiny 2 Update 9.7.0.1", "provider": "Bungie", "source_url": "https://www.bungie.net/7/en/News/Article/destiny_update_9_7_0_1", "retrieved_at": "2026-09-12T00:00:00Z", "published_at": "2026-06-16T00:00:00Z", "updated_at": "2026-06-16T00:00:00Z", "relevant_section": "Activities / Dungeons", "confidence": "high", "relevance_score": 0.95, "time_sensitive": true, "factual_claims": ["Bungie fixed the Shattered Throne final encounter not dropping the Wish-Ender catalyst."]},
         {"source_id": "vaexil-shattered-throne-2026", "title": "The Shattered Throne Dungeon Guide", "provider": "Vaexil.tv", "source_url": "https://destiny2.vaexil.tv/guides/dungeons/the-shattered-throne", "retrieved_at": "2026-09-12T00:00:00Z", "published_at": null, "updated_at": "2026-08-01T00:00:00Z", "relevant_section": "Wish-Ender catalyst", "confidence": "high", "relevance_score": 1.0, "time_sensitive": true, "factual_claims": ["Eligibility, random final-encounter drop, and catalyst completion summary."]}
       ]
+    },
+    {
+      "guide_id": "prismatic-fragments-acquisition",
+      "title": "Unlocking Prismatic Fragments after The Final Shape",
+      "subject": "Prismatic Fragments",
+      "guide_type": "general",
+      "aliases": [
+        "prismatic fragments",
+        "prismatic fragment",
+        "facets",
+        "facet of",
+        "prismatic facets",
+        "unlock prismatic fragments",
+        "memory vestige",
+        "memory vestiges",
+        "prismatic chests"
+      ],
+      "freshness": "semi_stable",
+      "summary": "Prismatic Fragments are the Facets. Three come from campaign missions (The Ascent, Dissent, Iconoclasm). Most are in Prismatic chests on the Pale Heart that a Memory marks on the map; five Vestiges of one kind make a Memory. Light Vestiges drop from Cyst missions, which need Micah-10's Alone in the Dark quest. Darkness Vestiges come from cleansing Darkness-covered chests (a timed challenge). Mending, Grace, Command, and Defiance need named tasks. Call get_destiny_guide for the full steps and chest locations.",
+      "associated_entities": [
+        {
+          "name": "Prismatic",
+          "entity_type": "subclass",
+          "entity_hash": null
+        },
+        {
+          "name": "The Pale Heart",
+          "entity_type": "destination",
+          "entity_hash": null
+        },
+        {
+          "name": "Micah-10",
+          "entity_type": "npc",
+          "entity_hash": null
+        }
+      ],
+      "prerequisites": [
+        "Finish The Final Shape campaign.",
+        "Light Vestiges need Micah-10's Alone in the Dark quest (offered after her Convalescence quests)."
+      ],
+      "steps": [
+        {
+          "order": 1,
+          "title": "Collect the campaign Facets",
+          "description": "Three Facets are tied to campaign missions: Bravery in The Ascent, Devotion in Dissent, and Sacrifice in Iconoclasm.",
+          "location": "Mission chests",
+          "activity": "Campaign missions",
+          "objective": "Open the mission's Prismatic chest.",
+          "tips": []
+        },
+        {
+          "order": 2,
+          "title": "Start Micah-10's Alone in the Dark",
+          "description": "After the campaign and her Convalescence quests, take Alone in the Dark. It unlocks the Cyst missions that drop Light Vestiges.",
+          "location": "Lost City / Pale Heart",
+          "activity": "Alone in the Dark",
+          "objective": "Reach the Cyst-clearing step.",
+          "tips": [
+            "Vestiges stop dropping once that Cyst's quest step is finished; take the next Alone in the Dark variant."
+          ]
+        },
+        {
+          "order": 3,
+          "title": "Earn Memory Vestiges: Light",
+          "description": "Defeat the glowing enemies inside Cyst missions. Five Light Vestiges make one Memory of Light.",
+          "location": "Cysts, The Pale Heart",
+          "activity": "Cyst missions",
+          "objective": "Collect five Light Vestiges.",
+          "tips": [
+            "Without the quest, the post-campaign Memories quest series is an alternative route."
+          ]
+        },
+        {
+          "order": 4,
+          "title": "Earn Memory Vestiges: Darkness",
+          "description": "Cleanse the Darkness-covered pyramid chests in Pale Heart patrol zones. Each is a timed challenge of about 90 seconds; restart if you fail. Five Darkness Vestiges make one Memory of Darkness.",
+          "location": "Pale Heart patrol zones",
+          "activity": "Chest puzzles",
+          "objective": "Finish the challenge, then open the cleansed chest.",
+          "tips": []
+        },
+        {
+          "order": 5,
+          "title": "Use each Memory to reveal a chest",
+          "description": "A Memory marks one Prismatic chest on the map; opening it unlocks a Facet and consumes the Memory. Light chests: The Refraction (Awakening), The Seclusion (Dominance), The Blooming (Generosity). Darkness chests: The Divide (Honor), The Impasse (Solitude).",
+          "location": "The Pale Heart",
+          "activity": "Prismatic chests",
+          "objective": "Open the marked chest.",
+          "tips": []
+        },
+        {
+          "order": 6,
+          "title": "Finish the named-task Facets",
+          "description": "Mending needs four hidden Ghosts in the patrol zone. Grace needs three Gordian Weavers, then the Subjugator and Tormentor. Command and Defiance need the Divided and Transgressive Prismatic Keys.",
+          "location": "The Pale Heart",
+          "activity": "Patrol tasks",
+          "objective": "Complete the named task for that Facet.",
+          "tips": []
+        }
+      ],
+      "reward": {
+        "name": "Prismatic Fragments (Facets)"
+      },
+      "encounters": [],
+      "farming": null,
+      "warnings": [
+        "Sources do not agree on every Memory name or exact count of Facets, so no total is stated here.",
+        "Guardian data shows only which fragments are equipped, never which are unlocked.",
+        "Fragments on a Solar, Arc, or Void subclass (Ember, Spark, Echo) are not Prismatic Facets."
+      ],
+      "factual_claims": [
+        "Five Memory Vestiges of one kind combine into one Memory.",
+        "Each Memory marks one Prismatic chest on the Pale Heart map.",
+        "Light Vestiges come from Cyst missions; Darkness Vestiges come from cleansing Darkness-covered chests."
+      ],
+      "claim_evidence": [],
+      "sources": [
+        {
+          "source_id": "shacknews-prismatic-unlock-2026",
+          "title": "How to unlock Prismatic abilities, Aspects & Fragments - Destiny 2",
+          "provider": "Shacknews",
+          "source_url": "https://www.shacknews.com/article/140091/unlock-prismatic-abilities-destiny-2",
+          "retrieved_at": "2026-10-21T00:00:00Z",
+          "published_at": null,
+          "updated_at": null,
+          "relevant_section": "Facets: campaign, Memories, named tasks",
+          "confidence": "medium",
+          "relevance_score": 1.0,
+          "time_sensitive": false,
+          "factual_claims": [
+            "Campaign Facets: Bravery, Devotion, Sacrifice.",
+            "Memory and chest-location pairs.",
+            "Mending, Grace, Command, Defiance tasks."
+          ]
+        },
+        {
+          "source_id": "thegamer-memory-vestiges-2026",
+          "title": "Destiny 2: The Final Shape - How To Get Memory Vestiges Of Light And Darkness",
+          "provider": "TheGamer",
+          "source_url": "https://www.thegamer.com/destiny-2-final-shape-memory-vestiges-light-darkness-guide/",
+          "retrieved_at": "2026-10-21T00:00:00Z",
+          "published_at": null,
+          "updated_at": null,
+          "relevant_section": "Vestiges, Memories, chest table",
+          "confidence": "medium",
+          "relevance_score": 0.95,
+          "time_sensitive": false,
+          "factual_claims": [
+            "Five vestiges forge a Memory.",
+            "Darkness chests are timed challenges.",
+            "Memory-to-chest table."
+          ]
+        }
+      ]
     }
   ]
 }

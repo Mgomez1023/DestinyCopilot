@@ -103,6 +103,9 @@ CURRENT_DEFAULT_TOOLS = frozenset(
 )
 
 
+# Words a model may put in `bucket` to mean where an item is stored, not which slot it fits.
+LOCATION_BUCKETS = {"vault": "vault", "equipped": "equipped", "character": "character"}
+
 # Per-character views whose unspecified selector means the conversation's explicit character.
 CONVERSATION_SCOPED_TOOLS = frozenset(
     {"get_active_quests", "get_available_activities", "get_recent_activities"}
@@ -165,7 +168,8 @@ GUARDIAN_TOOL_DEFINITIONS: list[dict[str, Any]] = [
         (
             "Resolve conservative major campaign/content progress for one character using "
             "maintained Bungie-backed evidence rules. Prefer this over reconstructing campaign "
-            "completion from generic quest data."
+            "completion from generic quest data. It needs one character selector (no default): "
+            "use the class the user named, otherwise the current character's class."
         ),
         {
             **_character_selector(optional=False),
@@ -220,13 +224,19 @@ GUARDIAN_TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "search_inventory",
         "Search normalized owned and equipped items using name and structured filters.",
         {
-            "query": _nullable_string("Case-insensitive item-name substring, or null."),
+            "query": _nullable_string(
+                "Case-insensitive substring matched against an item's name, its subtype (such as "
+                "Hand Cannon), and the names of its socketed perks and plugs (such as Slideshot). "
+                "Perks can only be matched on items whose socket data was returned; the result's "
+                "searched_fields and socket_data_coverage say what a search could see. Or null."
+            ),
             **_character_selector(optional=True),
             "item_type": _nullable_string("Item type filter such as Weapon or Armor, or null."),
             "subtype": _nullable_string("Subtype filter such as Auto Rifle, or null."),
             "bucket": _nullable_string(
                 "Equipment-slot filter such as Helmet or Energy Weapons, or null. Vaulted items "
-                "are matched by their definition slot, not by the vault."
+                "are matched by their definition slot. The words Vault, Equipped, or Character "
+                "filter by where the item is stored instead."
             ),
             "equipped_only": {
                 "type": "boolean",
@@ -242,8 +252,9 @@ GUARDIAN_TOOL_DEFINITIONS: list[dict[str, Any]] = [
     ),
     _strict_tool(
         "get_build_details",
-        "Get a build-focused subclass, exotic, weapon perk, armor stat, and mod view. "
-        "Defaults to the current character.",
+        "Get a build-focused subclass, exotic, weapon perk, armor stat, and mod view, including "
+        "equipped aspects and fragments and Bungie-reported plug-set listings for subclass and "
+        "armor sockets when returned. Defaults to the current character.",
         _character_selector(optional=False, current_default=True),
     ),
 ]
@@ -849,20 +860,50 @@ class GuardianToolService:
         def matches(value: str | None, expected: str | None) -> bool:
             return expected is None or expected.casefold() in (value or "").casefold()
 
+        # A bucket that names where an item is stored ("Vault") is a location filter; any other
+        # value is an equipment slot such as Helmet or Energy Weapons.
+        location = LOCATION_BUCKETS.get((request.bucket or "").strip().casefold())
+        slot = None if location else request.bucket
+
         def is_shared(item: ItemSummary) -> bool:
             # Vault and profile items belong to no single character, so a character-scoped
             # search includes the shared items that character's class can actually use.
             return item.location in {"vault", "profile"} and item.character_id is None
 
-        candidates = [
+        def matched_fields(item: ItemSummary) -> list[str]:
+            """Which of the item's searchable fields the query hits (empty list: no query)."""
+
+            if request.query is None:
+                return []
+            fields = [
+                label
+                for label, value in (("name", item.name), ("subtype", item.item_subtype))
+                if matches(value, request.query)
+            ]
+            plugs = dict.fromkeys(
+                [*item.socketed_plugs, *(plug.name for plug in item.socketed_plug_details)]
+            )
+            fields.extend(f"perk: {plug}" for plug in plugs if matches(plug, request.query))
+            return fields[:4]
+
+        def passes_filters(item: ItemSummary) -> bool:
+            return (
+                matches(item.item_type, request.item_type)
+                and matches(item.item_subtype, request.subtype)
+                and matches(item.gear_slot(), slot)
+                and (location is None or item.location == location)
+                and (not request.equipped_only or item.is_equipped)
+            )
+
+        in_scope = [
             item
             for item in items
-            if matches(item.name, request.query)
-            and matches(item.item_type, request.item_type)
-            and matches(item.item_subtype, request.subtype)
-            and matches(item.gear_slot(), request.bucket)
-            and (not request.equipped_only or item.is_equipped)
-            and (selected is None or item.character_id == selected.character_id or is_shared(item))
+            if (request.query is None or matched_fields(item)) and passes_filters(item)
+        ]
+        candidates = [
+            item
+            for item in in_scope
+            if selected is None or item.character_id == selected.character_id or is_shared(item)
         ]
         filtered = [
             item
@@ -881,13 +922,85 @@ class GuardianToolService:
             ),
             reverse=True,
         )
-        return {
-            "items": [self._item(item) for item in filtered[: request.limit]],
+        searched_items = [
+            item
+            for item in items
+            if matches(item.item_type, request.item_type)
+            and matches(item.item_subtype, request.subtype)
+            and matches(item.gear_slot(), slot)
+            and (location is None or item.location == location)
+            and (not request.equipped_only or item.is_equipped)
+        ]
+        with_sockets = sum(1 for item in searched_items if item.socketed_plugs)
+        result: dict[str, Any] = {
+            "items": [
+                {
+                    **self._item(item),
+                    **({"matched_on": matched_fields(item)} if request.query else {}),
+                }
+                for item in filtered[: request.limit]
+            ],
             "total_matching": len(filtered),
             "excluded_other_class_count": len(candidates) - len(filtered),
             "limit": request.limit,
             "truncated": len(filtered) > request.limit,
         }
+        if request.query:
+            without = len(searched_items) - with_sockets
+            result["searched_fields"] = ["name", "subtype", "socketed perk and plug names"]
+            result["socket_data_coverage"] = {
+                "items_searched": len(searched_items),
+                "with_socket_data": with_sockets,
+                "without_socket_data": without,
+            }
+            if selected is not None:
+                result["matches_on_other_characters"] = len(in_scope) - len(candidates)
+                candidate_ids = {id(item) for item in candidates}
+                class_by_id = {
+                    character.character_id: character.class_name
+                    for character in self.context.characters
+                }
+                result["other_character_matches"] = [
+                    {
+                        "name": item.name,
+                        "character_class": class_by_id.get(item.character_id or ""),
+                        "location": item.location,
+                        "equipped": item.is_equipped,
+                        "matched_on": matched_fields(item),
+                    }
+                    for item in in_scope
+                    if id(item) not in candidate_ids
+                ][: request.limit]
+            # A name that exists but sits outside the type, slot, or location asked for is not
+            # "none owned": report it with where it really is.
+            excluded = [item for item in items if matched_fields(item) and not passes_filters(item)]
+            if excluded:
+                result["name_matches_excluded_by_filters"] = [
+                    {
+                        "name": item.name,
+                        "item_type": item.item_type,
+                        "subtype": item.item_subtype,
+                        "bucket": item.gear_slot(),
+                        "location": item.location,
+                        "equipped": item.is_equipped,
+                        "matched_on": matched_fields(item),
+                    }
+                    for item in excluded
+                ][: request.limit]
+                result["excluded_by_filters_count"] = len(excluded)
+                if not filtered:
+                    result["search_note"] = (
+                        f"No match under the filters given, but {len(excluded)} item(s) match "
+                        "the query outside them; see name_matches_excluded_by_filters for "
+                        "their actual type, bucket, and location."
+                    )
+            if not filtered and without and "search_note" not in result:
+                result["search_note"] = (
+                    f"No match. {without} of {len(searched_items)} searched items returned no "
+                    "socket data, so perks on them could not be searched; this does not show "
+                    "that no item has the perk."
+                )
+        return result
 
     def get_build_details(
         self,

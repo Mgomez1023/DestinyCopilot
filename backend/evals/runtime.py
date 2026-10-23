@@ -12,6 +12,7 @@ import sqlite3
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,7 @@ from app.guardian_tools import GuardianToolService
 from app.guide_knowledge import GuideKnowledgeProvider
 from app.main import core_knowledge_provider
 from app.models import ChatRequest, ChatTurn, GuardianContext
+from evals.cassette import CassetteMismatch, CassetteWriter, ReplayClient
 from evals.model import Scenario
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -91,11 +93,15 @@ class TurnRecord:
     tool_calls: list[ToolCallRecord] = field(default_factory=list)
     model_requests: int = 0
     input_tokens: int = 0
+    cached_input_tokens: int = 0
     output_tokens: int = 0
+    web_search_calls: int = 0
     reasoning_tokens: int = 0
     instruction_chars: int = 0
     # Every assistant draft the model produced this turn, including ones the validator rejected.
     drafts: list[str] = field(default_factory=list)
+    # ChatResponse.sources as the player sees them: title, url, and domain per source.
+    sources: list[dict[str, Any]] = field(default_factory=list)
     core_block: str | None = None
     # Turn routing and planning context the model saw (instructions after the prefix).
     routing_context: str = ""
@@ -118,11 +124,28 @@ class RecordingRecommendationService(RecommendationService):
     """Production service; overrides only record requests, usage, and tool results."""
 
     current: TurnRecord | None = None
+    # Where the next call belongs in the cassette; set by run_scenario.
+    cassette: CassetteWriter | None = None
+    scenario_id: str = ""
+    turn_index: int = 0
 
     async def _create_response(self, *, stream_status: Any, **request_options: Any) -> Any:
         response = await super()._create_response(stream_status=stream_status, **request_options)
+        if self.cassette is not None and self.current is not None:
+            self.cassette.write(
+                self.scenario_id,
+                self.turn_index,
+                self.current.model_requests,
+                request_options,
+                response,
+            )
         if self.current is not None:
             self.current.model_requests += 1
+            self.current.web_search_calls += sum(
+                1
+                for item in self._field(response, "output", []) or []
+                if self._field(item, "type") == "web_search_call"
+            )
             draft = self._extract_assistant_text(response)
             if draft:
                 self.current.drafts.append(draft)
@@ -135,6 +158,10 @@ class RecordingRecommendationService(RecommendationService):
             usage = self._field(response, "usage")
             if usage is not None:
                 self.current.input_tokens += int(self._field(usage, "input_tokens", 0) or 0)
+                input_details = self._field(usage, "input_tokens_details")
+                self.current.cached_input_tokens += int(
+                    self._field(input_details, "cached_tokens", 0) or 0
+                )
                 self.current.output_tokens += int(self._field(usage, "output_tokens", 0) or 0)
                 details = self._field(usage, "output_tokens_details")
                 self.current.reasoning_tokens += int(
@@ -162,6 +189,9 @@ def eval_settings(**overrides: Any) -> Settings:
         "live_cache_dir": EVAL_CACHE / "live",
         "guide_cache_dir": EVAL_CACHE / "guides",
         "enable_debug_tools": True,
+        # An evaluation is not a beta user: no message quota or spend cap.
+        "daily_message_quota": 0,
+        "daily_spend_cap_usd": 0,
         **overrides,
     }
     return Settings(**values)
@@ -201,16 +231,35 @@ async def run_scenario(
     knowledge: DestinyKnowledgeService,
     scenario: Scenario,
     context: GuardianContext,
+    *,
+    cassette: CassetteWriter | None = None,
+    client: ReplayClient | None = None,
+    now: datetime | None = None,
 ) -> Observation:
-    """Replay every user turn live; the model's own answers become the history."""
+    """Replay every user turn live; the model's own answers become the history.
+
+    `cassette` records each model call. `client` swaps in a recorded-response stub (see
+    evals.replay); a request that differs from the recording ends the scenario with an error
+    that starts with "needs_live". `now` pins the time the prompts carry.
+    """
 
     service = RecordingRecommendationService(settings, knowledge)
+    if client is not None:
+        service.client = client
+    service.cassette = cassette
+    service.scenario_id = scenario.id
+    if now is not None:
+        # The prompt carries the date; a run and its replay must carry the same one.
+        service.clock = lambda: now
     history: list[ChatTurn] = []
     turns: list[TurnRecord] = []
     try:
-        for message in scenario.turns:
+        for index, message in enumerate(scenario.turns):
             record = TurnRecord(message=message)
             service.current = record
+            service.turn_index = index
+            if client is not None:
+                client.begin(scenario.id, index)
             started = time.perf_counter()
             try:
                 response = await service.chat(
@@ -218,6 +267,9 @@ async def run_scenario(
                 )
                 record.answer = response.message
                 record.source = response.source
+                record.sources = [value.model_dump() for value in response.sources]
+            except CassetteMismatch as exc:
+                record.error = f"needs_live: {exc}"[:300]
             except Exception as exc:  # noqa: BLE001 - recorded as a tool-loop failure
                 record.error = f"{type(exc).__name__}: {exc}"[:300]
             record.latency_s = round(time.perf_counter() - started, 2)

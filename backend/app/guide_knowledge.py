@@ -39,6 +39,181 @@ def _normalized(value: str) -> str:
     return " ".join(re.findall(r"[a-z0-9]+", ascii_value.casefold()))
 
 
+# Words that name a kind of content or phrase a request rather than identify one subject. Two
+# different activities routinely share them, so matching on them alone resolves the wrong guide.
+GENERIC_TOKENS = frozenset(
+    {
+        "a",
+        "an",
+        "the",
+        "and",
+        "or",
+        "of",
+        "to",
+        "in",
+        "on",
+        "for",
+        "with",
+        "from",
+        "at",
+        "by",
+        "is",
+        "are",
+        "was",
+        "be",
+        "do",
+        "does",
+        "did",
+        "how",
+        "what",
+        "which",
+        "who",
+        "where",
+        "when",
+        "why",
+        "can",
+        "could",
+        "should",
+        "would",
+        "i",
+        "me",
+        "my",
+        "we",
+        "you",
+        "your",
+        "it",
+        "its",
+        "this",
+        "that",
+        "these",
+        "those",
+        "get",
+        "got",
+        "find",
+        "need",
+        "want",
+        "show",
+        "tell",
+        "give",
+        "walk",
+        "walkthrough",
+        "guide",
+        "guides",
+        "help",
+        "explain",
+        "through",
+        "about",
+        "please",
+        "complete",
+        "completing",
+        "finish",
+        "finishing",
+        "beat",
+        "beating",
+        "clear",
+        "clearing",
+        "run",
+        "running",
+        "play",
+        "playing",
+        "unlock",
+        "unlocking",
+        "farm",
+        "farming",
+        "solo",
+        "dungeon",
+        "dungeons",
+        "raid",
+        "raids",
+        "strike",
+        "strikes",
+        "mission",
+        "missions",
+        "quest",
+        "quests",
+        "activity",
+        "activities",
+        "encounter",
+        "encounters",
+        "boss",
+        "bosses",
+        "fight",
+        "fights",
+        "nightfall",
+        "exotic",
+        "exotics",
+        "weapon",
+        "weapons",
+        "armor",
+        "gear",
+        "item",
+        "items",
+        "catalyst",
+        "catalysts",
+        "step",
+        "steps",
+    }
+)
+# Qualifiers that select a variant of an activity or item rather than a different subject.
+VARIANT_TOKENS = frozenset(
+    {
+        "haunted",
+        "heroic",
+        "legend",
+        "master",
+        "grandmaster",
+        "prestige",
+        "expert",
+        "contest",
+        "epic",
+        "classic",
+        "reprised",
+        "ultimate",
+    }
+)
+_TOKEN_MATCH_RATIO = 0.8
+
+
+def _distinctive_tokens(value: str) -> list[str]:
+    return [token for token in _normalized(value).split() if token not in GENERIC_TOKENS]
+
+
+def _tokens_match(left: str, right: str) -> bool:
+    if left == right:
+        return True
+    return min(len(left), len(right)) >= 4 and (
+        SequenceMatcher(None, left, right).ratio() >= _TOKEN_MATCH_RATIO
+    )
+
+
+def _covered(needles: list[str], haystack: list[str]) -> bool:
+    return bool(needles) and all(any(_tokens_match(x, y) for y in haystack) for x in needles)
+
+
+def _same_variant(query: str, alias: str) -> bool:
+    return {t for t in _distinctive_tokens(query) if t in VARIANT_TOKENS} == {
+        t for t in _distinctive_tokens(alias) if t in VARIANT_TOKENS
+    }
+
+
+def alias_covers(query: str, alias: str) -> bool:
+    """Whether a query and an alias name the same subject.
+
+    Every distinctive word of one side must appear (fuzzily, so misspellings pass) in the other:
+    a long question that contains the whole alias matches, and so does a partial name, but two
+    different names that share a single word do not. A difficulty or season qualifier must be on
+    both sides or neither, so a variant never resolves to its base activity or the reverse.
+    """
+
+    query_tokens = _distinctive_tokens(query)
+    alias_tokens = _distinctive_tokens(alias)
+    if {t for t in query_tokens if t in VARIANT_TOKENS} != {
+        t for t in alias_tokens if t in VARIANT_TOKENS
+    }:
+        return False
+    return _covered(query_tokens, alias_tokens) or _covered(alias_tokens, query_tokens)
+
+
 def _strict_tool(name: str, description: str, properties: dict[str, Any]) -> dict[str, Any]:
     return {
         "type": "function",
@@ -283,6 +458,17 @@ class GuideKnowledgeProvider:
         )
 
     @staticmethod
+    def _identity_names(record: GuideRecord) -> list[str]:
+        """The names a guide goes by, without its summary prose."""
+
+        return [
+            record.title,
+            record.subject,
+            *record.aliases,
+            *(value.name for value in record.associated_entities),
+        ]
+
+    @staticmethod
     def _score(query: str, record: GuideRecord) -> float:
         normalized_query = _normalized(query)
         candidates = [record.subject, record.title, *record.aliases]
@@ -315,13 +501,19 @@ class GuideKnowledgeProvider:
         contained = [
             (value, record)
             for value, record in aliases
-            if _normalized(value) and _normalized(value) in normalized_phrase
+            if _normalized(value)
+            and _normalized(value) in normalized_phrase
+            and _same_variant(phrase, value)
         ]
         if contained:
             matched_name, matched_record = max(contained, key=lambda value: len(value[0]))
         else:
+            # A similar-looking alias is only a candidate if the two names cover each other.
+            candidates = [value for value in aliases if alias_covers(phrase, value[0])]
+            if not candidates:
+                return None
             matched_name, matched_record = max(
-                aliases,
+                candidates,
                 key=lambda value: SequenceMatcher(
                     None, normalized_phrase, _normalized(value[0])
                 ).ratio(),
@@ -433,6 +625,13 @@ class GuideKnowledgeProvider:
         ]
         threshold = 0.28 if canonical else 0.4
         scored = [value for value in scored if value[1] >= threshold]
+        if not canonical and _distinctive_tokens(query):
+            # Without a resolved subject, a guide must still be about something the query names.
+            scored = [
+                value
+                for value in scored
+                if any(alias_covers(query, name) for name in self._identity_names(value[0]))
+            ]
         scored.sort(key=lambda value: (value[1], value[0].title), reverse=True)
         return scored, canonical
 

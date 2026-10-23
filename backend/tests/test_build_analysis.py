@@ -1685,7 +1685,10 @@ async def test_grounding_violation_stays_blocked_with_accurate_wording(
         message, [[ANALYZE_CALL], [_answer(draft, 1)], [_answer(draft, 2)]]
     )
 
-    assert answer.message == ResponseQualityValidator.safe_build_grounding_answer()
+    # The fallback keeps the read build and names what could not be verified, not a bare refusal.
+    assert answer.message.startswith("I'd keep your current build as it is (")
+    assert "I couldn't verify" in answer.message
+    assert "I'd rather not guess" not in answer.message
     assert draft not in answer.message
     assert answer.sources == []
     assert responses.requests[2]["tool_choice"] == "none"
@@ -1694,25 +1697,45 @@ async def test_grounding_violation_stays_blocked_with_accurate_wording(
 
 
 @pytest.mark.asyncio
-async def test_style_only_violation_after_correction_returns_corrected_text() -> None:
+async def test_a_second_question_is_dropped_locally_without_a_rewrite() -> None:
     draft = "Your Sunshot setup suits solo PvE. Want add-clear tips? Or boss tips?"
-    corrected = "Your Sunshot setup suits solo PvE. Want add-clear tips? Or boss damage tips?"
 
     answer, responses, trace = await _chat(
         "Is my Titan build good?",
-        [[ANALYZE_CALL], [_answer(draft, 1)], [_answer(corrected, 2)]],
+        [[ANALYZE_CALL], [_answer(draft, 1)]],
     )
 
-    assert answer.message == corrected
-    assert len(responses.requests) == 3
-    assert responses.requests[2]["tool_choice"] == "none"
-    assert trace["planning_correction"]["succeeded"] is False
-    assert trace["planning_correction"]["fallback"] == "style_only_accepted"
-    assert trace["planning_correction"]["remaining_violation_codes"] == ["too_many_followups"]
+    # Presentation only: the extra question goes, the answer stays, and no model round is spent.
+    assert answer.message == "Your Sunshot setup suits solo PvE. Want add-clear tips?"
+    assert len(responses.requests) == 2
+    assert trace["planning_correction"]["attempted"] is False
+    assert {
+        "validator": "too_many_followups",
+        "action": "drop_extra_questions",
+        "result": "applied",
+        "stage": "initial",
+    } in trace["local_repairs"]
 
 
 def test_build_fallback_wording_never_claims_retrieval_failed_for_grounding() -> None:
     wording = ResponseQualityValidator.safe_build_grounding_answer().casefold()
+    context = BuildResponseValidationContext(
+        is_build_request=True,
+        equipped_item_names=["Alpha Gun", "Beta Plate"],
+        owned_item_names=["Alpha Gun", "Gamma Gun"],
+    )
+    kept = ResponseQualityValidator.safe_build_grounding_answer(
+        context, ["unsupported_ownership_claim"]
+    )
+    assert "Alpha Gun, Beta Plate" in kept
+    assert "you own a piece my draft relied on" in kept
+    assert "Gamma Gun is in your inventory but not equipped" in kept
+    assert "can't say it's an upgrade" in kept
+    assert "retrieve" not in kept.casefold()
+    bare = ResponseQualityValidator.safe_build_grounding_answer(
+        BuildResponseValidationContext(is_build_request=True, equipped_item_names=["Alpha Gun"])
+    )
+    assert "name the slot or goal" in bare
 
     assert "retrieve" not in wording
     assert "inspect" not in wording

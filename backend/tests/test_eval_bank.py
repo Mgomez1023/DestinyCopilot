@@ -65,6 +65,9 @@ def test_bank_size_ids_and_subsets() -> None:
         "conversations",
         "acceptance",
         "mechanics",
+        "playtest",
+        "heldout",
+        "heldout_retired",
         "full",
     }
     assert len(SUBSETS["acceptance"]) == 7
@@ -161,8 +164,8 @@ def test_eval_runtime_reuses_the_production_service() -> None:
     assert issubclass(RecordingRecommendationService, RecommendationService)
     overridden = {
         name
-        for name in vars(RecordingRecommendationService)
-        if not name.startswith("__") and name != "current"
+        for name, value in vars(RecordingRecommendationService).items()
+        if not name.startswith("__") and callable(value)
     }
     assert overridden == {"_create_response", "_execute_tool_call"}
 
@@ -204,3 +207,62 @@ def test_conversation_scenarios_expect_a_character_for_every_turn() -> None:
         if not explicit_first:
             assert current is not None and first == current.class_name, value.id
         assert value.expect.turn_characters[-1] == value.expect.character, value.id
+
+
+def test_playtest_scenarios_are_runnable_and_cover_the_reported_failures() -> None:
+    tools = _tool_names()
+    playtest = SUBSETS["playtest"]
+
+    assert len(playtest) == 10
+    assert len({value.id for value in playtest}) == len(playtest)
+    assert not {value.id for value in playtest} & {value.id for value in BANK}
+    for value in playtest:
+        assert value.profile in PROFILES, value.id
+        assert set(value.expect.tools_any) <= tools, value.id
+        for axis, tag in value.tags.items():
+            assert tag in AXES[axis], (value.id, axis, tag)
+    # Goal-respect scenarios name gear the profile really has equipped, never a special case.
+    goal = next(value for value in playtest if value.id == "playtest.single_improvement_goal")
+    titan = next(c for c in PROFILES[goal.profile]().characters if c.class_name == "Titan")
+    assert "Rose" in {item.name for item in titan.equipped_gear}
+
+
+FRAGMENT_ELEMENTS = {"Ember": "solar", "Echo": "void", "Spark": "arc"}
+KINETIC_SLOT_DAMAGE = {"Kinetic", "Stasis", "Strand"}
+MOD_SLOTS = {
+    "Helmet": "v2_head",
+    "Gauntlets": "v2_arms",
+    "Chest Armor": "v2_chest",
+    "Leg Armor": "v2_legs",
+    "Class Armor": "v2_class_item",
+}
+
+
+@pytest.mark.parametrize("name", sorted(PROFILES))
+def test_profile_gear_is_a_possible_destiny_configuration(name: str) -> None:
+    """Weapon slots, damage types, armor slots, mods, and subclass plugs as the game allows."""
+
+    context = PROFILES[name]()
+    owned = [*context.inventory.items, *(i for c in context.characters for i in c.equipped_gear)]
+    for item in owned:
+        if item.item_type == "Weapon":
+            kinetic_slot = item.equipment_slot == "Kinetic Weapons"
+            assert (item.damage_type in KINETIC_SLOT_DAMAGE) is kinetic_slot, (name, item.name)
+            if item.tier == "Exotic":
+                assert any(
+                    p.category_identifier == "intrinsics" for p in item.socketed_plug_details
+                )
+        if item.item_type == "Armor":
+            mods = [p.category_identifier or "" for p in item.socketed_plug_details]
+            assert all(value.endswith(MOD_SLOTS[item.equipment_slot]) for value in mods), item.name
+    for character in context.characters:
+        weapons = [i.equipment_slot for i in character.equipped_gear if i.item_type == "Weapon"]
+        armor = [i.equipment_slot for i in character.equipped_gear if i.item_type == "Armor"]
+        assert sorted(weapons) == ["Energy Weapons", "Kinetic Weapons", "Power Weapons"], name
+        assert sorted(armor) == sorted(MOD_SLOTS), (name, character.class_name)
+        element = (character.subclass.damage_type or "").casefold()
+        for plug in character.subclass.socketed_plug_details:
+            assert f".{element}." in f".{plug.category_identifier}.", (name, plug.name)
+            prefix = plug.name.split(" of ", 1)[0]
+            if prefix in FRAGMENT_ELEMENTS:
+                assert FRAGMENT_ELEMENTS[prefix] == element, (name, plug.name)

@@ -1056,6 +1056,32 @@
     "redacted": false
    }
   },
+  "DestinySocketCategoryDefinition": {
+   "2819965312": {
+    "hash": 2819965312,
+    "displayProperties": {
+     "name": "FRAGMENTS",
+     "description": "Perks that modify your character's abilities and consume Aspect energy.\n\nVisit the Exo Stranger on Europa to unlock more of these perks."
+    },
+    "redacted": false
+   },
+   "3218807805": {
+    "hash": 3218807805,
+    "displayProperties": {
+     "name": "ABILITIES",
+     "description": "Abilities that slot into your character's build.\n\nPurchase more abilities from Ikora Rey in the Tower Bazaar."
+    },
+    "redacted": false
+   },
+   "3400923910": {
+    "hash": 3400923910,
+    "displayProperties": {
+     "name": "ASPECTS",
+     "description": "Abilities that grow your build and provide energy to Fragments.\n\nVisit the Exo Stranger on Europa to unlock more of these abilities."
+    },
+    "redacted": false
+   }
+  },
   "DestinyVendorDefinition": {
    "3989934776": {
     "hash": 3989934776,

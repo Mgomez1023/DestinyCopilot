@@ -3,7 +3,15 @@
 from dataclasses import dataclass, field
 from typing import Literal
 
+from evals.rubric import Flag
+
 Style = Literal["fact", "planning", "build", "explain"]
+
+# A bare "can't" proves nothing, so a stated limit has to say what it cannot do.
+LACK = (
+    r"(?:can'?t|cannot|can not|unable to|not able to|no way to|don'?t have (?:access|a way)|"
+    r"(?:isn|aren)'?t (?:available|exposed)|not (?:available|exposed|tracked)|no data)"
+)
 
 AXES: dict[str, tuple[str, ...]] = {
     "intent": (
@@ -55,6 +63,27 @@ AXES: dict[str, tuple[str, ...]] = {
 
 
 @dataclass(frozen=True)
+class TurnExpectation:
+    """Checks for one conversation turn; every pattern is a case-insensitive regex.
+
+    The top-level `Expectations` fields (`mentions_any`, `forbidden`, `only_owned`, ...) grade
+    only the *final* turn. Use this for any turn, earlier ones especially.
+    """
+
+    # At least one pattern must match the turn's answer.
+    answers_any: tuple[str, ...] = ()
+    # No pattern may match (flagged as `forbidden_flag`).
+    forbidden: tuple[str, ...] = ()
+    forbidden_flag: Flag = "hallucinated_fact"
+    # Patterns naming things the account does not hold; the answer must not assert ownership.
+    not_owned_claims: tuple[str, ...] = ()
+    # At least one of these tools must have been called during this turn.
+    tools_any: tuple[str, ...] = ()
+    # A current-source answer must carry a dated link, or state that it could not be verified.
+    linked_source_or_limitation: bool = False
+
+
+@dataclass(frozen=True)
 class Expectations:
     """What a correct answer must (and must not) do; consumed by properties.py."""
 
@@ -71,6 +100,11 @@ class Expectations:
     mentions_any: tuple[str, ...] = ()
     forbidden: tuple[str, ...] = ()
     tools_any: tuple[str, ...] = ()
+    # Tools that are unrelated to the request; calling one is wasted work, not extra diligence.
+    forbidden_tools: tuple[str, ...] = ()
+    # The request asks for a *current* source: static Manifest/guide hints do not satisfy it, so
+    # live-provider or web-research evidence (or an explicit hedge) is required.
+    current_evidence: bool = False
     question_allowed: bool = False
     missing_class: str | None = None
     # Conversation-level checks: the character each turn should be about, and strings that
@@ -78,6 +112,8 @@ class Expectations:
     turn_characters: tuple[str | None, ...] = ()
     leak_terms: tuple[str, ...] = ()
     leak_from_turn: int = 1
+    # Per-turn checks keyed by 0-based turn index (any turn, including the final one).
+    by_turn: dict[int, TurnExpectation] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

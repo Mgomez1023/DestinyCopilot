@@ -12,10 +12,17 @@ from dataclasses import dataclass
 from difflib import SequenceMatcher
 from typing import Any
 
+from app.build_analysis import replaces_item
 from app.core_knowledge import normalize_text
 from app.ownership_evidence import OwnershipEvidence, find_ownership_claims
-from evals.model import Expectations
-from evals.profiles import CLASSES, SUBCLASSES, ProfileFacts, known_gear_names
+from app.response_quality import (
+    claims_cross_weapon_perk,
+    denies_inventory_search,
+    mentions_deprecated_armor_stat,
+    misdescribed_items,
+)
+from evals.model import LACK, Expectations
+from evals.profiles import CLASSES, SUBCLASSES, WEAPONS, ProfileFacts, known_gear_names
 from evals.rubric import Flag
 from evals.runtime import Observation, TurnRecord
 
@@ -397,7 +404,7 @@ def forbidden_claims(obs: Observation, facts: ProfileFacts) -> PropertyResult:
     if not patterns:
         return _skip(name)
     for pattern in patterns:
-        if re.search(pattern, obs.final.answer, re.I | re.M):
+        if re.search(pattern, _plain(obs.final.answer), re.I | re.M):
             return _fail(name, "hallucinated_fact", f"matched forbidden /{pattern}/")
     return _ok(name)
 
@@ -407,7 +414,7 @@ def expected_facts(obs: Observation, facts: ProfileFacts) -> PropertyResult:
     expected = obs.scenario.expect.mentions_any
     if not expected:
         return _skip(name)
-    answer = obs.final.answer
+    answer = _plain(obs.final.answer)
     if any(re.search(rf"\b{re.escape(value)}\b", answer, re.I) for value in expected):
         return _ok(name)
     return _fail(name, None, f"none of {list(expected)} mentioned")
@@ -441,11 +448,513 @@ def loop_health(obs: Observation, facts: ProfileFacts) -> PropertyResult:
     return _ok(name)
 
 
+PERMISSION_REQUEST = re.compile(
+    r"\b(?:want me to|would you like me to|shall i|should i)\b[^?.!\n]{0,120}\b(?:check|look|"
+    r"search|verify|confirm|scan|review|research)\b|\bwhich (?:source )?do you prefer\b",
+    re.I,
+)
+CAPABILITY_ASK = re.compile(
+    r"\bscreen ?shots?\b|\b(?:upload|attach|send)\b[^.?!\n]{0,40}\b(?:images?|photos?|"
+    r"pictures?|files?)\b|\b(?:want me to|would you like me to|i can|i'll)\s+(?:move|transfer|"
+    r"vault|equip|dismantle|infuse)\b|\bi(?:'ve| have)\s+(?:moved|transferred|vaulted|equipped)\b",
+    re.I,
+)
+CAPABILITY_DENIAL = re.compile(
+    r"\b(?:can'?t|cannot|can not|unable to|not able to|read-only)\b", re.I
+)
+
+
+def no_permission_request(obs: Observation, facts: ProfileFacts) -> PropertyResult:
+    """Read-only lookups are authorized: the answer does them instead of asking."""
+
+    name = "no_read_only_permission_request"
+    for sentence in _sentences(obs.final.answer):
+        if PERMISSION_REQUEST.search(sentence):
+            return _fail(name, None, sentence)
+    return _ok(name)
+
+
+def no_unsupported_capability(obs: Observation, facts: ProfileFacts) -> PropertyResult:
+    """No screenshots or uploads (text-only chat) and no item changes (read-only app)."""
+
+    name = "no_unsupported_capability"
+    for sentence in _sentences(obs.final.answer):
+        if CAPABILITY_ASK.search(sentence) and not CAPABILITY_DENIAL.search(sentence):
+            return _fail(name, "unsupported_capability", sentence)
+    return _ok(name)
+
+
+def _plain(text: str) -> str:
+    """Model text with typographic apostrophes and non-breaking hyphens made ASCII."""
+
+    return text.replace("’", "'").replace("‑", "-")
+
+
+# Closing questions that hand the request back: pick one of the options I listed, or tell me
+# which item you meant. A question about the player's own situation ("Which platform are you
+# on?") is not one of these.
+HANDBACK = re.compile(
+    r"\bwhich\s+(?:one|of (?:these|them|those)|(?:do|would) you (?:want|like|prefer))\b|"
+    r"\bpick one\b|\bdo you mean\b",
+    re.I,
+)
+# The same hand-back as an instruction: "pick one", "tell me which one to build out".
+HANDBACK_COMMAND = re.compile(
+    r"\bpick one\b|\b(?:tell me|let me know) which (?:one|option|of (?:these|them|those))\b",
+    re.I,
+)
+# One targeted preference question ("survivability or boss DPS?") is allowed by the product;
+# only a hand-back between activities, items, or lookups fails.
+PREFERENCE_AXIS = re.compile(
+    r"\b(?:pve|pvp|story|loot|rewards?|solo|group|survivability|dps|add clear|chill|casual|"
+    r"challeng\w*)\b",
+    re.I,
+)
+
+
+def request_fulfilled(obs: Observation, facts: ProfileFacts) -> PropertyResult:
+    """The answer does what was asked instead of handing the choice or lookup back."""
+
+    name = "request_fulfilled"
+    if obs.scenario.expect.question_allowed:
+        return _skip(name)
+    for sentence in _sentences(_plain(obs.final.answer))[-2:]:
+        handback = (sentence.endswith("?") and HANDBACK.search(sentence)) or (
+            HANDBACK_COMMAND.search(sentence)
+        )
+        if handback and not PREFERENCE_AXIS.search(sentence):
+            return _fail(name, "unfulfilled_request", sentence)
+    return _ok(name)
+
+
+FIXED_SOCKET = re.compile(
+    r"\b(?:fixed|can't (?:be )?(?:changed|swapped|re-?rolled)|cannot (?:be )?(?:changed|swapped|"
+    r"re-?rolled)|can't (?:swap|change|re-?roll))\b",
+    re.I,
+)
+DIFFERENT_COPY = re.compile(
+    r"\b(?:different|another|new|other)\s+(?:barrel|perk|roll|magazine|trait)s?\b[^.]{0,80}"
+    r"\b(?:obtain|get|farm|acquire|find)\b[^.]{0,40}\b(?:another|a new|a second|more)\b|"
+    r"\b(?:obtain|get|farm|acquire|find)\b[^.]{0,40}\b(?:another|a new|a second)\b[^.]{0,60}"
+    r"\b(?:different|other|new)\s+(?:barrel|perk|roll|magazine|trait)s?\b",
+    re.I,
+)
+
+
+def no_contradictory_roll_claims(obs: Observation, facts: ProfileFacts) -> PropertyResult:
+    """A fixed perk or barrel is the same on every copy; another copy can't change it."""
+
+    name = "no_contradictory_roll_claims"
+    answer = _plain(obs.final.answer)
+    if not FIXED_SOCKET.search(answer):
+        return _skip(name)
+    found = DIFFERENT_COPY.search(answer)
+    if found:
+        return _fail(name, "contradictory_claim", f"fixed, yet: {found.group(0)}")
+    return _ok(name)
+
+
+# Ember/Echo/Spark/Whisper/Thread are Solar/Void/Arc/Stasis/Strand fragments; Prismatic
+# fragments are Facets. One equipped on another subclass is no evidence about Prismatic.
+ELEMENT_FRAGMENT = re.compile(r"\b(?:Ember|Echo|Spark|Whisper|Thread) of [A-Z][\w']+")
+PRISMATIC_CONTRAST = re.compile(
+    r"\b(?:not|isn't|aren't|doesn't|don't|no)\b[^.]{0,30}\bPrismatic\b|"
+    r"\b(?:says?|tells?|shows?) (?:you )?nothing\b|\bunrelated\b|\bdifferent subclass\b",
+    re.I,
+)
+
+
+def no_cross_subclass_inference(obs: Observation, facts: ProfileFacts) -> PropertyResult:
+    name = "no_cross_subclass_inference"
+    sentences = [
+        value
+        for value in _sentences(_plain(obs.final.answer))
+        if ELEMENT_FRAGMENT.search(value) and re.search(r"\bPrismatic\b", value)
+    ]
+    if not sentences:
+        return _skip(name)
+    for sentence in sentences:
+        if not PRISMATIC_CONTRAST.search(sentence):
+            return _fail(name, "hallucinated_fact", f"element fragment as Prismatic: {sentence}")
+    return _ok(name)
+
+
+def _all_answers(obs: Observation) -> list[tuple[int, str]]:
+    """Every turn's answer, so a wrong fact stated early in a conversation still counts."""
+
+    return [(index + 1, _plain(turn.answer)) for index, turn in enumerate(obs.turns)]
+
+
+def no_misdescribed_items(obs: Observation, facts: ProfileFacts) -> PropertyResult:
+    """Items are described with their real rarity and weapon type, in any turn."""
+
+    name = "no_misdescribed_items"
+    truth = {item: (value[2], value[0]) for item, value in WEAPONS.items()}
+    for turn, answer in _all_answers(obs):
+        wrong = misdescribed_items(answer, truth)
+        if wrong:
+            return _fail(name, "hallucinated_fact", f"turn {turn}: {wrong[0]}")
+        for sentence in _sentences(answer):
+            if re.search(r"\bloaders?\b", sentence, re.I) and re.search(
+                r"\bhandling\b", sentence, re.I
+            ):
+                return _fail(name, "hallucinated_fact", f"turn {turn}: loader and handling")
+    return _ok(name)
+
+
+_CLS = "|".join(CLASSES)
+_ITEM_GAP = r"\b[^.\n,;]{0,25}\b"
+# (template, exclusive): an exclusive template says the item is limited to one class, which also
+# contradicts an any-class item; the others only name a class, which cannot contradict "Any".
+_RESTRICTION_TEMPLATES: tuple[tuple[str, bool], ...] = (
+    (
+        rf"{{item}}{_ITEM_GAP}(?:is|are)\s+(?:an?\s+|the\s+)?(?:\w+\s+){{0,2}}?"
+        rf"(?P<cls>{_CLS})s?[- ]only\b",
+        True,
+    ),
+    (
+        rf"{{item}}{_ITEM_GAP}(?:is|are)\s+(?:locked|restricted|limited|exclusive)\s+to\s+"
+        rf"(?:the\s+|an?\s+)?(?P<cls>{_CLS})s?\b",
+        True,
+    ),
+    (
+        rf"{{item}}{_ITEM_GAP}(?:only\s+(?:works|usable|equippable|wearable)\s+(?:by|on|for|with)|"
+        rf"can\s+only\s+be\s+(?:worn|equipped|used|run)\s+(?:by|on))\s+(?:an?\s+|your\s+)?"
+        rf"(?P<cls>{_CLS})s?\b",
+        True,
+    ),
+    (
+        rf"\bonly\s+(?P<cls>{_CLS})s\s+(?:can|could)\s+(?:wear|equip|use|run)\s+(?:the\s+)?{{item}}",
+        True,
+    ),
+    (
+        rf"{{item}}{_ITEM_GAP}(?:is|are)\s+(?:an?\s+|the\s+)?(?P<cls>{_CLS})s?\s+(?:exotic|armor|"
+        r"piece|gear|item|helmet|gauntlets|chest|class item)\b",
+        False,
+    ),
+    (
+        rf"\b(?P<cls>{_CLS})s\s+(?:can|could)\s+(?:wear|equip|use|run)\s+(?:the\s+)?{{item}}",
+        False,
+    ),
+)
+_RESTRICTION_NEGATION = re.compile(r"\b(?:not|never|no)\b|n't", re.I)
+
+
+def class_restriction_truth(facts: ProfileFacts) -> dict[str, str]:
+    """Item name -> 'Titan' | 'Hunter' | 'Warlock' | 'Any', from the eval fixtures."""
+
+    truth = {name: owner or "Any" for name, owner in known_gear_names().items()}
+    for name, (restriction, _) in facts.owned_items.items():
+        if restriction in {*CLASSES, "Any"}:
+            truth[name] = restriction
+    return truth
+
+
+def contradicted_class_restriction(text: str, truth: dict[str, str]) -> str | None:
+    """The first sentence limiting a known item to a class its fixture says is wrong."""
+
+    for sentence in _sentences(text):
+        for item, real in truth.items():
+            if item.casefold() not in sentence.casefold():
+                continue
+            for template, exclusive in _RESTRICTION_TEMPLATES:
+                pattern = template.replace("{item}", rf"\b{re.escape(item)}\b")
+                for match in re.finditer(pattern, sentence, re.I):
+                    claimed = match.group("cls").capitalize()
+                    contradicts = claimed != real and (exclusive or real != "Any")
+                    if contradicts and not _RESTRICTION_NEGATION.search(match[0]):
+                        return sentence
+    return None
+
+
+def no_contradicted_class_restrictions(obs: Observation, facts: ProfileFacts) -> PropertyResult:
+    """No turn limits an item to a class its fixture says it is not limited to."""
+
+    name = "no_contradicted_class_restrictions"
+    truth = class_restriction_truth(facts)
+    for turn, answer in _all_answers(obs):
+        sentence = contradicted_class_restriction(answer, truth)
+        if sentence:
+            return _fail(name, "hallucinated_fact", f"turn {turn}: {sentence}")
+    return _ok(name)
+
+
+def no_unrelated_quest_evidence(obs: Observation, facts: ProfileFacts) -> PropertyResult:
+    """An active quest is not offered as a route to an unrelated unlock, in any turn."""
+
+    name = "no_unrelated_quest_evidence"
+    quests = {quest for values in facts.active_quests.values() for quest in values}
+    quests |= {
+        step
+        for character in obs.context.characters
+        for value in character.quests
+        if (step := value.step_name)
+    }
+    for turn, answer in _all_answers(obs):
+        for sentence in _sentences(answer):
+            if re.search(r"\bfragments?\b", sentence, re.I):
+                for quest in quests:
+                    if _mentions(sentence, quest):
+                        return _fail(name, "hallucinated_fact", f"turn {turn}: {sentence[:160]}")
+    return _ok(name)
+
+
+def lookup_matches_account(obs: Observation, facts: ProfileFacts) -> PropertyResult:
+    """An inventory search that returns nothing must not contradict items the profile owns."""
+
+    name = "lookup_matches_account"
+    checked = False
+    for turn_index, turn in enumerate(obs.turns):
+        for call in turn.tool_calls:
+            if call.name != "search_inventory" or call.result.get("items") != []:
+                continue
+            terms = [
+                value.casefold()
+                for key in ("query", "subtype")
+                if isinstance(value := call.arguments.get(key), str)
+            ]
+            vault = [
+                item.name
+                for item in obs.context.inventory.items
+                if all(
+                    term in item.name.casefold() or term in (item.item_subtype or "").casefold()
+                    for term in terms
+                )
+            ]
+            checked = True
+            if terms and vault:
+                return _fail(
+                    name,
+                    "false_refusal",
+                    f"turn {turn_index + 1}: search {terms} found nothing; vault has {vault[:2]}",
+                )
+    return _ok(name) if checked else _skip(name)
+
+
+MOD_REMOVAL = re.compile(r"\b(?:remove|replace|swap out|drop|ditch)\b", re.I)
+TRADEOFF = re.compile(
+    r"\b(?:give[s]? up|lose|loses|cost|trade-?off|in exchange|at the expense|synerg\w*|"
+    r"supports?|because|keeps?|pairs? with)\b",
+    re.I,
+)
+
+
+def removal_weighs_tradeoff(obs: Observation, facts: ProfileFacts) -> PropertyResult:
+    """Removing an equipped mod names what it gives up; the best change is not asserted blind."""
+
+    name = "removal_weighs_tradeoff"
+    mods = {
+        plug.name
+        for character in obs.context.characters
+        for item in character.equipped_gear
+        if item.item_type == "Armor"
+        for plug in item.socketed_plug_details
+    }
+    answer = _plain(obs.final.answer)
+    for sentence in _sentences(answer):
+        for mod in mods:
+            if (
+                _mentions(sentence, mod)
+                and MOD_REMOVAL.search(sentence)
+                and not TRADEOFF.search(answer)
+            ):
+                return _fail(name, "ungrounded_advice", sentence[:160])
+    return _ok(name)
+
+
+def exotic_replacement_grounded(obs: Observation, facts: ProfileFacts) -> PropertyResult:
+    """Replacing an equipped Exotic names a specific owned replacement and what is lost."""
+
+    name = "exotic_replacement_grounded"
+    answer = _plain(obs.final.answer)
+    exotics = {
+        item.name
+        for character in obs.context.characters
+        for item in character.equipped_gear
+        if item.tier == "Exotic" and item.item_type in {"Weapon", "Armor"}
+    }
+    for exotic in sorted(exotics):
+        if not replaces_item(answer, exotic):
+            continue
+        others = [
+            owned
+            for owned in facts.owned_items
+            if owned != exotic and re.search(rf"\b{re.escape(owned)}\b", answer)
+        ]
+        if not others or not re.search(
+            r"\b(?:lose|loses|give[s]? up|cost[s]?|trade-?off|in exchange|at the expense)\b",
+            answer,
+            re.I,
+        ):
+            return _fail(
+                name,
+                "ungrounded_advice",
+                f"replaces {exotic} without {others or 'any owned alternative'} and its cost",
+            )
+    return _ok(name)
+
+
+LOOT_SUPERLATIVE = re.compile(
+    r"\b(?:highest|higher|best|top)[- ](?:value|tier|quality|chance|odds)?"
+    r"[^.?!\n]{0,25}\b(?:loot|drops?|rewards?)\b",
+    re.I,
+)
+NOT_ESTABLISHED = re.compile(
+    r"\b(?:unknown|not established|isn't established|can't (?:confirm|verify)|unverified|"
+    r"not confirmed)\b",
+    re.I,
+)
+
+
+def no_irrelevant_tools(obs: Observation, facts: ProfileFacts) -> PropertyResult:
+    """Tools the scenario marks as unrelated to the request are not called in any turn."""
+
+    name = "no_irrelevant_tools"
+    forbidden = set(obs.scenario.expect.forbidden_tools)
+    if not forbidden:
+        return _skip(name)
+    for index, turn in enumerate(obs.turns):
+        called = sorted({call.name for call in turn.tool_calls} & forbidden)
+        if called:
+            return _fail(name, "unfulfilled_request", f"turn {index + 1} called {called}")
+    return _ok(name)
+
+
+def current_source_not_overclaimed(obs: Observation, facts: ProfileFacts) -> PropertyResult:
+    """A request for a current source is not satisfied by static Manifest hints alone."""
+
+    name = "current_source_not_overclaimed"
+    if not obs.scenario.expect.current_evidence:
+        return _skip(name)
+    grounding = obs.final.trace.get("grounding") or {}
+    if grounding.get("live_provider") or grounding.get("web_research"):
+        return _ok(name, "current evidence present")
+    if HEDGE.search(obs.final.answer) or NOT_ESTABLISHED.search(obs.final.answer):
+        return _ok(name, "hedged")
+    return _fail(
+        name, "stale_live_claim", "current source requested but only static data was consulted"
+    )
+
+
+def no_unsupported_loot_claim(obs: Observation, facts: ProfileFacts) -> PropertyResult:
+    """Loot-quality superlatives need a retrieved source in the same turn, in any turn."""
+
+    name = "no_unsupported_loot_claim"
+    for index, turn in enumerate(obs.turns):
+        grounding = turn.trace.get("grounding") or {}
+        if any(
+            grounding.get(key)
+            for key in ("manifest", "guide_provider", "live_provider", "web_research")
+        ):
+            continue
+        for sentence in _sentences(_plain(turn.answer)):
+            if LOOT_SUPERLATIVE.search(sentence) and not NOT_ESTABLISHED.search(sentence):
+                return _fail(name, "hallucinated_fact", f"turn {index + 1}: {sentence[:150]}")
+    return _ok(name)
+
+
+def answers_instead_of_asking(obs: Observation, facts: ProfileFacts) -> PropertyResult:
+    """A build, planning, or owned-item request gets an answer, not only a question, in any turn."""
+
+    name = "answers_instead_of_asking"
+    if obs.scenario.expect.question_allowed:
+        return _skip(name)
+    gear = list(known_gear_names())
+    for index, turn in enumerate(obs.turns):
+        mentions_gear = any(_mentions(turn.message, value) for value in gear)
+        if not (obs.scenario.expect.style in {"build", "planning"} or mentions_gear):
+            continue
+        statements = [
+            value
+            for value in _sentences(_plain(turn.answer))
+            if not value.endswith("?") and word_count(value) >= 4
+        ]
+        if not statements and "?" in turn.answer:
+            return _fail(name, "unfulfilled_request", f"turn {index + 1}: {turn.answer[:140]}")
+    return _ok(name)
+
+
+def no_deprecated_armor_stats(obs: Observation, facts: ProfileFacts) -> PropertyResult:
+    """Armor 3.0: only Weapons, Health, Class, Grenade, Melee, and Super are armor stats."""
+
+    name = "no_deprecated_armor_stats"
+    for index, turn in enumerate(obs.turns):
+        if mentions_deprecated_armor_stat(turn.answer):
+            return _fail(
+                name, "hallucinated_fact", f"turn {index + 1}: {_plain(turn.answer)[:150]}"
+            )
+        for sentence in _sentences(_plain(turn.answer)):
+            if re.search(
+                r"\b(?:Weapons|Health|Class|Grenade|Melee|Super)\b\s+stat\b", sentence
+            ) and (
+                re.search(
+                    r"\b(?:faster|recharge\w*|regenerat\w*|cooldowns?|shorter)\b", sentence, re.I
+                )
+            ):
+                grounding = turn.trace.get("grounding") or {}
+                if not (grounding.get("manifest") or grounding.get("guide_provider")):
+                    return _fail(
+                        name,
+                        "hallucinated_fact",
+                        f"turn {index + 1}: stat effect: {sentence[:120]}",
+                    )
+    return _ok(name)
+
+
+def no_contradictory_inventory_claims(obs: Observation, facts: ProfileFacts) -> PropertyResult:
+    """Never says the player's gear cannot be searched; the inventory tools can."""
+
+    name = "no_contradictory_inventory_claims"
+    for index, turn in enumerate(obs.turns):
+        if denies_inventory_search(turn.answer):
+            return _fail(
+                name, "contradictory_claim", f"turn {index + 1}: {_plain(turn.answer)[:150]}"
+            )
+    return _ok(name)
+
+
+def no_perk_mechanic_errors(obs: Observation, facts: ProfileFacts) -> PropertyResult:
+    """Rampage-style perks build only from kills with their own weapon, in any turn."""
+
+    name = "no_perk_mechanic_errors"
+    for index, turn in enumerate(obs.turns):
+        if claims_cross_weapon_perk(turn.answer):
+            return _fail(
+                name, "hallucinated_fact", f"turn {index + 1}: {_plain(turn.answer)[:150]}"
+            )
+    return _ok(name)
+
+
+# "Haunted Altars does NOT count toward the Triumph" separates the two; it is not the conflation.
+DENIES_RECORD_CREDIT = re.compile(
+    r"\b(?:does(?:n'?t| not)|do(?:n'?t| not)|did(?:n'?t| not)|will not|won'?t|is(?:n'?t| not)|"
+    r"are(?:n'?t| not)|can(?:'?t|not)|never)\s+(?:\w+\s+){0,2}?(?:count|apply|advance|progress|"
+    r"contribute|credit|carry over|transfer)\w*\s+(?:toward|towards|to|for|on|in|into|against|"
+    r"that|this|the|your)\b",
+    re.I,
+)
+
+
+def no_activity_record_conflation(obs: Observation, facts: ProfileFacts) -> PropertyResult:
+    """A Haunted Altars of Sorrow answer does not borrow Altars of Sorrow Triumph progress."""
+
+    name = "no_activity_record_conflation"
+    for index, turn in enumerate(obs.turns):
+        for sentence in _sentences(_plain(turn.answer)):
+            if DENIES_RECORD_CREDIT.search(sentence):
+                continue
+            if re.search(r"\bHaunted Altars\b", sentence) and re.search(
+                r"\b(?:Triumphs?|records?|Waves of Altars of Sorrow)\b", sentence
+            ):
+                return _fail(name, "hallucinated_fact", f"turn {index + 1}: {sentence[:140]}")
+    return _ok(name)
+
+
 def no_false_refusal(obs: Observation, facts: ProfileFacts) -> PropertyResult:
     name = "no_false_refusal"
     final = obs.final
     fallback = (final.trace.get("planning_correction") or {}).get("fallback")
-    if fallback in {"build_grounding", "build_evidence"}:
+    if fallback in {"build_grounding", "build_evidence", "planning_safe_answer"}:
         return _fail(name, "false_refusal", f"validator fallback {fallback}")
     tools_ok = any("error" not in call.result for call in final.tool_calls)
     if tools_ok and REFUSAL.search(final.answer):
@@ -602,6 +1111,103 @@ def conversation_isolation(obs: Observation, facts: ProfileFacts) -> PropertyRes
     return _ok(name)
 
 
+URL = re.compile(r"https?://\S+", re.I)
+DATED = re.compile(
+    r"\b(?:20\d{2}-\d{2}-\d{2}|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.? "
+    r"\d{1,2}|20\d{2})\b",
+    re.I,
+)
+OWNERSHIP_ASSERTION = (
+    r"\byou(?:'ve| have| own| already have| do have| got|'ve got)\b[^.?!]{{0,30}}"
+    r"\b(?P<term>{term})\b",
+    r"\byour\b[^.?!]{{0,25}}\b(?P<term>{term})\b",
+    r"\b(?P<term>{term})\b[^.?!]{{0,30}}\bin your (?:vault|inventory)\b",
+)
+OWNERSHIP_NEGATION = re.compile(
+    r"\b(?:no|not|none|nothing|never|without|neither|don'?t|doesn'?t|didn'?t|isn'?t|aren'?t|"
+    r"haven'?t|hasn'?t|can'?t)\b|n't\b",
+    re.I,
+)
+CONDITIONAL_OPENING = re.compile(r"^\s*(?:if|whether)\b", re.I)
+NEGATION_WINDOW_WORDS = 4
+
+
+def _asserts_ownership(answer: str, term: str) -> str | None:
+    """The first sentence that asserts the player holds `term`.
+
+    Questions and conditionals don't assert anything. A negation only cancels the claim when it
+    sits in the claim itself ("you have no sniper") or within a few words before the item
+    ("there is no sniper in your vault"); a negation elsewhere in the sentence does not.
+    """
+
+    for sentence in _sentences(_plain(answer)):
+        if sentence.endswith("?") or CONDITIONAL_OPENING.search(sentence):
+            continue
+        for template in OWNERSHIP_ASSERTION:
+            for match in re.finditer(template.format(term=term), sentence, re.I):
+                term_start = match.start("term")
+                if template.startswith(r"\b(?P<term>"):
+                    # The item leads the clause, so the negation (if any) precedes it.
+                    words = sentence[:term_start].split()
+                    scope = " ".join(words[-NEGATION_WINDOW_WORDS:]) + " " + match.group(0)
+                else:
+                    scope = sentence[match.start() : term_start]
+                if not OWNERSHIP_NEGATION.search(scope):
+                    return sentence
+    return None
+
+
+# "I can't reliably answer that" states a limit; a bare "can't" elsewhere in the answer does not.
+LIMITATION = re.compile(
+    rf"\b{LACK}\b[^.\n]{{0,60}}\b(?:reliabl\w*|answer|confirm|verify|determine|tell|say|know|"
+    r"check|see|look up|current|live|real-?time|right now|this week|today)\b",
+    re.I,
+)
+
+
+def turn_expectations(obs: Observation, facts: ProfileFacts) -> PropertyResult:
+    """Per-turn checks (`Expectations.by_turn`): earlier turns are graded, not only the last."""
+
+    name = "turn_expectations_met"
+    checks = obs.scenario.expect.by_turn
+    if not checks:
+        return _skip(name)
+    for index, check in sorted(checks.items()):
+        if index >= len(obs.turns):
+            continue
+        answer = _plain(obs.turns[index].answer)
+        label = f"turn {index + 1}"
+        for pattern in check.forbidden:
+            match = re.search(pattern, answer, re.I | re.M)
+            if match:
+                return _fail(name, check.forbidden_flag, f"{label} matched /{pattern}/: {match[0]}")
+        for term in check.not_owned_claims:
+            sentence = _asserts_ownership(answer, term)
+            if sentence:
+                return _fail(
+                    name, "ownership_hallucination", f"{label} claims '{term}' owned: {sentence}"
+                )
+        if check.answers_any and not any(
+            re.search(pattern, answer, re.I) for pattern in check.answers_any
+        ):
+            return _fail(name, None, f"{label} answers none of {list(check.answers_any)}")
+        if check.tools_any and not {call.name for call in obs.turns[index].tool_calls} & set(
+            check.tools_any
+        ):
+            return _fail(name, None, f"{label} called none of {list(check.tools_any)}")
+        if check.linked_source_or_limitation and not (
+            obs.turns[index].sources
+            or URL.search(answer)
+            or HEDGE.search(answer)
+            or NOT_ESTABLISHED.search(answer)
+            or LIMITATION.search(answer)
+        ):
+            return _fail(
+                name, "stale_live_claim", f"{label} has neither a source nor a stated limit"
+            )
+    return _ok(name)
+
+
 def mechanics_trace(obs: Observation, facts: ProfileFacts) -> PropertyResult:
     """Informational only: reports the trace-only mechanics-claim summary; never fails."""
 
@@ -618,6 +1224,7 @@ def mechanics_trace(obs: Observation, facts: ProfileFacts) -> PropertyResult:
 
 PROPERTIES: tuple[Callable[[Observation, ProfileFacts], PropertyResult], ...] = (
     conversation_isolation,
+    turn_expectations,
     ownership_claims,
     only_owned_recommendations,
     class_correct_armor,
@@ -633,6 +1240,25 @@ PROPERTIES: tuple[Callable[[Observation, ProfileFacts], PropertyResult], ...] = 
     evidence_tools,
     loop_health,
     no_false_refusal,
+    request_fulfilled,
+    answers_instead_of_asking,
+    no_contradictory_roll_claims,
+    no_cross_subclass_inference,
+    no_misdescribed_items,
+    no_contradicted_class_restrictions,
+    no_unrelated_quest_evidence,
+    lookup_matches_account,
+    removal_weighs_tradeoff,
+    exotic_replacement_grounded,
+    no_deprecated_armor_stats,
+    no_perk_mechanic_errors,
+    no_activity_record_conflation,
+    no_contradictory_inventory_claims,
+    no_unsupported_loot_claim,
+    no_irrelevant_tools,
+    current_source_not_overclaimed,
+    no_permission_request,
+    no_unsupported_capability,
     concise,
     answer_first,
     no_filler,
