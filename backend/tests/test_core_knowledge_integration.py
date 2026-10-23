@@ -224,8 +224,15 @@ def test_core_tool_results_are_never_guardian_evidence() -> None:
 # --- Per-turn grounded-facts block ------------------------------------------------------
 
 
+CLOCK_MARK = "\n\nCurrent date and time (UTC): "
+
+
 def instructions_of(responses: Any, index: int = 0) -> str:
-    return responses.requests[index]["instructions"]
+    """The instructions without the clock line, which always comes last (see test_prompt_clock)."""
+
+    text = responses.requests[index]["instructions"]
+    assert CLOCK_MARK in text and text.count(CLOCK_MARK) == 1
+    return text.split(CLOCK_MARK, 1)[0]
 
 
 def test_bundle_is_appended_once_after_routing_and_keeps_the_static_prefix() -> None:

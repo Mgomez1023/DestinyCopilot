@@ -6,6 +6,7 @@ import re
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit
 from uuid import uuid4
@@ -120,9 +121,10 @@ Retrieve only the facts needed for the question.
 Read-only retrieval is the default action. When the user explicitly asks a question that requires
 Guardian, Manifest, Guide, Live, or Web information, call the relevant read-only tool immediately;
 the request itself is authorization. Do not ask whether you should check, scan, fetch, retrieve, or
-proceed, and do not ask for confirmation merely because another read-only call is needed. Ask one
-targeted clarification only when materially different interpretations remain unresolved by the
-current and recent conversation. All tools remain read-only; never claim or attempt a Bungie write.
+proceed, and do not ask for confirmation merely because another read-only call is needed. When a
+question is ambiguous, answer under the most reasonable reading and state that assumption in one
+clause; ask one targeted clarification only when no reasonable assumption exists in the current
+and recent conversation. All tools remain read-only; never claim or attempt a Bungie write.
 Never offer the user a choice of sources or offer to do a lookup they already asked for; do it,
 combining sources when the first cannot answer, and report what you found. Never say you checked,
 searched, or verified something unless a lookup for it ran in this turn.
@@ -239,6 +241,9 @@ User-facing behavior:
   unless the user explicitly requests identifiers for application debugging.
 - Answer directly when the intended meaning is reasonably obvious. Interpret a question about
   "completing The Final Shape" as the main campaign unless context creates genuine ambiguity.
+- When a question is ambiguous, do not reply with only a question. Pick the most reasonable
+  reading, say so in one clause ("Assuming you mean your Titan, ..."), and answer. Ask a
+  clarifying question only when no reasonable assumption exists.
 - If missing preference materially changes the choice, give the best default and a short backup,
   then ask at most ONE targeted follow-up such as "Story or loot?" or "How much time do you have?"
   Do not ask generic clarification or closing questions. Otherwise end when the answer is
@@ -493,6 +498,23 @@ def retains_answer(original: str, rewritten: str) -> bool:
     return kept * 2 >= len(sentences)
 
 
+def clock_instruction(now: datetime) -> str:
+    """The current UTC date, weekday, and hour, for judging how current a dated source is.
+
+    Rounded down to the hour so the text is stable within an hour; it is appended after the
+    static prefix, routing, and core facts, which stay the same across turns.
+    """
+
+    moment = now.astimezone(UTC).replace(minute=0, second=0, microsecond=0)
+    return (
+        f"Current date and time (UTC): {moment:%A}, {moment:%Y-%m-%d} {moment:%H}:00. "
+        "Compare every dated source claim (a page date, an 'updated' stamp, a season, event, or "
+        "reset date) against this date before saying something is active now, this week, or "
+        "currently. If the source is older than the period you mean, or carries no date, say "
+        "the current state is unconfirmed instead of asserting it."
+    )
+
+
 LOOT_QUESTION = re.compile(
     r"\b(?:loot|drops?|rewards?|gear|engrams?|farm(?:ing)?|grind(?:ing)?)\b", re.IGNORECASE
 )
@@ -593,6 +615,8 @@ class RecommendationService:
             AsyncOpenAI(api_key=settings.openai_api_key) if settings.openai_api_key else None
         )
         self._traces: OrderedDict[str, dict[str, Any]] = OrderedDict()
+        # Overridable so an evaluation can pin the time its prompts carry.
+        self.clock: Callable[[], datetime] = lambda: datetime.now(UTC)
 
     async def close(self) -> None:
         if self.client is not None:
@@ -912,20 +936,25 @@ class RecommendationService:
         total_tool_calls = 0
         web_sources: list[ChatSource] = []
         knowledge_sources: list[ChatSource] = []
-        turn_instructions = self._with_core_facts(
-            self._turn_instructions(
-                session_planning,
-                intent_category,
-                character_scope,
-                planning_context,
-                mode_context,
-                build_request_context,
-                title_request_context,
-                current_character,
-                research_requested=research_requested,
-                live_state_research=live_research and not self._has_live_provider(),
+        # Fixed for the whole turn, so every round of it carries the same text.
+        clock_block = clock_instruction(self.clock())
+        turn_instructions = self._with_clock(
+            self._with_core_facts(
+                self._turn_instructions(
+                    session_planning,
+                    intent_category,
+                    character_scope,
+                    planning_context,
+                    mode_context,
+                    build_request_context,
+                    title_request_context,
+                    current_character,
+                    research_requested=research_requested,
+                    live_state_research=live_research and not self._has_live_provider(),
+                ),
+                core_grounding,
             ),
-            core_grounding,
+            clock_block,
         )
 
         forced_evidence_attempted: set[str] = set()
@@ -1465,21 +1494,24 @@ class RecommendationService:
                                 )
                             # The core block was built once for this turn and is re-attached,
                             # not rebuilt, when refreshed planning context changes routing.
-                            turn_instructions = self._with_core_facts(
-                                self._turn_instructions(
-                                    session_planning,
-                                    intent_category,
-                                    character_scope,
-                                    planning_context,
-                                    mode_context,
-                                    build_request_context,
-                                    title_request_context,
-                                    current_character,
-                                    research_requested=research_requested,
-                                    live_state_research=live_research
-                                    and not self._has_live_provider(),
+                            turn_instructions = self._with_clock(
+                                self._with_core_facts(
+                                    self._turn_instructions(
+                                        session_planning,
+                                        intent_category,
+                                        character_scope,
+                                        planning_context,
+                                        mode_context,
+                                        build_request_context,
+                                        title_request_context,
+                                        current_character,
+                                        research_requested=research_requested,
+                                        live_state_research=live_research
+                                        and not self._has_live_provider(),
+                                    ),
+                                    core_grounding,
                                 ),
-                                core_grounding,
+                                clock_block,
                             )
                             self._record_planning_requirements(mechanics_ledger, planning_context)
                             trace["planning_context"]["requirements"] = requirement_trace(
@@ -2537,6 +2569,11 @@ class RecommendationService:
             truncated=bundle.truncated,
         )
         return CoreGrounding(block=block, trace=trace, weapon_archetypes=archetypes)
+
+    @staticmethod
+    def _with_clock(instructions: str, clock_block: str) -> str:
+        # Last of all, after the core facts, so everything before it is an unchanged prefix.
+        return f"{instructions}\n\n{clock_block}"
 
     @staticmethod
     def _with_core_facts(instructions: str, grounding: CoreGrounding) -> str:

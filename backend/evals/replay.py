@@ -99,6 +99,12 @@ async def replay_run(
     is the stub built from the cassette."""
 
     recorded = json.loads((Path(run_dir) / "results.json").read_text(encoding="utf-8"))
+    started = recorded.get("meta", {}).get("started_at")
+    # The recorded run's clock; a run from before prompts carried the date has none to match.
+    try:
+        now = datetime.fromisoformat(started) if started else None
+    except ValueError:
+        now = None
     cassette = load_cassette(Path(run_dir))
     pool = pool if pool is not None else scenario_pool()
     result = ReplayResult()
@@ -113,7 +119,9 @@ async def replay_run(
         scenario = replace(base, id=scenario_id)
         client = ReplayClient(cassette)
         context = PROFILES[scenario.profile]()
-        observation = await run_scenario(settings, knowledge, scenario, context, client=client)
+        observation = await run_scenario(
+            settings, knowledge, scenario, context, client=client, now=now
+        )
         diffs = _diff_turns(entry["turns"], observation)
         needs_live = any(value["status"] == NEEDS_LIVE for value in diffs)
         replayed = ReplayedScenario(

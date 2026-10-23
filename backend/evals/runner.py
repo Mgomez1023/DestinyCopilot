@@ -61,6 +61,8 @@ async def run(arguments: argparse.Namespace) -> int:
     judge_client = AsyncOpenAI(api_key=settings.openai_api_key) if arguments.judge else None
     semaphore = asyncio.Semaphore(arguments.concurrency)
     started_at = datetime.now(UTC).isoformat(timespec="seconds")
+    # One clock for the whole run, recorded as started_at, so a replay can reproduce the prompts.
+    run_clock = datetime.fromisoformat(started_at)
     out = (
         Path(arguments.out) if arguments.out else EVAL_CACHE / "runs" / started_at.replace(":", "")
     )
@@ -72,7 +74,9 @@ async def run(arguments: argparse.Namespace) -> int:
         async with semaphore:
             context = PROFILES[scenario.profile]()
             facts = profile_facts(context)
-            obs = await run_scenario(settings, knowledge, scenario, context, cassette=cassette)
+            obs = await run_scenario(
+                settings, knowledge, scenario, context, cassette=cassette, now=run_clock
+            )
             results = evaluate_properties(obs, facts)
             verdict = None
             if judge_client is not None and not obs.final.error:

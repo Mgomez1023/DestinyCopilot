@@ -3,6 +3,7 @@
 import asyncio
 import json
 import socket
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -21,6 +22,7 @@ from evals.runtime import run_scenario
 from tests.test_guardian_tools import assistant_message
 from tests.test_playtest_scenarios import Script
 
+NOW = datetime(2026, 10, 22, 21, 9, 31, tzinfo=UTC)
 SCENARIO = Scenario(
     id="replay.demo",
     profile="titan_veteran",
@@ -70,7 +72,7 @@ def record_run(tmp_path: Path, answers: list[str] | None = None) -> Path:
         runtime.RecordingRecommendationService.__init__ = init  # type: ignore[method-assign]
         try:
             return await run_scenario(
-                settings(), None, SCENARIO, PROFILES[SCENARIO.profile](), cassette=writer
+                settings(), None, SCENARIO, PROFILES[SCENARIO.profile](), cassette=writer, now=NOW
             )
         finally:
             runtime.RecordingRecommendationService.__init__ = original  # type: ignore[method-assign]
@@ -79,7 +81,7 @@ def record_run(tmp_path: Path, answers: list[str] | None = None) -> Path:
     (tmp_path / "results.json").write_text(
         json.dumps(
             {
-                "meta": {"model": "m", "started_at": "t0", "manifest": "x"},
+                "meta": {"model": "m", "started_at": NOW.isoformat(), "manifest": "x"},
                 "scenarios": [
                     {
                         "id": SCENARIO.id,

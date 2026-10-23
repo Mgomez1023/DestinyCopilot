@@ -12,6 +12,7 @@ import sqlite3
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -230,12 +231,13 @@ async def run_scenario(
     *,
     cassette: CassetteWriter | None = None,
     client: ReplayClient | None = None,
+    now: datetime | None = None,
 ) -> Observation:
     """Replay every user turn live; the model's own answers become the history.
 
     `cassette` records each model call. `client` swaps in a recorded-response stub (see
     evals.replay); a request that differs from the recording ends the scenario with an error
-    that starts with "needs_live".
+    that starts with "needs_live". `now` pins the time the prompts carry.
     """
 
     service = RecordingRecommendationService(settings, knowledge)
@@ -243,6 +245,9 @@ async def run_scenario(
         service.client = client
     service.cassette = cassette
     service.scenario_id = scenario.id
+    if now is not None:
+        # The prompt carries the date; a run and its replay must carry the same one.
+        service.clock = lambda: now
     history: list[ChatTurn] = []
     turns: list[TurnRecord] = []
     try:
