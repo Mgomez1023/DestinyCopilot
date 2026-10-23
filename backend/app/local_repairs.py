@@ -56,10 +56,12 @@ _OPENERS = (
     "short answer",
     "there are several things to consider",
 )
+_MONTH = (
+    r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|June?|July?|Aug(?:ust)?|"
+    r"Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)"
+)
 _URL_OR_DATE = re.compile(
-    r"https?://|\b\d{4}-\d{2}-\d{2}\b|\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*"
-    r"\.?\s+\d{1,2}\b",
-    re.IGNORECASE,
+    rf"https?://|\b\d{{4}}-\d{{2}}-\d{{2}}\b|\b{_MONTH}\.?\s+\d{{1,2}}\b", re.IGNORECASE
 )
 _LIMIT_STATEMENT = re.compile(
     r"\b(?:can't|cannot|couldn't|unknown|not established|isn't established|unverified|"
@@ -396,6 +398,60 @@ def locally_handled(codes: Iterable[str], answer: str) -> set[str]:
     return handled if has_statement(answer) else handled - QUESTION_CODES
 
 
+def _is_heading(line: str) -> bool:
+    """A short label that introduces what follows: "Options:", "Plan", "## Steps"."""
+
+    text = _plain(line).strip().strip("*#").strip()
+    if not text or _ITEM_LINE.match(line):
+        return False
+    return text.endswith(":") or (_words(text) <= 6 and not re.search(r"[.!?]$", text))
+
+
+def drop_dependents(parts: list[str], replaced: list[str | None]) -> list[str | None]:
+    """`replaced` with the lines that depended on removed sentences removed too.
+
+    A removed sentence that opened a bullet or labelled line takes the rest of that line, and
+    the "Why:"/"How:" or bullet lines under a removed heading or pick; a list header left with
+    nothing under it goes as well.
+    """
+
+    units = parts[::2]
+    removed = {
+        _plain(unit).strip()
+        for unit, kept in zip(units, replaced, strict=True)
+        if kept is None and unit.strip()
+    }
+    if not removed:
+        return replaced
+    drop, _ = _drop_indices(parts, removed)
+    out = [None if i in drop else kept for i, kept in enumerate(replaced)]
+    gone = drop | {i for i, kept in enumerate(replaced) if kept is None}
+    return _tidy_after_removal(units, out, gone)
+
+
+def clean_layout(text: str) -> str:
+    """No blank bullets, no heading left with nothing under it, no runs of blank lines."""
+
+    lines = [line.rstrip() for line in text.split("\n")]
+    lines = [line for line in lines if not re.fullmatch(r"\s*(?:[-*•]|\d{1,2}[.)])\s*", line)]
+    kept: list[str] = []
+    for index, line in enumerate(lines):
+        if line.strip() and _is_heading(line):
+            rest = lines[index + 1 :]
+            after = next((value for value in rest if value.strip()), None)
+            gap = bool(rest) and not rest[0].strip()
+            colon = _plain(line).rstrip().endswith(":")
+            if (
+                after is None
+                or (_is_heading(after) and not _ITEM_LINE.match(after))
+                # "Options:" then a blank line then plain text: its items are gone.
+                or (colon and gap and not _ITEM_LINE.match(after))
+            ):
+                continue
+        kept.append(line)
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(kept)).strip()
+
+
 def _tidy_after_removal(
     units: list[str], replaced: list[str | None], dropped: set[int]
 ) -> list[str | None]:
@@ -413,7 +469,7 @@ def _tidy_after_removal(
         )
         is_item = bool(re.match(r"\s*(?:[-*•]|\d{1,2}[.)])\s", unit))
         if (
-            _plain(unit).rstrip().endswith(":")
+            _is_heading(unit)
             and had_items
             and (following is None or not re.match(r"\s*(?:[-*•]|\d{1,2}[.)])\s", following))
         ):
@@ -465,7 +521,7 @@ def remove_flagged_sentences(
                     replaced[i] = label.group("lead") + body[:1].upper() + body[1:]
                 break
     replaced = _tidy_after_removal(units, replaced, drop)
-    text = re.sub(r"[ \t]+\n", "\n", re.sub(r"\n{3,}", "\n\n", _rejoin(parts, replaced)))
+    text = clean_layout(_rejoin(parts, replaced))
     if not text or _words(text) < 3:
         return None
     if re.match(r"^\W*(?:why|what to do|how|note|backup)\b[^.\n]{0,25}:", _plain(text), re.I):

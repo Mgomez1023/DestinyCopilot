@@ -640,9 +640,17 @@ _UNSUPPORTED_CAPABILITY = re.compile(
     r"could)\b|"
     # Offering to inspect which fragments or aspects are unlocked or missing: the build tools
     # show only what is equipped, so that is not something Copilot can look at.
-    r"\b(?:i can|i could|i'll|i will|let me|want me to|shall i)\s+(?:\w+\s+){0,3}?(?:check|"
-    r"inspect|see|look at|read|pull|fetch|list|produce|report)\b[^.?!\n]{0,60}\b(?:fragments?|"
-    r"facets?|aspects?)\b[^.?!\n]{0,40}\b(?:owner\w*|owned|unlock\w*|missing|locked)\b|"
+    r"\b(?:i can|i could|i'll|i will|let me|want me to|shall i|should i)\s+(?:\w+\s+){0,3}?"
+    r"(?:check|inspect|see|look at|read|pull|fetch|list|produce|report|run|scan)\b"
+    r"(?:[^.?!\n]{0,80}\b(?:fragments?|facets?|aspects?)\b[^.?!\n]{0,60}\b(?:owner\w*|owned|own|"
+    r"unlock\w*|missing|lack\w*|locked|haven't)\b|"
+    r"[^.?!\n]{0,80}\b(?:owned|unlocked|missing|locked)\b[^.?!\n]{0,40}\b(?:fragments?|facets?|"
+    r"aspects?)\b)|"
+    # Offering to work out Crucible results from matches: no tool returns a match history.
+    r"\b(?:i can|i could|i'll|i will|let me|want me to|shall i|should i)\s+(?:\w+\s+){0,3}?"
+    r"(?:fetch|pull|compute|calculate|work out|check|get|look up|run|scan|estimate)\b"
+    r"[^.?!\n]{0,80}\b(?:k/?d|kill[- ]?death|match history|match results|(?:crucible|pvp) "
+    r"(?:matches|games|history))\b|"
     r"\b(?:i can|i could|i'll|i will|let me|want me to|shall i)\s+(?:\w+\s+){0,3}?(?:check|"
     r"fetch|pull|produce|build|get)\b[^.?!\n]{0,40}\b(?:fragments?|facets?|prismatic)\s+"
     r"checklist\b|"
@@ -917,7 +925,7 @@ def _rejoin(parts: list[str], replaced: list[str | None]) -> str:
     for position, sentence in enumerate(replaced):
         if position:
             pending.append(parts[position * 2 - 1])
-        if sentence is None:
+        if sentence is None or not sentence.strip():
             continue
         if kept:
             breaks = [value for value in pending if "\n" in value]
@@ -958,9 +966,13 @@ _FILLER_OPENER = re.compile(
     r"\s*[,:—–-]\s*",
     re.IGNORECASE,
 )
+_MONTH = (
+    r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|June?|July?|Aug(?:ust)?|"
+    r"Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)"
+)
 _CITED_FACT = re.compile(
-    r"https?://[^\s)\]>]+|\b\d{4}-\d{2}-\d{2}\b|"
-    r"\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2}(?:,\s*\d{4})?\b",
+    rf"https?://[^\s)\]>]+|\b\d{{4}}-\d{{2}}-\d{{2}}\b|"
+    rf"\b{_MONTH}\.?\s+\d{{1,2}}(?:,\s*\d{{4}})?\b",
     re.IGNORECASE,
 )
 
@@ -1802,7 +1814,9 @@ class ResponseQualityValidator:
         replaced: list[str | None] = [
             None if _plain(value).strip() in bad else value for value in parts[::2]
         ]
-        text = _rejoin(parts, replaced)
+        from app.local_repairs import clean_layout, drop_dependents
+
+        text = clean_layout(_rejoin(parts, drop_dependents(parts, replaced)))
         if not text or _ORPHAN_START.match(text):
             return None
         return text if contains_recommendation(_plain(text)) else None
@@ -1855,12 +1869,15 @@ class ResponseQualityValidator:
         return found
 
     @staticmethod
-    def repair_planning_claims(answer: str, allowed_minutes: set[int] | None = None) -> str | None:
+    def repair_planning_claims(
+        answer: str, allowed_minutes: set[int] | None = None, *, note_loot: bool = True
+    ) -> str | None:
         """Remove unsupported loot comparisons, solo claims, and invented durations.
 
         Each sentence gets every fix that applies, in turn. A parenthetical or explanatory tail
         is cut out; a sentence that would be left as a fragment is dropped whole. An uncertainty
-        note is added once if a loot ranking was removed. Returns None when nothing was
+        note is added once if a loot ranking was removed and `note_loot` (the player asked about
+        loot; otherwise the cut is silent). Returns None when nothing was
         unsupported, or when what remains would open mid-thought or hold no recommendation.
         """
 
@@ -1888,17 +1905,31 @@ class ResponseQualityValidator:
                 current, touched, removed_solo = _without_solo_claim(current), True, True
             if current is not None and unsupported_duration(current):
                 touched = removed_solo = True
-                # The headline keeps its pick without the number; elsewhere the sentence goes.
-                current = (
-                    re.sub(r"\s{2,}", " ", _DURATION_CLAIM.sub("", current, count=1))
-                    if index == 0
-                    else None
+                # The headline keeps its pick without the number. Elsewhere a parenthetical
+                # carrying the number is cut and the rest kept; otherwise the sentence goes.
+                bracketed = re.sub(
+                    r"\s*\([^()]*\)",
+                    lambda m: "" if unsupported_duration(m.group(0)) else m.group(0),
+                    current,
                 )
+                bracketed = re.sub(r"\s+([:;,.])", r"\1", bracketed)
+                if index == 0:
+                    current = re.sub(r"\s{2,}", " ", _DURATION_CLAIM.sub("", current, count=1))
+                elif (
+                    bracketed != current
+                    and not unsupported_duration(bracketed)
+                    and len(re.findall(r"\w+", bracketed)) >= 4
+                ):
+                    current = bracketed
+                else:
+                    current = None
             replaced.append(current if touched else parts[index])
             changed = changed or touched
         if not changed:
             return None
-        text = _rejoin(parts, replaced)
+        from app.local_repairs import clean_layout, drop_dependents
+
+        text = clean_layout(_rejoin(parts, drop_dependents(parts, replaced)))
         # Never hand back an answer that now opens mid-thought ("Why: ...").
         if not text or _ORPHAN_START.match(text):
             return None
@@ -1909,7 +1940,7 @@ class ResponseQualityValidator:
                 and re.search(r"\b(?:loot|drops?|rewards?)\b", part, re.IGNORECASE)
                 for part in _SENTENCE_PARTS.split(_plain(text))[::2]
             )
-            if not stated:
+            if not stated and note_loot:
                 text = f"{text}\n{LOOT_LIMIT_NOTE if removed_solo else LOOT_ONLY_LIMIT_NOTE}"
         return text if contains_recommendation(_plain(text)) else None
 

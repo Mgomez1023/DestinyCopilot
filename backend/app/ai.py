@@ -75,6 +75,7 @@ from app.ownership_evidence import record_ownership_evidence
 from app.planning_alternatives import apply_alternatives, derive_alternatives
 from app.planning_intent import classify_planning_intent, is_standalone_planning
 from app.response_quality import (
+    UNSUPPORTED_CAPABILITY_FALLBACK,
     BuildResponseValidationContext,
     ReadOnlyActionValidationContext,
     ResponseModeContext,
@@ -492,6 +493,9 @@ def retains_answer(original: str, rewritten: str) -> bool:
     return kept * 2 >= len(sentences)
 
 
+LOOT_QUESTION = re.compile(
+    r"\b(?:loot|drops?|rewards?|gear|engrams?|farm(?:ing)?|grind(?:ing)?)\b", re.IGNORECASE
+)
 TIME_INTENT_PATTERN = re.compile(
     r"\b(?:\d+|an?|one|half an?)\s*(?:minutes?|mins?|hours?|hrs?)\b|\btime[- ]limited\b",
     re.IGNORECASE,
@@ -2129,6 +2133,8 @@ class RecommendationService:
                 quality_validator.allowed_minutes(user_message, planning_context)
                 if planning_context is not None
                 else None,
+                # The "not established" note answers a loot question; unasked, the cut is silent.
+                note_loot=bool(LOOT_QUESTION.search(user_message)),
             )
             if repaired is not None:
                 message = repaired
@@ -2198,6 +2204,32 @@ class RecommendationService:
             if repaired is not None:
                 message = repaired
                 trace["unverified_item_claims_removed"] = True
+                violations = quality_validator.validate(
+                    message,
+                    mode_context,
+                    user_message,
+                    planning_context,
+                    build_context,
+                    read_only_context,
+                )
+        if "unsupported_capability" in {v.code for v in violations}:
+            # An offer of something no tool can do (screenshots, item changes, an unlocked-Facet
+            # list, K/D from matches) is cut with the existing cleanup: no model round needed.
+            cleaned = remove_unsupported_capability_offers(message)
+            # Only a closing offer is cut here (the cleaned answer is the draft's opening part),
+            # and only when a real statement (10+ words) remains. An offer in the middle of a
+            # menu, or a draft that is mostly the offer, needs the rewrite.
+            kept_words = len(re.findall(r"\w+", cleaned))
+            if (
+                cleaned != message
+                and cleaned != UNSUPPORTED_CAPABILITY_FALLBACK
+                and message.startswith(cleaned)
+                and kept_words >= 10
+            ):
+                message = cleaned
+                RecommendationService._record_repair(
+                    trace, stage, "unsupported_capability", "remove_capability_offers", "applied"
+                )
                 violations = quality_validator.validate(
                     message,
                     mode_context,

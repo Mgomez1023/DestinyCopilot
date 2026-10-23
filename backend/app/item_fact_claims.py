@@ -187,8 +187,11 @@ _SLOT_NOUNS = {
     "power": r"power|heavy",
 }
 _SLOT_GROUPS = {key: f"s{index}" for index, key in enumerate(_SLOT_NOUNS)}
+# Whole words only: "Legendary" holds "leg", "powerful" holds "power", "energetic" holds "energy".
 _SLOT_WORD = re.compile(
-    "|".join(f"(?P<{_SLOT_GROUPS[key]}>{value})" for key, value in _SLOT_NOUNS.items()),
+    r"\b(?:"
+    + "|".join(f"(?P<{_SLOT_GROUPS[key]}>{value})" for key, value in _SLOT_NOUNS.items())
+    + r")\b",
     re.IGNORECASE,
 )
 _ARMOR_NOUN = (
@@ -318,7 +321,8 @@ def _contradictions(sentence: str, definitions: Definitions) -> list[_Contradict
         # "<item> ... the helmet's ability": the slot phrase must be about that item.
         if match.start() > at and len(between) <= 60 and not re.search(r"[.;,]", between):
             check_slot(match.group("slot"), match.start("slot"), match.end("slot"))
-    return found
+    # One claim can match two patterns (an appositive and "Hunter helm"): fix it once.
+    return list({(value[1], value[3], value[4]): value for value in found}.values())
 
 
 def _statements(answer: str) -> list[str]:
