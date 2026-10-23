@@ -40,6 +40,11 @@ REVIEWED_SINGLE_TOKEN_KEYS = {
     # Ambiguity, never a single entity.
     "altar": "ambiguity; 'altar' alone names several activities and places",
     "altars": "ambiguity; never resolves to one activity",
+    # Subclass 3.0 terms; "tree" and "attunement" are pre-2022 words we want to catch and correct.
+    "aspects": "Destiny subclass term",
+    "fragments": "Destiny subclass term",
+    "attunement": "pre-Subclass-3.0 term; routes to the current structure",
+    "attunements": "plural of attunement",
     # Low collision risk in Destiny chat.
     "bounties": "Destiny term",
     "bounty": "Destiny term",
@@ -100,7 +105,7 @@ EXPECTED_COMPOSITION = {
     "activity_type": 8,
     "armor_concept": 1,
     "class": 3,
-    "concept": 7,
+    "concept": 8,
     "game_mode": 4,
     "progression": 3,
     "rule": 1,
@@ -142,7 +147,7 @@ def test_production_corpus_loads_and_composition_is_reviewed(corpus: Any) -> Non
 
     # Changing the corpus size or mix must be a deliberate edit of this expectation.
     assert audit["by_kind"] == EXPECTED_COMPOSITION
-    assert audit["entities"] == 48
+    assert audit["entities"] == 49
     assert corpus.manifest_version
 
 

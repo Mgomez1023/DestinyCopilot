@@ -189,6 +189,9 @@ def eval_settings(**overrides: Any) -> Settings:
         "live_cache_dir": EVAL_CACHE / "live",
         "guide_cache_dir": EVAL_CACHE / "guides",
         "enable_debug_tools": True,
+        # An evaluation is not a beta user: no message quota or spend cap.
+        "daily_message_quota": 0,
+        "daily_spend_cap_usd": 0,
         **overrides,
     }
     return Settings(**values)

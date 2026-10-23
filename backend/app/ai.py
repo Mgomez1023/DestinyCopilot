@@ -103,6 +103,7 @@ from app.session_preferences import (
     derive_session_preferences,
 )
 from app.title_progress import TitleRequestContext, derive_title_request_context
+from app.usage_limits import UsageLimits
 
 logger = logging.getLogger(__name__)
 
@@ -617,6 +618,8 @@ class RecommendationService:
         self._traces: OrderedDict[str, dict[str, Any]] = OrderedDict()
         # Overridable so an evaluation can pin the time its prompts carry.
         self.clock: Callable[[], datetime] = lambda: datetime.now(UTC)
+        # Per-user daily quota and global daily spend cap (in process; see usage_limits).
+        self.limits = UsageLimits(settings)
 
     async def close(self) -> None:
         if self.client is not None:
@@ -633,6 +636,12 @@ class RecommendationService:
         trace_id = uuid4().hex
         if stream_status is not None:
             stream_status.trace_id = trace_id
+        if self.client is not None:
+            # Before any work or model call: a refused message costs nothing.
+            refusal = self.limits.admit(context.membership_id)
+            if refusal is not None:
+                logger.info("Chat refused by a usage limit trace_id=%s", trace_id)
+                return ChatResponse(source="local", message=refusal)
         preference_derivation = derive_session_preferences(request.history, request.message)
         preference_context = preference_derivation.preferences
         # The conversation's character: what the user chose before this prompt, and after it.
@@ -2913,12 +2922,15 @@ class RecommendationService:
         **request_options: Any,
     ) -> Any:
         if stream_status is None:
-            return await self.client.responses.create(**request_options)
-        async with self.client.responses.stream(**request_options) as stream:
-            async for event in stream:
-                if is_web_search_stream_event(self._field(event, "type")):
-                    await stream_status.emit("web")
-            return await stream.get_final_response()
+            response = await self.client.responses.create(**request_options)
+        else:
+            async with self.client.responses.stream(**request_options) as stream:
+                async for event in stream:
+                    if is_web_search_stream_event(self._field(event, "type")):
+                        await stream_status.emit("web")
+                response = await stream.get_final_response()
+        self.limits.record_response(response)
+        return response
 
     @classmethod
     def _normalize_replay_output_items(cls, output_items: list[Any]) -> list[dict[str, Any]]:

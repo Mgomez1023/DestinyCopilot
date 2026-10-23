@@ -199,7 +199,8 @@ def trim_excess(answer: str, max_words: int) -> str | None:
         index -= 1
     while len(lines) > 1 and (not lines[-1].strip() or lines[-1].rstrip().endswith(":")):
         lines.pop()
-    text = "\n".join(lines)
+    # Trimming can strand a label ("Backup (...)", "Why:") whose lines went; drop those too.
+    text = clean_layout("\n".join(lines))
     return _result(text, answer) if _words(text) < _words(answer) else None
 
 
@@ -261,6 +262,8 @@ def repair_style(
         apply("mechanical_structure", "flatten_headings", flatten_headings(text))
     if "extreme_verbosity" in wanted:
         apply("extreme_verbosity", "trim_excess", trim_excess(text, extreme_max_words(mode)))
+    if done and text != answer:
+        text = clean_layout(text)
     return text, done
 
 
@@ -398,13 +401,32 @@ def locally_handled(codes: Iterable[str], answer: str) -> set[str]:
     return handled if has_statement(answer) else handled - QUESTION_CODES
 
 
+_LABEL_WORDS = re.compile(
+    r"^(?:\w+\s+){0,2}?(?:plan|backup|alternatives?|fallback|primary(?:\s+pick)?|options?|steps?|"
+    r"checklist|tips?|notes?|why|how|what to do)\b[^.!?:]{0,40}$",
+    re.IGNORECASE,
+)
+
+
+def _is_markdown_heading(line: str) -> bool:
+    text = line.strip()
+    return bool(re.match(r"#{1,4}\s+\S", text) or re.fullmatch(r"\*\*[^*]+\*\*:?", text))
+
+
 def _is_heading(line: str) -> bool:
-    """A short label that introduces what follows: "Options:", "Plan", "## Steps"."""
+    """A label that introduces what follows: "Options:", "Plan", "Backup (if ...)", "## Steps".
+
+    A short plain closing line ("Have fun") is not a label, so it is never treated as one.
+    """
 
     text = _plain(line).strip().strip("*#").strip()
-    if not text or _ITEM_LINE.match(line):
+    if not text or _ITEM_LINE.match(line) or _words(text) > 12:
         return False
-    return text.endswith(":") or (_words(text) <= 6 and not re.search(r"[.!?]$", text))
+    return (
+        (_is_markdown_heading(line) and not re.search(r"[.!?]$", text))
+        or text.endswith(":")
+        or bool(_LABEL_WORDS.match(text))
+    )
 
 
 def drop_dependents(parts: list[str], replaced: list[str | None]) -> list[str | None]:
@@ -430,7 +452,11 @@ def drop_dependents(parts: list[str], replaced: list[str | None]) -> list[str | 
 
 
 def clean_layout(text: str) -> str:
-    """No blank bullets, no heading left with nothing under it, no runs of blank lines."""
+    """No blank bullets, no heading or label left with nothing under it, no runs of blank lines.
+
+    A label counts as empty at the end of the answer, before another label, and (unless it is a
+    markdown heading) when a blank line separates it from plain text, because its bullets went.
+    """
 
     lines = [line.rstrip() for line in text.split("\n")]
     lines = [line for line in lines if not re.fullmatch(r"\s*(?:[-*•]|\d{1,2}[.)])\s*", line)]
@@ -440,16 +466,15 @@ def clean_layout(text: str) -> str:
             rest = lines[index + 1 :]
             after = next((value for value in rest if value.strip()), None)
             gap = bool(rest) and not rest[0].strip()
-            colon = _plain(line).rstrip().endswith(":")
             if (
                 after is None
                 or (_is_heading(after) and not _ITEM_LINE.match(after))
-                # "Options:" then a blank line then plain text: its items are gone.
-                or (colon and gap and not _ITEM_LINE.match(after))
+                or (gap and not _ITEM_LINE.match(after) and not _is_markdown_heading(line))
             ):
                 continue
         kept.append(line)
-    return re.sub(r"\n{3,}", "\n\n", "\n".join(kept)).strip()
+    cleaned = re.sub(r"\n{3,}", "\n\n", "\n".join(kept)).strip()
+    return cleaned or text.strip()
 
 
 def _tidy_after_removal(

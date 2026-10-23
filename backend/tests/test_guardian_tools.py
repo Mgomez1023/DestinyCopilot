@@ -2373,12 +2373,10 @@ def _title_tool_call() -> Any:
     )
 
 
-def test_ambiguous_title_request_allows_one_targeted_clarification() -> None:
-    answer = "Do you mean Destiny Triumph Titles and Seals?"
-    scripted = ScriptedWebResponses([[assistant_message(answer)]], [answer])
+def _title_chat(*drafts: str) -> tuple[Any, Any]:
+    scripted = ScriptedWebResponses([[assistant_message(value)] for value in drafts], list(drafts))
     service = RecommendationService(Settings(openai_api_key="test-key"))
     service.client = SimpleNamespace(responses=scripted)
-
     response = asyncio.run(
         service.chat(
             ChatRequest(
@@ -2389,9 +2387,44 @@ def test_ambiguous_title_request_allows_one_targeted_clarification() -> None:
             _guardian_with_title_progress(),
         )
     )
+    return response, (service, scripted)
+
+
+def test_a_question_only_draft_gets_one_rewrite_that_states_an_assumption() -> None:
+    question = "Do you mean Destiny Triumph Titles and Seals?"
+    assumed = (
+        "Assuming you mean Triumph Titles, Dredgen is closest to completion from your current "
+        "progress; actual effort may differ."
+    )
+    response, (service, scripted) = _title_chat(question, assumed)
+
+    assert response.message == assumed
+    assert len(scripted.requests) == 2
+    correction = service.latest_trace()["planning_correction"]
+    assert correction["violation_codes"] == ["clarification_only"]
+    assert correction["succeeded"] is True
+
+
+def test_a_rewrite_that_still_only_asks_is_kept_not_replaced_by_a_canned_answer() -> None:
+    question = "Do you mean Destiny Triumph Titles and Seals?"
+    still_asking = "Which kind of title do you mean: Triumph Titles or Seals?"
+    response, (service, scripted) = _title_chat(question, still_asking)
+
+    # One rewrite only; if no assumption was possible the question stands.
+    assert response.message == still_asking
+    assert len(scripted.requests) == 2
+    assert response.source == "openai"
+
+
+def test_an_answer_that_also_asks_is_not_a_question_only_draft() -> None:
+    answer = (
+        "Dredgen is closest to completion from your current Triumph progress. "
+        "Do you want the next step too?"
+    )
+    response, (service, scripted) = _title_chat(answer)
 
     assert response.message == answer
-    assert scripted.requests[0]["tool_choice"] == "auto"
+    assert len(scripted.requests) == 1
     assert service.latest_trace()["planning_correction"]["attempted"] is False
 
 

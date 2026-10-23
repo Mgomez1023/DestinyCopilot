@@ -232,6 +232,12 @@
       "ref": "DestinyInventoryItemDefinition.setData.itemList lists a quest's steps; steps use item category 16 'Quest Step'",
       "verified_at": "2026-10-17"
     },
+    "manifest.subclass_socket_categories": {
+      "kind": "manifest_structure",
+      "ref": "DestinyInventoryItemDefinition:2240888816 'Gunslinger' (Hunter Subclass) socket categories: ABILITIES, SUPER, ASPECTS, FRAGMENTS (DestinySocketCategoryDefinition)",
+      "verified_at": "2026-10-22",
+      "note": "The same four categories appear on the other current subclass items; there is no tree or Attunement category."
+    },
     "manifest.text.altar_of_reflection_location": {
       "kind": "manifest_text",
       "ref": "DestinyInventoryItemDefinition:2609952321",
@@ -375,6 +381,24 @@
       "ref": "DestinyActivityModeDefinition:2394616003",
       "quote": "Stats that roll both regular strikes and special strike modes (such as Nightfall and Heroic Strike) into one.",
       "verified_at": "2026-10-17"
+    },
+    "manifest.text.subclass_abilities": {
+      "kind": "manifest_text",
+      "ref": "DestinySocketCategoryDefinition:3218807805",
+      "quote": "Abilities that slot into your character's build.",
+      "verified_at": "2026-10-22"
+    },
+    "manifest.text.subclass_aspects": {
+      "kind": "manifest_text",
+      "ref": "DestinySocketCategoryDefinition:3400923910",
+      "quote": "Abilities that grow your build and provide energy to Fragments.",
+      "verified_at": "2026-10-22"
+    },
+    "manifest.text.subclass_fragments": {
+      "kind": "manifest_text",
+      "ref": "DestinySocketCategoryDefinition:2819965312",
+      "quote": "Perks that modify your character's abilities and consume Aspect energy.",
+      "verified_at": "2026-10-22"
     },
     "manifest.text.trials_of_osiris": {
       "kind": "manifest_text",
@@ -1996,6 +2020,29 @@
         }
       ],
       "last_verified": "2026-10-17"
+    },
+    {
+      "id": "concept.subclass_customization",
+      "name": "Subclass customization (Subclass 3.0)",
+      "kind": "concept",
+      "aliases": [
+        "subclass 3.0",
+        "subclass customization",
+        "subclass tree",
+        "skill tree",
+        "attunement",
+        "aspects",
+        "fragments"
+      ],
+      "plural": true,
+      "summary": "A subclass is customized with a Super, abilities, Aspects, and Fragments. Aspects grow the build and provide energy to Fragments; Fragments modify abilities and consume Aspect energy. Current subclasses are described by those four parts: there are no skill trees or Attunement paths.",
+      "summary_src": [
+        "manifest.subclass_socket_categories",
+        "manifest.text.subclass_abilities",
+        "manifest.text.subclass_aspects",
+        "manifest.text.subclass_fragments"
+      ],
+      "last_verified": "2026-10-22"
     }
   ],
   "shorthands": {

@@ -60,6 +60,9 @@ STYLE_VIOLATION_CODES = frozenset(
         "too_many_followups",
         "unnecessary_clarification",
         "unnecessary_read_only_permission",
+        # A draft that is only a question gets one rewrite that assumes and answers; if it
+        # still asks, that is kept (no canned replacement).
+        "clarification_only",
         # Read-only work the draft asked about or claimed instead of doing; see below.
         "account_data_requested",
         "unperformed_lookup",
@@ -1468,6 +1471,18 @@ class ResponseQualityValidator:
                         "asked to change them, and give one smaller improvement you can verify, "
                         "or say plainly that the current evidence justifies no particular "
                         "change. Do not ask permission."
+                    ),
+                )
+            )
+        elif asks_only and "?" in answer:
+            violations.append(
+                PlanningViolation(
+                    code="clarification_only",
+                    correction=(
+                        "The draft only asks a question. Answer instead: take the most "
+                        "reasonable reading of the request, state that assumption in one "
+                        "clause (for example 'Assuming you mean your Titan, ...'), and give "
+                        "the answer. Ask a question only if no reasonable assumption exists."
                     ),
                 )
             )

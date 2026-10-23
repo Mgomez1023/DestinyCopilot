@@ -13,6 +13,8 @@ import os
 from pathlib import Path
 from typing import Any
 
+from app.pricing import estimate_cost  # noqa: F401  (shared with the app's spend cap)
+
 ROOT_ENV = Path(__file__).resolve().parents[2] / ".env"
 PRICE_KEYS = {
     "input_per_1m": "EVAL_PRICE_INPUT_PER_1M",
@@ -50,20 +52,3 @@ def load_prices(
         except ValueError:
             continue
     return prices
-
-
-def estimate_cost(totals: dict[str, int], prices: dict[str, Any]) -> float | None:
-    """USD estimate, or None when input and output prices are not configured."""
-
-    if "input_per_1m" not in prices or "output_per_1m" not in prices:
-        return None
-    cached = min(totals.get("cached_input_tokens", 0), totals.get("input_tokens", 0))
-    uncached = totals.get("input_tokens", 0) - cached
-    cached_price = prices.get("cached_input_per_1m", prices["input_per_1m"])
-    cost = (
-        uncached * prices["input_per_1m"]
-        + cached * cached_price
-        + totals.get("output_tokens", 0) * prices["output_per_1m"]
-    ) / 1_000_000
-    cost += totals.get("web_search_calls", 0) * prices.get("web_search_per_1k", 0.0) / 1000
-    return round(cost, 4)

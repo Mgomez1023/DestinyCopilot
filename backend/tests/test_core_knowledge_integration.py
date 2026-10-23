@@ -128,7 +128,7 @@ def test_startup_loads_the_production_corpus_once_and_can_be_disabled() -> None:
     disabled = core_knowledge_provider(Settings(core_knowledge_enabled=False))
     broken = core_knowledge_provider(Settings(core_knowledge_file=Path("missing.json")))
 
-    assert provider is not None and provider.engine.entity_count == 48
+    assert provider is not None and provider.engine.entity_count == 49
     assert disabled is None
     assert broken is None
 
@@ -388,7 +388,11 @@ def test_live_sensitive_metadata_never_bypasses_the_live_gate() -> None:
 def test_core_provider_works_on_the_streaming_path() -> None:
     recommendations, responses = service(
         streaming=True,
-        outputs=[[concept_call("Altars")], [_answer("Which altar do you mean?")]],
+        outputs=[
+            [concept_call("Altars")],
+            [_answer("Which altar do you mean?")],
+            [_answer("Assuming you mean Altars of Sorrow on the Moon, it is in Sorrow's Harbor.")],
+        ],
     )
     emitted: list[Any] = []
 
@@ -405,7 +409,8 @@ def test_core_provider_works_on_the_streaming_path() -> None:
     )
     trace = recommendations.latest_trace()
 
-    assert answer.message == "Which altar do you mean?"
+    # A question-only draft gets one rewrite that states an assumption and answers.
+    assert answer.message.startswith("Assuming you mean Altars of Sorrow")
     assert "manifest" in reporter.emitted_categories
     assert reporter.emitted_categories[-1] == "final"
     assert all(value["instructions"].count(CORE_FACTS_HEADER) == 1 for value in responses.requests)
